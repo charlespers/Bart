@@ -595,7 +595,7 @@ def _daily_lesson_brief(
         "3. **By the end of today you can** — 5-8 specific objectives.\n"
         "4. **Core content** — explain each subtopic with definitions, derivations, intuition. ASCII diagrams "
         "where they aid understanding.\n"
-        "5. **Embedded ✏️ Quick Check boxes** after each subsection — 2-3 questions with `<details>` collapsibles.\n"
+        "5. **Embedded Quick Check boxes** after each subsection — 2-3 questions with `<details>` collapsibles.\n"
         "6. **Worked examples** — 5-8 fully solved.\n"
         "7. **Mock / past-exam problems** — every problem from the corpus that touches today's topic, "
         "VERBATIM, followed by a fully worked solution in a `<details>` block.\n"

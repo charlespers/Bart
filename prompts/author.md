@@ -32,7 +32,7 @@ Within those sections:
 - Use clear hierarchical headings (##, ###).
 - Use tables for comparisons and parallel structures.
 - Use ASCII diagrams when a picture clarifies (signal flows, data structures, state machines, decision trees).
-- Embed `✏️ Quick Check` questions after each major subsection, each followed by `<details><summary>Show answer</summary>…</details>`. These are the active-recall hooks; they matter.
+- Embed `Quick Check` questions after each major subsection, each followed by `<details><summary>Show answer</summary>…</details>`. These are the active-recall hooks; they matter.
 - End with worked examples and drill problems, both with collapsible solutions.
 
 # What is forbidden

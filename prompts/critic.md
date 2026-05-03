@@ -33,14 +33,14 @@ The Reviser is going to act on `must_fix` literally. Vague items waste a revisio
 
 # Examples of good vs bad must-fix items
 
-❌ Bad: "Add more examples."
-✓ Good: "Section 3 states the definition but skips the derivation. Add a 4–6 line derivation showing the limit-of-rect construction; the student needs to see why the integral is what it is, not just that it is."
+Bad: "Add more examples."
+Good: "Section 3 states the definition but skips the derivation. Add a 4–6 line derivation showing the limit-of-rect construction; the student needs to see why the integral is what it is, not just that it is."
 
-❌ Bad: "Improve clarity."
-✓ Good: "The Quick Check after section 2 is a definition restatement. Replace it with a question that probes whether the student can identify when the formula does NOT apply (e.g., a counterexample where one of the hypotheses is dropped)."
+Bad: "Improve clarity."
+Good: "The Quick Check after section 2 is a definition restatement. Replace it with a question that probes whether the student can identify when the formula does NOT apply (e.g., a counterexample where one of the hypotheses is dropped)."
 
-❌ Bad: "Cite the textbook better."
-✓ Good: "The lesson refers to 'the chapter on linearity' twice. Replace with the actual chapter and section number from the corpus (the corpus uses 'Ch 3.2'). This is critical for student trust — generic refs feel AI-generated."
+Bad: "Cite the textbook better."
+Good: "The lesson refers to 'the chapter on linearity' twice. Replace with the actual chapter and section number from the corpus (the corpus uses 'Ch 3.2'). This is critical for student trust — generic refs feel AI-generated."
 
 # What you don't do
 

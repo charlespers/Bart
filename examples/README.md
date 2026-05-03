@@ -1,6 +1,6 @@
 # Examples
 
-This folder holds smoke-test fixtures you can use to verify bart works on your machine without spending real API tokens.
+Smoke-test fixtures for verifying bart works on your machine without spending real API tokens.
 
 ## Usage
 
@@ -9,14 +9,15 @@ This folder holds smoke-test fixtures you can use to verify bart works on your m
 cp examples/sample_notes.md materials/
 
 # 2. Run bart in dry-run mode — extracts files, builds corpus, plans, but
-#    does NOT call the Anthropic API.
+#    does not call the Anthropic API.
 ./run run --dry-run
 ```
 
-You should see:
+Expected output:
+
 - The bart splash (ASCII loaf + wordmark)
-- A "✓ extracted sample_notes.md" line
+- An "extracted sample_notes.md" line
 - A corpus summary
 - "Dry run — stopping before API calls."
 
-If all of that prints without errors, your install is healthy and you're ready to drop real materials and run for real.
+If all of that prints without errors, the install is healthy. Drop real materials and run for real.
