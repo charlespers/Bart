@@ -13,6 +13,9 @@ class AgentContext:
     cfg: Config
     llm: LLMClient
     corpus_block: list[dict]  # cacheable user-message preamble containing the corpus
+    # `corpus_block` is the canonical full-corpus preamble used by Planner,
+    # Researcher, Author. Reviewer/Critic/Reviser pass corpus_block=[] when
+    # they only need the artifact + brief — saves significant input tokens.
 
 
 class Agent:

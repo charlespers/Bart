@@ -28,6 +28,7 @@ from typing import List
 
 from .assets import install_all
 from .markdown import RenderWarning, render
+from .optimize import has_math, minify_html
 from .page import assemble_page, assemble_pager
 from .sanitize import SanitizeWarning, normalize_md
 
@@ -303,13 +304,16 @@ def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
         page_toc=[],
         packet_nav=_resolve_nav(packet_nav, "."),
         current_url="index.html",
+        needs_math=False,  # landing page never has math
     )
-    (run_dir / "index.html").write_text(index_html, encoding="utf-8")
     warnings.extend([Warning("index.html", w.kind, w.detail) for w in _validate_html(index_html, "index.html")])
+    (run_dir / "index.html").write_text(minify_html(index_html), encoding="utf-8")
 
-    # ── Search index
+    # ── Search index — write compact (no indent), no whitespace = smaller
+    # transfer + faster parse. Anchors and titles are stripped of trailing
+    # whitespace at construction.
     (run_dir / "search-index.json").write_text(
-        json.dumps(search_index, indent=2), encoding="utf-8"
+        json.dumps(search_index, separators=(",", ":")), encoding="utf-8"
     )
 
     # ── Warning manifest
@@ -386,6 +390,7 @@ def _render_one(
         "level": 1,
     })
 
+    needs_math = has_math(body_html)
     full_html = assemble_page(
         body=body_html,
         title=title,
@@ -396,9 +401,12 @@ def _render_one(
         current_url=current_url,
         extra_crumb=extra_crumb,
         pager_html=pager_html,
+        needs_math=needs_math,
     )
 
     warnings.extend([Warning(src.name, w.kind, w.detail) for w in _validate_html(full_html, src.name)])
 
-    out_html.write_text(full_html, encoding="utf-8")
+    # Minify before writing — lossless, ~25-35% size reduction.
+    minified = minify_html(full_html)
+    out_html.write_text(minified, encoding="utf-8")
     return warnings

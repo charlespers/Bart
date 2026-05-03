@@ -57,8 +57,16 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from .agents import AuthorAgent, CriticAgent, PlannerAgent, ResearcherAgent, ReviserAgent
+from .agents import (
+    AuthorAgent,
+    CriticAgent,
+    PlannerAgent,
+    ResearcherAgent,
+    ReviewerAgent,
+    ReviserAgent,
+)
 from .agents.base import AgentContext
+from .agents.heuristics import health_check
 from .branding import ACCENT, ACCENT_HI, ACCENT_LO, CREAM_LO, INK, RICH_DIM, RICH_OK
 from .config import Config
 from .io.checkpoint import atomic_write_json, atomic_write_text, is_complete
@@ -138,8 +146,10 @@ class Orchestrator:
             planner = PlannerAgent(ctx)
             researcher = ResearcherAgent(ctx)
             author = AuthorAgent(ctx)
-            critic = CriticAgent(ctx)
-            reviser = ReviserAgent(ctx)
+            # Reviewer fuses critic + reviser into a single corpus-free call.
+            # Saves ~50% input tokens per review and one round trip when revision happens.
+            reviewer_ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=[])
+            reviewer = ReviewerAgent(reviewer_ctx)
 
             today = date.today()
             today_iso = today.isoformat()
@@ -170,11 +180,19 @@ class Orchestrator:
                 ("short_study_guide", "03_SHORT_STUDY_GUIDE.md", _short_guide_brief, 6000),
                 ("practice_exam", "04_PRACTICE_EXAM.md", _practice_exam_brief, 12000),
             ]
-            self._run_artifacts_parallel(artifacts, author, critic, reviser, master_plan)
+            self._run_artifacts_parallel(artifacts, author, reviewer, master_plan)
 
-            # ----- 3. Daily lessons (researcher → author → critic → reviser)
+            # ----- 3. Daily lessons
+            # Pre-fetch all per-day research briefs in parallel using the FAST
+            # model. Researchers are cheap and have no dependency on each other,
+            # so doing them all up-front lets the slow Author calls run without
+            # waiting on Researcher serially.
+            self.console.print("\n[bold #c96442]▸ Pre-research (fast model)[/bold #c96442]")
+            research_by_day = self._prefetch_research(day_entries, researcher)
+
+            # Then generate daily lessons (Author + optional Reviewer).
             self.console.print("\n[bold #c96442]▸ Generating daily lessons[/bold #c96442]")
-            self._run_daily_lessons(day_entries, researcher, author, critic, reviser, master_plan)
+            self._run_daily_lessons(day_entries, author, reviewer, master_plan, research_by_day)
 
             # ----- 4. Manifest + telemetry + summary
             self._write_manifest(corpus, day_entries, master_plan_path)
@@ -304,7 +322,7 @@ class Orchestrator:
         }]
 
     # ------------------------------------------------------------------
-    def _run_artifacts_parallel(self, artifacts, author, critic, reviser, master_plan):
+    def _run_artifacts_parallel(self, artifacts, author, reviewer, master_plan):
         results: dict[str, str] = {}
 
         def _gen_one(kind, filename, brief_fn, max_tokens):
@@ -312,16 +330,33 @@ class Orchestrator:
             if is_complete(target):
                 self.logger.info("artifact %s already complete — skipping", filename)
                 return kind, target.read_text()
-            self.console.print(f"  [{ACCENT_HI}]→[/{ACCENT_HI}] starting [white]{filename}[/white] [dim](this can take 1–3 min on opus)[/dim]")
+            self.console.print(f"  [{ACCENT_HI}]→[/{ACCENT_HI}] starting [white]{filename}[/white] [dim](opus, 1–3 min)[/dim]")
             brief = brief_fn(self.cfg, master_plan)
             text = author.write(kind, brief, max_tokens=max_tokens, label_suffix="initial")
+
             if self.use_critic:
-                self.console.print(f"  [{ACCENT_HI}]→[/{ACCENT_HI}] grading [white]{filename}[/white] [dim](critic)[/dim]")
-                cri = critic.critique(kind, text, brief)
-                self.logger.info("critic %s: score=%d, must_fix=%d", kind, cri.score, len(cri.must_fix))
-                if cri.should_revise:
-                    self.console.print(f"  [{ACCENT_HI}]→[/{ACCENT_HI}] revising [white]{filename}[/white] [dim](score {cri.score})[/dim]")
-                    text = reviser.revise(kind, text, cri, brief, max_tokens=max_tokens)
+                # Cheap heuristic — skip the paid review if output looks healthy.
+                hc = health_check(kind, text)
+                if hc.healthy:
+                    self.logger.info("heuristic skip review for %s (score=%d)", kind, hc.score)
+                    self.console.print(
+                        f"  [{ACCENT_HI}]→[/{ACCENT_HI}] [white]{filename}[/white] "
+                        f"[dim]passed heuristics ({hc.score}); skipping reviewer[/dim]"
+                    )
+                else:
+                    self.console.print(
+                        f"  [{ACCENT_HI}]→[/{ACCENT_HI}] reviewing [white]{filename}[/white] "
+                        f"[dim](heuristic flagged: {', '.join(hc.reasons[:2])})[/dim]"
+                    )
+                    rev = reviewer.review(kind, text, brief, max_tokens=max_tokens)
+                    self.logger.info("reviewer %s: score=%d, passed=%s", kind, rev.score, rev.passed)
+                    if not rev.passed and rev.revised_text:
+                        text = rev.revised_text
+                        self.console.print(
+                            f"  [{ACCENT_HI}]→[/{ACCENT_HI}] revised [white]{filename}[/white] "
+                            f"[dim](was {rev.score}; addressed {len(rev.must_fix)} item(s))[/dim]"
+                        )
+
             atomic_write_text(target, text)
             return kind, text
 
@@ -343,7 +378,47 @@ class Orchestrator:
                     self.logger.error("artifact %s failed: %s", kind, e)
                     self.console.print(f"  [red]✗[/red] [{done_count}/{total}] {filename} — {e}")
 
-    def _run_daily_lessons(self, day_entries, researcher, author, critic, reviser, master_plan):
+    def _prefetch_research(self, day_entries, researcher) -> dict[int, str]:
+        """Run all per-day researchers in parallel via the fast model.
+
+        Researchers have no inter-day dependencies, and each call is cheap
+        (Haiku, ~1-3K tokens out). Pre-fetching them removes a serial
+        dependency in the daily-lesson pipeline.
+        """
+        if not day_entries:
+            return {}
+        out: dict[int, str] = {}
+
+        def _do_one(entry):
+            day_num = entry["day"]
+            checkpoint = self.paths.checkpoints_dir / f"research_day_{day_num:02d}.md"
+            if checkpoint.exists() and checkpoint.stat().st_size > 200:
+                return day_num, checkpoint.read_text()
+            topic = entry.get("topic", f"Day {day_num}")
+            objectives = entry.get("learning_objectives", [])
+            text = researcher.research(topic, objectives)
+            checkpoint.write_text(text)
+            return day_num, text
+
+        # Researcher is haiku; bump parallelism — these are I/O bound and cheap.
+        with ThreadPoolExecutor(max_workers=max(self.max_parallel, 6)) as pool:
+            futs = [pool.submit(_do_one, e) for e in day_entries]
+            done = 0
+            total = len(day_entries)
+            for fut in as_completed(futs):
+                done += 1
+                try:
+                    day_num, text = fut.result()
+                    out[day_num] = text
+                    if done == 1 or done == total or done % 5 == 0:
+                        self.console.print(
+                            f"  [{RICH_OK}]✓[/{RICH_OK}] research [{done}/{total}]"
+                        )
+                except Exception as e:  # noqa: BLE001
+                    self.logger.error("researcher failed: %s", e)
+        return out
+
+    def _run_daily_lessons(self, day_entries, author, reviewer, master_plan, research_by_day):
         if not day_entries:
             self.console.print("[yellow]  ⚠ Planner produced no day entries — skipping daily lessons.[/yellow]")
             return
@@ -351,25 +426,27 @@ class Orchestrator:
         def _gen_day(entry):
             day_num = entry["day"]
             day_date = entry.get("date", "")
-            topic = entry.get("topic", f"Day {day_num}")
-            objectives = entry.get("learning_objectives", [])
             filename = f"Day_{day_num:02d}_{day_date}.md"
             target = self.paths.daily_dir / filename
             if is_complete(target, min_chars=2000):
                 self.logger.info("day %s already complete — skipping", day_num)
                 return day_num, filename, "cached"
 
-            # Research with fast model
-            research = researcher.research(topic, objectives)
-            (self.paths.checkpoints_dir / f"research_day_{day_num:02d}.md").write_text(research)
-
+            research = research_by_day.get(day_num, "")
             brief = _daily_lesson_brief(self.cfg, day_num, day_date, entry, master_plan, research)
             text = author.write("daily_lesson", brief, max_tokens=12000, label_suffix=f"day{day_num}")
+
             if self.use_critic:
-                cri = critic.critique("daily_lesson", text, brief)
-                self.logger.info("critic day %d: score=%d", day_num, cri.score)
-                if cri.should_revise:
-                    text = reviser.revise("daily_lesson", text, cri, brief, max_tokens=12000)
+                hc = health_check("daily_lesson", text)
+                if not hc.healthy:
+                    self.logger.info("day %d heuristic flagged: %s", day_num, hc.reasons)
+                    rev = reviewer.review("daily_lesson", text, brief, max_tokens=12000)
+                    self.logger.info("day %d reviewer: score=%d, passed=%s", day_num, rev.score, rev.passed)
+                    if not rev.passed and rev.revised_text:
+                        text = rev.revised_text
+                else:
+                    self.logger.info("day %d skipped review (heuristic score=%d)", day_num, hc.score)
+
             atomic_write_text(target, text)
             return day_num, filename, "written"
 

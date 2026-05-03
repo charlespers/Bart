@@ -181,27 +181,56 @@ Unsupported file types are skipped with a clear message.
 
 ## How long does it take?
 
-Total time scales with: number of days until exam × model speed × critic on/off × auth mode.
+Total time scales with: number of days × model speed × review loop on/off × auth mode.
 
-| Configuration                                   | 7-day plan | 30-day plan |
-| ----------------------------------------------- | ---------- | ----------- |
-| `--fast` (Sonnet, no critic, parallel 8)        | ~5 min     | ~15 min     |
-| API mode, Opus, no critic                       | ~10 min    | ~30 min     |
-| API mode, Opus, with critic+revise              | ~15 min    | ~50 min     |
-| Subscription mode, Opus, with critic+revise     | ~25 min    | ~90 min     |
+| Configuration                                | 7-day plan | 30-day plan |
+| -------------------------------------------- | ---------- | ----------- |
+| `--fast` (Sonnet, no review, parallel 8)     | ~3 min     | ~10 min     |
+| API mode, Opus, no review                    | ~6 min     | ~20 min     |
+| API mode, Opus, with heuristic-gated review  | ~9 min     | ~30 min     |
+| Subscription mode, Opus, with review         | ~15 min    | ~55 min     |
 
-Subscription mode is slower than API mode because there's no prompt caching — the corpus is re-processed on every call. If runtime matters, use `--fast` or set `primary_model` to `claude-sonnet-4-6` in your config. Quality is still excellent and the runtime drops dramatically.
+Subscription mode is slower than API mode because there's no prompt caching — the corpus is re-processed on every call. If runtime matters, use `--fast` or set `primary_model` to `claude-sonnet-4-6` in your config.
 
 Subsequent runs skip the venv build, and the disk cache makes repeat runs over the same materials nearly instant.
+
+### What's optimized
+
+**LLM-side (token / call savings):**
+
+- Fused critic + reviser into a single Reviewer call.
+- Reviewer doesn't carry the corpus — only the artifact + brief.
+- Heuristic gate: artifacts that pass cheap structural checks skip the paid review.
+- All Researchers run in parallel (Haiku) before Authors start.
+- Tighter `max_tokens` ceilings match real artifact lengths.
+
+**Browser-side (page-load):**
+
+- MathJax (~1.2 MB) is lazy-loaded — only injected on pages that contain equations.
+- Critical above-the-fold CSS is inlined; the full stylesheet loads non-blocking.
+- HTML output is minified (~25-35% smaller).
+- Search index is compacted JSON, prefetched on idle.
+- After the first page, every subsequent page navigates instantly because shared assets (CSS, JS, MathJax) are cached.
 
 ---
 
 ## Cost
 
-A 7-day plan with the full critic-revise loop costs roughly **$5–$15** in API tokens. To spend less:
+A 7-day plan with the full review loop costs roughly **$3–$10** in API tokens (down from $5–$15 in earlier versions thanks to several optimizations).
 
-- `--no-critic` ≈ half cost
-- Edit `.bart_config.json` and set `primary_model` to `claude-sonnet-4-6` ≈ another 5× cheaper
+**Where the savings come from:**
+
+- **Fused review.** Critic + Reviser merged into one Reviewer call that returns either "PASS" or a full revision inline. Saves a round-trip per artifact.
+- **Corpus-free reviews.** The Reviewer doesn't see the corpus — it only needs the artifact + brief. Drops ~50% of input tokens per review.
+- **Heuristic skip.** Cheap structural checks (length floors, math balance, AI-tell detection) decide whether an artifact even warrants a paid review. Healthy artifacts skip the Reviewer entirely.
+- **Pre-fetched research.** All per-day Researchers run in parallel (Haiku, fast model) before the Authors start, eliminating a serial dependency.
+- **Tighter `max_tokens`.** Output ceilings reduced to match real artifact lengths — fewer wasted tokens, faster generation.
+
+**To spend even less:**
+
+- `--fast` — Sonnet primary + no review + parallel 8. Roughly a quarter the cost of full Opus.
+- `--no-critic` — Skip the review loop entirely.
+- Edit `.bart_config.json` and set `primary_model` to `claude-sonnet-4-6` for a 5× speedup with marginal quality loss.
 
 The disk cache means re-runs over the same materials are basically free. bart prints the exact cost when it finishes.
 

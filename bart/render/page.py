@@ -83,10 +83,11 @@ _BASE_TMPL = """\
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
   <meta name="generator" content="bart packet renderer">
-  <link rel="stylesheet" href="{rel}/packet.css">
   <link rel="icon" href="{rel}/assets/bart-loaf.svg">
-  <script>{mathjax_config}</script>
-  <script src="{rel}/lib/mathjax/tex-chtml.js" defer></script>
+  <style>{critical_css}</style>
+  {lazy_stylesheet}
+  {mathjax_block}
+  <link rel="prefetch" href="{rel}/search-index.json" as="fetch" crossorigin>
 </head>
 <body>
   <div class="layout">
@@ -163,8 +164,16 @@ def assemble_page(
     current_url: str,
     extra_crumb: str = "",
     pager_html: str = "",
+    needs_math: bool = False,
 ) -> str:
-    """Wrap the rendered body in the full template."""
+    """Wrap the rendered body in the full template.
+
+    `needs_math`: if False, skip injecting the MathJax loader script. Saves
+    ~1.2 MB of blocking-ish JS on math-free pages (notably the index, the
+    short study guide, and many whimsy pages).
+    """
+    from .optimize import CRITICAL_CSS, LAZY_STYLESHEET
+
     sidebar_inner = _packet_nav_html(packet_nav, current_url) + _toc_to_html(page_toc)
     sidebar = _SIDEBAR_TMPL.format(rel=rel_root, nav_block=sidebar_inner)
 
@@ -174,10 +183,20 @@ def assemble_page(
         extra_crumb=extra_crumb or "",
     )
 
+    if needs_math:
+        mathjax_block = (
+            f"<script>{_MATHJAX_CONFIG}</script>"
+            f'<script src="{rel_root}/lib/mathjax/tex-chtml.js" defer></script>'
+        )
+    else:
+        mathjax_block = "<!-- no math on this page; MathJax skipped -->"
+
     return _BASE_TMPL.format(
         title=html_escape(title),
         rel=rel_root,
-        mathjax_config=_MATHJAX_CONFIG,
+        critical_css=CRITICAL_CSS,
+        lazy_stylesheet=LAZY_STYLESHEET.format(href=f"{rel_root}/packet.css"),
+        mathjax_block=mathjax_block,
         sidebar=sidebar,
         topbar=topbar,
         body=body,
