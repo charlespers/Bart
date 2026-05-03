@@ -1,6 +1,6 @@
 ![bart. — production-grade study-packet harness](./assets/readme.png)
 
-> Drop your course materials in. Run once. Get a personalized exam-prep packet engineered to Ivy-undergraduate standards.
+> Drop your course materials in. Run once.
 
 ---
 
