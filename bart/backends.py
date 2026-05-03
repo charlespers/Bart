@@ -33,6 +33,10 @@ class LLMError(RuntimeError):
     pass
 
 
+def _indent(text: str, prefix: str) -> str:
+    return "\n".join(prefix + line for line in text.splitlines())
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Disk-cache helpers shared by both backends
 # ─────────────────────────────────────────────────────────────────────
@@ -215,8 +219,6 @@ class ClaudeCodeBackend:
         sys_text = self._flatten(system)
         usr_text = self._flatten(user)
 
-        # Cache key uses the same shape so caches transfer between backends
-        # if a user moves from CLI to API or vice versa.
         sys_blocks = [{"type": "text", "text": sys_text}]
         usr_blocks = [{"type": "text", "text": usr_text}]
         key = _cache_key(model, sys_blocks, [{"role": "user", "content": usr_blocks}], max_tokens)
@@ -226,10 +228,35 @@ class ClaudeCodeBackend:
                 self._on_event("cache_hit", {"label": label, "key": key})
                 return cached
 
-        # Combined message — system goes first inside <system> tags, then the user request.
+        # Combined message: system goes inside an explicit wrapper so the model
+        # respects it, then the user request.
         combined = f"<system_instructions>\n{sys_text}\n</system_instructions>\n\n{usr_text}"
 
-        cmd = [self._cli, "--print", "--model", model, "--output-format", "text"]
+        # Build the command. We pass `--model` only if the caller specified one;
+        # otherwise let the CLI use the user's default. We do NOT pass
+        # `--output-format text` because some CLI versions reject it; the default
+        # output is plain text already.
+        cmd = [self._cli, "--print"]
+        if model:
+            cmd.extend(["--model", model])
+
+        # CRITICAL: strip auth env vars that would force the CLI into API-key mode
+        # instead of using the user's claude.ai subscription. If ANTHROPIC_API_KEY
+        # is set in the parent env (e.g. from a shell rc file), the CLI silently
+        # uses it — and if the key has no credits, you get "Credit balance is too
+        # low" even with a perfectly healthy Max subscription.
+        scrubbed_env = {
+            k: v for k, v in os.environ.items()
+            if k not in {
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BEDROCK_BASE_URL",
+                "ANTHROPIC_VERTEX_PROJECT_ID",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+            }
+        }
+
         t0 = time.time()
         self._on_event("call_start", {"label": label, "model": model, "backend": "claude-code"})
         try:
@@ -240,21 +267,83 @@ class ClaudeCodeBackend:
                 text=True,
                 timeout=self._timeout_s,
                 check=False,
-                # Inherit environment so the CLI finds its credentials.
-                env={**os.environ},
+                env=scrubbed_env,
             )
         except subprocess.TimeoutExpired as e:
             raise LLMError(f"`claude` CLI timed out after {self._timeout_s}s on '{label}'.") from e
 
         dt = time.time() - t0
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+
         if proc.returncode != 0:
+            cmd_str = " ".join(cmd)
+            combined_err = (stderr + " " + stdout).lower()
+
+            # Detect well-known failure modes and give a precise message.
+            if "credit balance" in combined_err or ("insufficient" in combined_err and "credit" in combined_err):
+                raise LLMError(
+                    "The Anthropic API returned 'Credit balance is too low'.\n\n"
+                    "  This is almost always *not* about your Claude.ai subscription —\n"
+                    "  it means the `claude` CLI is using an API key (which has no balance)\n"
+                    "  instead of your subscription auth.\n\n"
+                    "  Most common fixes:\n"
+                    "    1. An ANTHROPIC_API_KEY is set in your shell rc file (e.g. ~/.zshrc or\n"
+                    "       ~/.bashrc) and is overriding subscription auth. bart already strips\n"
+                    "       it from the subprocess env, but if your CLI was already configured\n"
+                    "       to API mode (e.g. `claude /login` while a key was set), you may need\n"
+                    "       to log in fresh:\n"
+                    "         claude /logout\n"
+                    "         claude /login         # pick the 'subscription' option\n"
+                    "    2. Or, if you'd rather use API-key billing, run `./run setup` and\n"
+                    "       pick option 2, then paste a key with credits.\n\n"
+                    f"  raw CLI stderr: {stderr[:200] or '(empty)'}"
+                )
+            if "not logged in" in combined_err or "authentication" in combined_err or "auth" in combined_err and "fail" in combined_err:
+                raise LLMError(
+                    "Your Claude Code CLI isn't logged in. Run `claude` once in a terminal, "
+                    "complete the login flow, then re-run bart.\n\n"
+                    f"  raw CLI stderr: {stderr[:200] or '(empty)'}"
+                )
+            if "model" in combined_err and ("not found" in combined_err or "unavailable" in combined_err or "not supported" in combined_err):
+                raise LLMError(
+                    f"Your Claude Code subscription doesn't have access to model `{model}`.\n\n"
+                    "  Edit .bart_config.json and switch `primary_model` and/or `fast_model`\n"
+                    "  to a model your subscription supports (e.g. claude-sonnet-4-6).\n\n"
+                    f"  raw CLI stderr: {stderr[:200] or '(empty)'}"
+                )
+
+            details = [
+                f"  command:   {cmd_str}",
+                f"  exit code: {proc.returncode}",
+                f"  model:     {model or '(default)'}",
+            ]
+            if stderr:
+                details.append(f"  stderr:\n{_indent(stderr[:1500], '    ')}")
+            else:
+                details.append("  stderr:    (empty)")
+            if stdout:
+                details.append(f"  stdout:\n{_indent(stdout[:600], '    ')}")
+            details.extend([
+                "",
+                "  hints:",
+                "    • run `claude` once interactively to confirm you're logged in.",
+                "    • try `./run doctor` to test the CLI directly.",
+                f"    • if the model `{model}` is unavailable on your subscription, edit "
+                ".bart_config.json and switch primary_model / fast_model.",
+                "    • or switch to API-key auth: `./run setup` and pick option 2.",
+            ])
             raise LLMError(
-                f"`claude` CLI failed on '{label}' (exit {proc.returncode}). "
-                f"stderr: {proc.stderr.strip()[:400]}"
+                f"`claude` CLI failed on '{label}'.\n" + "\n".join(details)
             )
-        text = proc.stdout.strip()
-        if not text:
-            raise LLMError(f"`claude` CLI returned empty output on '{label}'.")
+
+        if not stdout:
+            raise LLMError(
+                f"`claude` CLI returned empty output on '{label}' "
+                f"(stderr: {stderr[:400] or 'empty'}). "
+                "Try running `./run doctor` to diagnose."
+            )
+        text = stdout
 
         # Approximate telemetry: chars-as-tokens proxy, no cost.
         approx_in = len(combined) // 4

@@ -45,20 +45,27 @@ This bootstraps the venv, runs the wizard once (any dummy values are fine), extr
 
 ## 60-second start
 
-Drop everything from your course folder into `materials/`, then run:
+**Step 1.** Put your course materials inside `bart/materials/`. The easiest way is to drag-and-drop them in Finder (macOS) or Explorer (Windows). Flat files or subfolders — both work.
+
+If you prefer the terminal, replace `<PATH-TO-YOUR-NOTES>` below with the real path on your machine (run `pwd` inside the folder if you're not sure):
 
 ```bash
 cd bart
 
-# copy a whole folder (recursive — works no matter what's in it)
-cp -R ~/your-class-notes/. materials/
+# copy every file from your real notes folder into materials/, recursively
+cp -R "<PATH-TO-YOUR-NOTES>"/. materials/
 
-# …or drag-and-drop files in Finder/Explorer. flat or in subfolders, both fine.
+# example for a folder on the Desktop:
+#   cp -R ~/Desktop/CHEM-201/. materials/
+```
 
+**Step 2.** Run bart:
+
+```bash
 ./run
 ```
 
-bart finds every supported file under `materials/` recursively. You don't need to filter by extension or worry about empty globs.
+bart finds every supported file under `materials/` recursively. No globs, no filtering — drop it all in, bart sorts it out.
 
 First run:
 

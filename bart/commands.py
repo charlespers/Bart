@@ -89,20 +89,47 @@ def doctor() -> int:
             else:
                 console.print(f"[green]✓[/green] `claude` CLI found at {cli}")
                 # Quick sanity ping — doesn't burn meaningful subscription quota.
+                # Strip API-key env vars so the CLI uses subscription auth.
+                import os as _os
+                scrubbed = {
+                    k: v for k, v in _os.environ.items()
+                    if k not in {
+                        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                        "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_PROJECT_ID",
+                        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+                    }
+                }
                 try:
                     import subprocess
                     proc = subprocess.run(
-                        [cli, "--print", "--model", cfg.fast_model, "--output-format", "text"],
+                        [cli, "--print", "--model", cfg.fast_model],
                         input="reply with the single word: pong",
                         capture_output=True, text=True, timeout=60,
+                        env=scrubbed,
                     )
                     if proc.returncode == 0 and proc.stdout.strip():
                         console.print(f"[green]✓[/green] subscription auth working "
                                       f"(model {cfg.fast_model})")
                     else:
-                        console.print(f"[red]✗[/red] `claude` CLI ping failed: "
-                                      f"{(proc.stderr or '').strip()[:200]}")
-                        ok = False
+                        # Try once more without --model in case that's the issue
+                        proc2 = subprocess.run(
+                            [cli, "--print"],
+                            input="reply with the single word: pong",
+                            capture_output=True, text=True, timeout=60,
+                            env=scrubbed,
+                        )
+                        if proc2.returncode == 0 and proc2.stdout.strip():
+                            console.print(
+                                f"[yellow]⚠[/yellow] `claude` CLI works but rejected model "
+                                f"`{cfg.fast_model}` (default model worked). Edit "
+                                ".bart_config.json to use a model your subscription supports."
+                            )
+                        else:
+                            err = (proc.stderr or proc2.stderr or '').strip()[:300]
+                            console.print(f"[red]✗[/red] `claude` CLI ping failed (exit "
+                                          f"{proc.returncode}). stderr: {err or '(empty)'}")
+                            console.print("[dim]  hint: run `claude` once interactively to log in.[/dim]")
+                            ok = False
                 except Exception as e:  # noqa: BLE001
                     console.print(f"[red]✗[/red] `claude` CLI invocation error: {e}")
                     ok = False
