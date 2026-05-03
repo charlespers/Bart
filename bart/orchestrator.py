@@ -63,7 +63,7 @@ from .branding import ACCENT, ACCENT_HI, ACCENT_LO, CREAM_LO, INK, RICH_DIM, RIC
 from .config import Config
 from .io.checkpoint import atomic_write_json, atomic_write_text, is_complete
 from .io.corpus import build_corpus, extract_all
-from .llm import LLMClient
+from .backends import AnthropicAPIBackend, ClaudeCodeBackend
 from .paths import RunPaths
 from .telemetry import Telemetry
 
@@ -119,12 +119,19 @@ class Orchestrator:
                                    f"[cyan]{self.paths.root}[/cyan]")
                 return 0
 
-            llm = LLMClient(
-                api_key=self.cfg.api_key,
-                telemetry=self.telemetry,
-                cache_dir=self.paths.cache_dir,
-                on_event=self._on_llm_event,
-            )
+            if self.cfg.auth_mode == "claude-code":
+                llm = ClaudeCodeBackend(
+                    telemetry=self.telemetry,
+                    cache_dir=self.paths.cache_dir,
+                    on_event=self._on_llm_event,
+                )
+            else:
+                llm = AnthropicAPIBackend(
+                    api_key=self.cfg.api_key,
+                    telemetry=self.telemetry,
+                    cache_dir=self.paths.cache_dir,
+                    on_event=self._on_llm_event,
+                )
 
             corpus_block = self._make_corpus_block(corpus.body)
             ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=corpus_block)
@@ -192,12 +199,17 @@ class Orchestrator:
 
     def _print_header(self):
         days = self.days_override or self.cfg.days_until
+        auth_label = (
+            "claude code (subscription)" if self.cfg.auth_mode == "claude-code"
+            else "anthropic api"
+        )
         self.console.print(
             Panel.fit(
                 f"[bold]bart[/bold][bold {ACCENT}].[/bold {ACCENT}]   run [{ACCENT_LO}]{self.paths.run_id}[/{ACCENT_LO}]\n"
                 f"subject: [white]{self.cfg.subject}[/white]\n"
                 f"exam:    [white]{self.cfg.exam_date}[/white]  ([{RICH_OK}]{days}[/{RICH_OK}] days away)\n"
                 f"level:   [white]{self.cfg.student_level}[/white]    style: [white]{self.cfg.style}[/white]\n"
+                f"auth:    [white]{auth_label}[/white]\n"
                 f"primary: [white]{self.cfg.primary_model}[/white]    fast:  [white]{self.cfg.fast_model}[/white]",
                 border_style=ACCENT,
             )
@@ -246,24 +258,32 @@ class Orchestrator:
 
     def _confirm_cost(self, corpus_chars: int, days: int) -> bool:
         """Show estimated cost + time and ask for confirmation. Auto-yes if non-interactive."""
-        estimate = self._estimate_cost(corpus_chars, days)
         total_artifacts = 4 + days
         eta_min = max(2, int(total_artifacts * 0.4 / max(self.max_parallel, 1) + 1.5))
+        critic_note = (
+            " [dim](critic+revise enabled)[/dim]" if self.use_critic else " [dim](critic disabled)[/dim]"
+        )
 
         from rich.prompt import Confirm
+        if self.cfg.auth_mode == "claude-code":
+            cost_line = f"  cost:       [{ACCENT_HI}]covered by your Claude subscription[/{ACCENT_HI}]"
+            footer = "[dim]subscription rate limits apply.[/dim]"
+        else:
+            estimate = self._estimate_cost(corpus_chars, days)
+            cost_line = f"  est. cost:  [{ACCENT_HI}]~${estimate:.2f}[/{ACCENT_HI}]{critic_note}"
+            footer = "[dim]final cost depends on response lengths and cache hits.[/dim]"
+
         self.console.print(
             Panel.fit(
                 f"[bold]ready to generate[/bold]\n\n"
                 f"  artifacts:  [{ACCENT_HI}]{total_artifacts}[/{ACCENT_HI}]  "
                 f"([{ACCENT_HI}]4[/{ACCENT_HI}] top-level + [{ACCENT_HI}]{days}[/{ACCENT_HI}] daily lessons)\n"
                 f"  est. time:  [{ACCENT_HI}]~{eta_min} min[/{ACCENT_HI}]\n"
-                f"  est. cost:  [{ACCENT_HI}]~${estimate:.2f}[/{ACCENT_HI}]"
-                f"{' [dim](critic+revise enabled)[/dim]' if self.use_critic else ' [dim](critic disabled)[/dim]'}\n\n"
-                f"[dim]final cost depends on response lengths and cache hits.[/dim]",
+                f"{cost_line}\n\n"
+                f"{footer}",
                 border_style=ACCENT,
             )
         )
-        # Skip confirmation if stdin isn't a tty (CI, piped, etc.)
         import sys as _sys
         if not _sys.stdin.isatty():
             return True
@@ -445,16 +465,21 @@ class Orchestrator:
         import sys as _sys
 
         s = self.telemetry.summary()
-        table = Table(title="🎉 Done!", border_style="green")
-        table.add_column("Metric", style="cyan")
+        title = "Done." if self.cfg.auth_mode == "claude-code" else "Done."
+        table = Table(title=title, border_style=ACCENT_LO)
+        table.add_column("Metric", style=ACCENT_HI)
         table.add_column("Value", style="white", justify="right")
-        table.add_row("API calls", str(s["calls"]))
-        table.add_row("Input tokens", f"{s['input_tokens']:,}")
-        table.add_row("Output tokens", f"{s['output_tokens']:,}")
-        table.add_row("Cache reads (cheap!)", f"{s['cache_read_input_tokens']:,}")
-        table.add_row("Cache writes", f"{s['cache_creation_input_tokens']:,}")
+        table.add_row("Calls", str(s["calls"]))
+        table.add_row("Input tokens (approx)", f"{s['input_tokens']:,}")
+        table.add_row("Output tokens (approx)", f"{s['output_tokens']:,}")
+        if self.cfg.auth_mode != "claude-code":
+            table.add_row("Cache reads", f"{s['cache_read_input_tokens']:,}")
+            table.add_row("Cache writes", f"{s['cache_creation_input_tokens']:,}")
         table.add_row("Wall time", f"{s['duration_s']:.1f}s")
-        table.add_row("[bold]Estimated cost[/bold]", f"[bold]${s['cost_usd']:.2f}[/bold]")
+        if self.cfg.auth_mode == "claude-code":
+            table.add_row("[bold]Cost[/bold]", "[bold]covered by subscription[/bold]")
+        else:
+            table.add_row("[bold]Estimated cost[/bold]", f"[bold]${s['cost_usd']:.2f}[/bold]")
         self.console.print()
         self.console.print(table)
 

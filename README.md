@@ -184,9 +184,23 @@ The disk cache means re-runs over the same materials are basically free. bart pr
 
 ---
 
-## API key
+## Auth: API key *or* Claude subscription
 
-Get one at [console.anthropic.com](https://console.anthropic.com). Free credits on signup. bart asks once and remembers it (saved to `.bart_config.json`, mode `0600`, stays on your machine).
+bart supports two ways to talk to Claude:
+
+**1. Claude Code subscription** *(recommended if you have Pro/Max/Team)*. If the `claude` CLI from [claude.ai/code](https://claude.ai/code) is on your PATH and you've logged in once, bart can route every call through it. No API key needed; usage is covered by your existing subscription. The setup wizard auto-detects this and offers it as the first option.
+
+**2. Anthropic API key**. Get one at [console.anthropic.com](https://console.anthropic.com) (free credits on signup). Pay-per-token, but enables prompt caching and exact cost tracking. The wizard saves the key to `.bart_config.json` (mode `0600`, stays on your machine).
+
+| | subscription mode | API mode |
+|---|---|---|
+| Per-run cost | $0 (covered by subscription) | $5–$15 typical |
+| Setup | already done if `claude` is logged in | paste an API key once |
+| Prompt caching | no (subscription tier handles speed) | yes |
+| Cost telemetry | not tracked | exact USD per call |
+| Rate limits | subscription tier | API tier |
+
+You can switch between modes anytime with `./run setup`.
 
 ---
 

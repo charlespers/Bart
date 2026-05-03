@@ -77,20 +77,48 @@ def doctor() -> int:
     else:
         console.print(f"[green]✓[/green] config: {cfg.subject} / exam {cfg.exam_date} ({cfg.days_until} days)")
 
-    # API connectivity
+    # Auth-mode-specific connectivity
     if cfg:
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=cfg.api_key)
-            r = client.messages.create(
-                model=cfg.fast_model,
-                max_tokens=8,
-                messages=[{"role": "user", "content": "ping"}],
-            )
-            console.print(f"[green]✓[/green] API reachable ({cfg.fast_model})")
-        except Exception as e:  # noqa: BLE001
-            console.print(f"[red]✗[/red] API check failed: {e}")
-            ok = False
+        if cfg.auth_mode == "claude-code":
+            import shutil as _sh
+            cli = _sh.which("claude")
+            if not cli:
+                console.print("[red]✗[/red] auth_mode=claude-code but `claude` CLI not on PATH. "
+                              "Install Claude Code from https://claude.ai/code or rerun setup.")
+                ok = False
+            else:
+                console.print(f"[green]✓[/green] `claude` CLI found at {cli}")
+                # Quick sanity ping — doesn't burn meaningful subscription quota.
+                try:
+                    import subprocess
+                    proc = subprocess.run(
+                        [cli, "--print", "--model", cfg.fast_model, "--output-format", "text"],
+                        input="reply with the single word: pong",
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if proc.returncode == 0 and proc.stdout.strip():
+                        console.print(f"[green]✓[/green] subscription auth working "
+                                      f"(model {cfg.fast_model})")
+                    else:
+                        console.print(f"[red]✗[/red] `claude` CLI ping failed: "
+                                      f"{(proc.stderr or '').strip()[:200]}")
+                        ok = False
+                except Exception as e:  # noqa: BLE001
+                    console.print(f"[red]✗[/red] `claude` CLI invocation error: {e}")
+                    ok = False
+        else:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=cfg.api_key)
+                client.messages.create(
+                    model=cfg.fast_model,
+                    max_tokens=8,
+                    messages=[{"role": "user", "content": "ping"}],
+                )
+                console.print(f"[green]✓[/green] API reachable ({cfg.fast_model})")
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[red]✗[/red] API check failed: {e}")
+                ok = False
 
     # Materials directory
     from .paths import MATERIALS

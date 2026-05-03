@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -20,7 +21,8 @@ CONFIG_PATH = ROOT / ".bart_config.json"
 
 
 class Config(BaseModel):
-    api_key: str = Field(min_length=10, description="Anthropic API key (sk-ant-…)")
+    auth_mode: str = "api"  # "api" | "claude-code"
+    api_key: str = ""        # required when auth_mode == "api"
     exam_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     subject: str = Field(min_length=1, max_length=200)
     guidance: str = ""
@@ -36,6 +38,13 @@ class Config(BaseModel):
         d = datetime.strptime(v, "%Y-%m-%d").date()
         if d < date.today():
             raise ValueError("exam_date must be today or in the future")
+        return v
+
+    @field_validator("auth_mode")
+    @classmethod
+    def valid_auth_mode(cls, v: str) -> str:
+        if v not in ("api", "claude-code"):
+            raise ValueError("auth_mode must be 'api' or 'claude-code'")
         return v
 
     @property
@@ -89,19 +98,53 @@ def run_setup_wizard(force: bool = False) -> Config:
     existing = load_config() if not force else None
     defaults = existing.model_dump() if existing else {}
 
-    # API key
-    api_key = defaults.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
-    if api_key and not force:
+    # ─── 1/6  Auth mode + (optional) API key ───
+    from .backends import ClaudeCodeBackend
+    claude_cli_present = ClaudeCodeBackend.is_available()
+    saved_mode = defaults.get("auth_mode", "api")
+    saved_key = defaults.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
+
+    auth_mode = saved_mode
+    api_key = saved_key
+
+    if not force and saved_mode == "claude-code" and claude_cli_present:
+        if Confirm.ask("[1/6] Use saved auth mode (Claude Code subscription)?", default=True):
+            console.print(f"[dim]  → using `claude` CLI at[/dim] [white]{shutil.which('claude')}[/white]")
+        else:
+            auth_mode = ""
+    elif not force and saved_mode == "api" and saved_key:
         if Confirm.ask("[1/6] Use saved Anthropic API key?", default=True):
             pass
         else:
+            auth_mode = ""
             api_key = ""
-    if not api_key:
+    else:
+        auth_mode = ""
+
+    if not auth_mode:
+        # Offer the choice. Only show "claude-code" if the CLI is installed.
+        if claude_cli_present:
+            console.print(
+                "\n[bold][1/6] How do you want bart to talk to Claude?[/bold]\n"
+                f"  [{ACCENT}]1[/{ACCENT}]  Claude Code subscription [dim](use your existing claude.ai login — recommended if you have Pro/Max/Team)[/dim]\n"
+                f"  [{ACCENT}]2[/{ACCENT}]  Anthropic API key      [dim](pay-per-token, supports prompt caching + cost tracking)[/dim]"
+            )
+            choice = Prompt.ask("  pick", choices=["1", "2"], default="1")
+            auth_mode = "claude-code" if choice == "1" else "api"
+        else:
+            console.print(
+                "\n[dim]bart found no `claude` CLI on PATH, so subscription auth isn't available.[/dim]\n"
+                "[dim]If you have Pro/Max/Team, install Claude Code from[/dim] [cyan]https://claude.ai/code[/cyan] [dim]and rerun setup.[/dim]\n"
+                "[dim]Otherwise, paste an Anthropic API key below.[/dim]"
+            )
+            auth_mode = "api"
+
+    if auth_mode == "api" and not api_key:
         console.print(
             "[dim]Need a key? Grab one at [cyan]https://console.anthropic.com[/cyan] (free credits on signup).[/dim]"
         )
         api_key = Prompt.ask(
-            "[bold][1/6] Anthropic API key[/bold] [dim](sk-ant-…)[/dim]",
+            "[bold]Anthropic API key[/bold] [dim](sk-ant-…)[/dim]",
             password=True,
         )
         if not api_key.strip():
@@ -109,6 +152,8 @@ def run_setup_wizard(force: bool = False) -> Config:
             sys.exit(1)
         if not api_key.startswith("sk-"):
             console.print("[yellow]⚠ That doesn't look like an Anthropic key (expected sk-…). Continuing anyway.[/yellow]")
+    elif auth_mode == "claude-code":
+        api_key = ""  # not needed; clear any stale value
 
     # Exam date
     while True:
@@ -182,6 +227,7 @@ def run_setup_wizard(force: bool = False) -> Config:
     guidance = "\n".join(lines).strip() or "(no extra guidance)"
 
     cfg = Config(
+        auth_mode=auth_mode,
         api_key=api_key,
         exam_date=exam_date,
         subject=subject,
