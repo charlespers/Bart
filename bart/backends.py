@@ -2,16 +2,22 @@
 
 Two paths to run bart:
 
-  1. AnthropicAPIBackend  — API key from console.anthropic.com. Pay-per-token,
+  1. AnthropicAPIBackend  - API key from console.anthropic.com. Pay-per-token,
      supports prompt caching, exposes detailed usage telemetry.
 
-  2. ClaudeCodeBackend    — shells out to the `claude` CLI for users who have
+  2. ClaudeCodeBackend    - shells out to the `claude` CLI for users who have
      a claude.ai Pro/Max/Team subscription but no API key. No per-token cost
      (covered by the subscription), no prompt caching at the API layer (we
      fall back to disk cache), no usage telemetry.
 
 Both classes expose the same `complete(...)` method so the orchestrator does
 not care which one is in use.
+
+Hanging vs slow: the Claude Code CLI with `--print` is non-streaming. We get
+NO output until the model finishes generating. Long lessons can take 4-6 min
+on Opus. To distinguish 'slow' from 'hung', we run a heartbeat thread that
+fires `heartbeat` events every 30s while the subprocess is alive. The
+orchestrator surfaces these to the user.
 """
 from __future__ import annotations
 
@@ -20,6 +26,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -259,6 +266,24 @@ class ClaudeCodeBackend:
 
         t0 = time.time()
         self._on_event("call_start", {"label": label, "model": model, "backend": "claude-code"})
+
+        # Heartbeat thread: fires every 30s while the subprocess is alive so the
+        # orchestrator can show the user that the call is still progressing.
+        # CLAUDE CLI doesn't stream; without this, the user sees nothing for 4-6 min
+        # and assumes a hang.
+        done = threading.Event()
+
+        def _heartbeat():
+            elapsed = 0
+            while not done.wait(30):
+                elapsed += 30
+                self._on_event("heartbeat", {"label": label, "elapsed_s": elapsed})
+                # After 90s, suggest --fast as a workaround
+                if elapsed == 90:
+                    self._on_event("slow_warning", {"label": label, "elapsed_s": elapsed})
+
+        hb = threading.Thread(target=_heartbeat, daemon=True)
+        hb.start()
         try:
             proc = subprocess.run(
                 cmd,
@@ -270,7 +295,10 @@ class ClaudeCodeBackend:
                 env=scrubbed_env,
             )
         except subprocess.TimeoutExpired as e:
+            done.set()
             raise LLMError(f"`claude` CLI timed out after {self._timeout_s}s on '{label}'.") from e
+        finally:
+            done.set()
 
         dt = time.time() - t0
         stdout = (proc.stdout or "").strip()

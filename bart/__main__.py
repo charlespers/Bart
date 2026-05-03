@@ -35,10 +35,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the number of daily lessons to generate (defaults to days-until-exam).",
     )
+    run.add_argument(
+        "--fast",
+        action="store_true",
+        help="Speed preset: Sonnet primary model, no critic loop, --max-parallel 8. ~5x faster, slightly lower quality.",
+    )
+    run.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Override primary model for this run (e.g. claude-sonnet-4-6, claude-haiku-4-5-20251001).",
+    )
 
     sub.add_parser("setup", help="Run the configuration wizard only.")
     sub.add_parser("list", help="List previous runs in output/.")
     sub.add_parser("doctor", help="Verify environment, dependencies, and API key.")
+
+    rndr = sub.add_parser("render", help="Re-render an existing run's HTML packet (no API calls).")
+    rndr.add_argument("run_id", nargs="?", help="Run id (folder name in output/). Defaults to most recent.")
 
     return p
 
@@ -49,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     # If the user typed bare `./run` (or any flags but no subcommand), default
     # the subcommand to `run`. This makes the run-subcommand's flags available
     # on the namespace even when the user didn't type the word "run".
-    known_cmds = {"run", "setup", "list", "doctor"}
+    known_cmds = {"run", "setup", "list", "doctor", "render"}
     if not argv or argv[0] not in known_cmds:
         argv = ["run", *argv]
     args = build_parser().parse_args(argv)
@@ -71,6 +85,10 @@ def main(argv: list[str] | None = None) -> int:
         from .commands import doctor
         return doctor()
 
+    if cmd == "render":
+        from .commands import render_packet
+        return render_packet(getattr(args, "run_id", None))
+
     if cmd == "run":
         reconfigure = getattr(args, "reconfigure", False)
         resume = getattr(args, "resume", None)
@@ -78,6 +96,16 @@ def main(argv: list[str] | None = None) -> int:
         no_critic = getattr(args, "no_critic", False)
         max_parallel = getattr(args, "max_parallel", 4)
         days_override = getattr(args, "days", None)
+        fast_mode = getattr(args, "fast", False)
+        model_override = getattr(args, "model", None)
+
+        # --fast preset: sonnet + no critic + parallel 8
+        if fast_mode:
+            no_critic = True
+            if max_parallel == 4:  # only bump if user didn't explicitly set it
+                max_parallel = 8
+            if not model_override:
+                model_override = "claude-sonnet-4-6"
 
         cfg = load_config()
         if cfg is None or reconfigure:
@@ -95,6 +123,10 @@ def main(argv: list[str] | None = None) -> int:
                     "  [dim](you can finish the setup wizard now and add materials after.)[/dim]\n"
                 )
             cfg = run_setup_wizard(force=reconfigure)
+        # Apply per-run model override without persisting it.
+        if model_override:
+            cfg = cfg.model_copy(update={"primary_model": model_override})
+
         paths = RunPaths.create(resume=resume)
         orch = Orchestrator(
             cfg=cfg,

@@ -1,8 +1,9 @@
-"""Auxiliary CLI commands: list, doctor."""
+"""Auxiliary CLI commands: list, doctor, render."""
 from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -156,3 +157,54 @@ def doctor() -> int:
         console.print("[yellow]⚠[/yellow] materials/ not yet created")
 
     return 0 if ok else 1
+
+
+def render_packet(run_id: str | None) -> int:
+    """Re-render the HTML packet for an existing run, without calling the API."""
+    console = Console()
+    runs = sorted([d for d in OUTPUT.iterdir() if d.is_dir() and d.name.startswith("run_")]) \
+        if OUTPUT.exists() else []
+    if not runs:
+        console.print("[red]✗[/red] no runs in output/. nothing to render.")
+        return 1
+    if run_id:
+        target = OUTPUT / run_id
+        if not target.exists():
+            console.print(f"[red]✗[/red] run '{run_id}' not found.")
+            console.print("[dim]available:[/dim]")
+            for r in runs:
+                console.print(f"  - {r.name}")
+            return 1
+    else:
+        target = runs[-1]
+        console.print(f"[dim]rendering most recent run:[/dim] [cyan]{target.name}[/cyan]")
+
+    manifest_path = target / "manifest.json"
+    if not manifest_path.exists():
+        console.print(f"[red]✗[/red] manifest.json missing in {target}. cannot render.")
+        return 1
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as e:
+        console.print(f"[red]✗[/red] manifest.json invalid: {e}")
+        return 1
+
+    from .render.packet import build_packet
+    console.print(f"[bold #c96442]▸ Rendering[/bold #c96442]")
+    warnings = build_packet(target, manifest)
+
+    problems = [w for w in warnings if w.severity != "info"]
+    infos = [w for w in warnings if w.severity == "info"]
+    if problems:
+        counts: dict[str, int] = {}
+        for w in problems:
+            counts[w.kind] = counts.get(w.kind, 0) + 1
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        console.print(f"  [yellow]⚠[/yellow] {len(problems)} formatting issue(s): {summary}")
+        console.print(f"  [dim]see {target}/render_warnings.json[/dim]")
+    else:
+        extra = f" [dim]({len(infos)} normalizations applied)[/dim]" if infos else ""
+        console.print(f"  [green]✓[/green] HTML packet built cleanly{extra}")
+    console.print(f"  [dim]open[/dim] [white]{target}/index.html[/white]")
+    return 0

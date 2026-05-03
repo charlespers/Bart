@@ -150,15 +150,17 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
 ## Commands
 
 ```bash
-./run                       # generate a packet
-./run setup                 # change API key, exam date, etc.
-./run list                  # show every packet you've ever generated, with cost
-./run doctor                # health check
-./run run --resume <id>     # resume a crashed run
-./run run --dry-run         # extract + plan, no API calls
-./run run --no-critic       # skip grading (faster, cheaper, slightly worse)
-./run run --max-parallel 8  # generate more lessons at once
-./run run --days 14         # override how many daily lessons to write
+./run                              # generate a packet
+./run setup                        # change API key, exam date, etc.
+./run list                         # show every packet you've ever generated
+./run doctor                       # health check
+./run run --resume <id>            # resume a crashed run
+./run run --dry-run                # extract + plan, no API calls
+./run run --fast                   # speed preset: sonnet + no critic + parallel 8 (~5x faster)
+./run run --no-critic              # skip the grading loop (faster)
+./run run --max-parallel 8         # generate more lessons at once
+./run run --days 14                # override how many daily lessons to write
+./run run --model claude-sonnet-4-6 # one-off model override
 ```
 
 ---
@@ -179,13 +181,18 @@ Unsupported file types are skipped with a clear message.
 
 ## How long does it take?
 
-| Stage         | What's happening                         | Time      |
-| ------------- | ---------------------------------------- | --------- |
-| First `./run` | Build venv, install deps                 | ~60 sec   |
-| The wizard    | Six questions                            | ~30 sec   |
-| The pipeline  | Plan → research → write → grade → revise | ~5–15 min |
+Total time scales with: number of days until exam × model speed × critic on/off × auth mode.
 
-Subsequent runs skip the venv build. Pipeline time scales with the number of days until the exam.
+| Configuration                                   | 7-day plan | 30-day plan |
+| ----------------------------------------------- | ---------- | ----------- |
+| `--fast` (Sonnet, no critic, parallel 8)        | ~5 min     | ~15 min     |
+| API mode, Opus, no critic                       | ~10 min    | ~30 min     |
+| API mode, Opus, with critic+revise              | ~15 min    | ~50 min     |
+| Subscription mode, Opus, with critic+revise     | ~25 min    | ~90 min     |
+
+Subscription mode is slower than API mode because there's no prompt caching — the corpus is re-processed on every call. If runtime matters, use `--fast` or set `primary_model` to `claude-sonnet-4-6` in your config. Quality is still excellent and the runtime drops dramatically.
+
+Subsequent runs skip the venv build, and the disk cache makes repeat runs over the same materials nearly instant.
 
 ---
 

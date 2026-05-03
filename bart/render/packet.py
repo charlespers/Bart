@@ -1,0 +1,404 @@
+"""Packet builder — orchestrates the markdown -> HTML packet build.
+
+Public API: `build_packet(run_dir, manifest)`.
+
+Pipeline (per artifact):
+    raw .md -> sanitize -> markdown render -> page assemble -> validate -> write .html
+
+Top-level outputs:
+    index.html              landing page with day grid + artifact cards
+    00_master_plan.html     etc.
+    lessons/day_NN.html     daily lessons
+    markdown/               originals preserved for portability/Obsidian
+    packet.css / packet.js  / lib/mathjax/ / assets/
+    search-index.json       used by the search modal
+    render_warnings.json    accumulated warnings from sanitize+render+validate
+
+The build is deterministic: same inputs -> same outputs.
+"""
+from __future__ import annotations
+
+import json
+import re
+import shutil
+from dataclasses import asdict, dataclass
+from html import escape as html_escape
+from pathlib import Path
+from typing import List
+
+from .assets import install_all
+from .markdown import RenderWarning, render
+from .page import assemble_page, assemble_pager
+from .sanitize import SanitizeWarning, normalize_md
+
+
+@dataclass
+class Warning:
+    file: str
+    kind: str
+    detail: str
+    severity: str = "warn"  # "info" | "warn" | "error"
+
+
+# Kinds that are informational only (successful normalization, not a problem).
+_INFO_KINDS = {
+    "math_delim_converted",
+    "stray_preamble",
+    "stray_coda",
+    "stripped_emoji",
+}
+
+
+# ─────────────────────────────────────────────────────────────────
+# Artifact discovery — what's in the run dir?
+# ─────────────────────────────────────────────────────────────────
+
+# Top-level artifacts in the order they appear on the index page.
+_TOP_ARTIFACTS = [
+    {"file": "00_MASTER_PLAN.md",       "html": "00_master_plan.html",
+     "label": "Master Plan",            "blurb": "Topic allocation and pacing strategy."},
+    {"file": "01_SCHEMATICS.md",        "html": "01_schematics.html",
+     "label": "Schematics",             "blurb": "Diagrams, formula tables, common traps."},
+    {"file": "02_WHIMSICAL_NOTES.md",   "html": "02_whimsical_notes.html",
+     "label": "Whimsical Notes",        "blurb": "Mnemonics and analogies for sticky recall."},
+    {"file": "03_SHORT_STUDY_GUIDE.md", "html": "03_short_guide.html",
+     "label": "Short Study Guide",      "blurb": "The 60-minute panoramic version."},
+    {"file": "04_PRACTICE_EXAM.md",     "html": "04_practice_exam.html",
+     "label": "Practice Exam",          "blurb": "Full mock exam with answer key."},
+]
+
+
+_DAY_FILE_RE = re.compile(r"^Day_(\d+)_(\d{4}-\d{2}-\d{2})\.md$")
+
+
+def _discover_days(run_dir: Path) -> list[dict]:
+    daily_dir = run_dir / "daily_lessons"
+    if not daily_dir.exists():
+        return []
+    out = []
+    for p in sorted(daily_dir.glob("Day_*.md")):
+        m = _DAY_FILE_RE.match(p.name)
+        if not m:
+            continue
+        out.append({
+            "src": p,
+            "day_num": int(m.group(1)),
+            "date": m.group(2),
+            "html_name": f"day_{int(m.group(1)):02d}.html",
+        })
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────
+# Validation
+# ─────────────────────────────────────────────────────────────────
+
+def _validate_html(html: str, file_label: str) -> list[Warning]:
+    """Runs lightweight invariants on the produced HTML."""
+    warnings: list[Warning] = []
+    # 1. Parses as HTML (BeautifulSoup is forgiving but flags unrecoverable structures)
+    try:
+        from bs4 import BeautifulSoup
+        BeautifulSoup(html, "html.parser")
+    except Exception as e:  # noqa: BLE001
+        warnings.append(Warning(file_label, "html_parse", f"{type(e).__name__}: {e}"))
+
+    # 2. Internal anchor resolution
+    ids = set(re.findall(r'\sid="([^"]+)"', html))
+    for href in re.findall(r'href="#([^"]+)"', html):
+        if href not in ids:
+            warnings.append(Warning(file_label, "broken_anchor", f"#{href} has no target"))
+
+    # 3. Stray $ outside <code> (would have been MathJax-eaten if MathJax saw it).
+    # Strip <code> and <pre> regions before scanning.
+    stripped = re.sub(r'<pre[\s\S]*?</pre>', '', html)
+    stripped = re.sub(r'<code[\s\S]*?</code>', '', stripped)
+    if "$" in stripped:
+        # Count to check if it's odd (asymmetric — likely typo) vs even (probably literal cash).
+        n = stripped.count("$")
+        if n > 4:
+            warnings.append(Warning(file_label, "stray_dollar", f"{n} literal '$' chars in prose (math may not have converted)"))
+
+    # 4. Markdown link syntax leaking through.
+    if re.search(r'\]\([^)]+\)', stripped):
+        warnings.append(Warning(file_label, "markdown_leak", "[…](…) markdown link syntax appears unconverted"))
+
+    return warnings
+
+
+# ─────────────────────────────────────────────────────────────────
+# Helpers — landing page composition
+# ─────────────────────────────────────────────────────────────────
+
+def _hero_block(subject: str, generated_at: str, exam_date: str) -> str:
+    return (
+        '<div class="hero">'
+        '<img class="loaf" src="assets/bart-loaf.svg" alt="bart" />'
+        f'<h1>{html_escape(subject)}<span class="dot">.</span></h1>'
+        f'<div class="meta">generated {html_escape(generated_at)} · exam {html_escape(exam_date)}</div>'
+        '<p class="tagline">A study packet built from your own course materials. '
+        'Open the master plan first; come back here to navigate between days.</p>'
+        '</div>'
+    )
+
+
+def _artifact_cards(present: list[dict]) -> str:
+    if not present:
+        return ""
+    cards = ['<h2>Top-level artifacts</h2><div class="artifact-grid">']
+    for a in present:
+        cards.append(
+            f'<a class="artifact-card" href="{html_escape(a["html"])}">'
+            f'<h3>{html_escape(a["label"])}</h3>'
+            f'<p>{html_escape(a["blurb"])}</p></a>'
+        )
+    cards.append("</div>")
+    return "".join(cards)
+
+
+def _day_grid(days: list[dict], topics_by_day: dict[int, str]) -> str:
+    if not days:
+        return ""
+    parts = ['<h2>Daily lessons</h2><div class="day-grid">']
+    for d in days:
+        topic = topics_by_day.get(d["day_num"], "")
+        parts.append(
+            f'<a class="day-card" href="lessons/{html_escape(d["html_name"])}">'
+            f'<div class="day-num">Day {d["day_num"]:02d}</div>'
+            f'<div class="day-topic">{html_escape(topic) or "—"}</div>'
+            f'<div class="day-date">{html_escape(d["date"])}</div>'
+            '</a>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Public entry point
+# ─────────────────────────────────────────────────────────────────
+
+def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
+    """Render every markdown artifact in `run_dir` into a polished HTML packet.
+
+    Idempotent: safe to re-run. Returns the accumulated list of warnings.
+    """
+    warnings: List[Warning] = []
+
+    cfg = manifest.get("config", {}) or {}
+    subject = cfg.get("subject", "Study Packet")
+    exam_date = cfg.get("exam_date", "")
+    generated_at = manifest.get("generated_at", "")
+
+    # ── Move .md originals into markdown/ subdirectory (preserve, don't delete)
+    md_dir = run_dir / "markdown"
+    md_dir.mkdir(exist_ok=True)
+    for art in _TOP_ARTIFACTS:
+        src = run_dir / art["file"]
+        if src.exists():
+            shutil.copy2(src, md_dir / art["file"])
+    daily_md_dir = md_dir / "daily_lessons"
+    daily_md_dir.mkdir(exist_ok=True)
+    for p in (run_dir / "daily_lessons").glob("Day_*.md") if (run_dir / "daily_lessons").exists() else []:
+        shutil.copy2(p, daily_md_dir / p.name)
+
+    # ── Install bundled assets
+    install_all(run_dir)
+
+    # ── Discover days + extract topic labels from manifest
+    days = _discover_days(run_dir)
+    topics_by_day = {d.get("day"): d.get("topic", "") for d in manifest.get("daily_lessons", [])}
+
+    # ── Build the cross-page nav (sidebar "packet" section)
+    packet_nav: list[dict] = []
+    present_top: list[dict] = []
+    for art in _TOP_ARTIFACTS:
+        if (run_dir / art["file"]).exists():
+            present_top.append(art)
+            packet_nav.append({
+                "kind": "top",
+                "label": art["label"],
+                "url": "{rel}/" + art["html"],
+            })
+    for d in days:
+        topic = topics_by_day.get(d["day_num"], f"Day {d['day_num']}")
+        label = f"Day {d['day_num']:02d}" + (f" · {topic}" if topic else "")
+        packet_nav.append({
+            "kind": "day",
+            "label": label,
+            "url": "{rel}/lessons/" + d["html_name"],
+            "day_num": d["day_num"],
+        })
+
+    # ── Render top-level artifacts
+    search_index: list[dict] = []
+
+    for art in present_top:
+        src = run_dir / art["file"]
+        out_html = run_dir / art["html"]
+        warnings.extend(_render_one(
+            src=src,
+            out_html=out_html,
+            rel_root=".",
+            title=f"{art['label']} · {subject}",
+            subject=subject,
+            packet_nav=_resolve_nav(packet_nav, "."),
+            current_url=art["html"],
+            search_index=search_index,
+            search_source=art["label"],
+            search_url=art["html"],
+        ))
+
+    # ── Render daily lessons
+    lessons_dir = run_dir / "lessons"
+    lessons_dir.mkdir(exist_ok=True)
+
+    for i, d in enumerate(days):
+        prev = days[i - 1] if i > 0 else None
+        nxt = days[i + 1] if i < len(days) - 1 else None
+        prev_url = f"{prev['html_name']}" if prev else None
+        prev_label = (
+            f"Day {prev['day_num']:02d} · {topics_by_day.get(prev['day_num'], '')}".strip(" ·")
+            if prev else None
+        )
+        next_url = f"{nxt['html_name']}" if nxt else None
+        next_label = (
+            f"Day {nxt['day_num']:02d} · {topics_by_day.get(nxt['day_num'], '')}".strip(" ·")
+            if nxt else None
+        )
+        pager = assemble_pager(prev_url, prev_label, next_url, next_label)
+
+        topic = topics_by_day.get(d["day_num"], "")
+        title_short = f"Day {d['day_num']:02d}" + (f" · {topic}" if topic else "")
+
+        warnings.extend(_render_one(
+            src=d["src"],
+            out_html=lessons_dir / d["html_name"],
+            rel_root="..",
+            title=f"{title_short} · {subject}",
+            subject=subject,
+            packet_nav=_resolve_nav(packet_nav, ".."),
+            current_url=f"lessons/{d['html_name']}",
+            search_index=search_index,
+            search_source=title_short,
+            search_url=f"lessons/{d['html_name']}",
+            extra_crumb=f'<span class="sep">/</span><span>Day {d["day_num"]:02d}</span>',
+            pager_html=pager,
+        ))
+
+    # ── Build index.html
+    body_parts = [_hero_block(subject, generated_at, exam_date)]
+    body_parts.append(_artifact_cards(present_top))
+    body_parts.append(_day_grid(days, topics_by_day))
+    body_parts.append(
+        '<aside class="render-warning">'
+        f'Tip: press <span class="kbd">⌘K</span> (or <span class="kbd">Ctrl-K</span>) to search the packet.'
+        '</aside>'
+    )
+    body = "\n".join(body_parts)
+    index_html = assemble_page(
+        body=body,
+        title=f"{subject} · bart packet",
+        subject=subject,
+        rel_root=".",
+        page_toc=[],
+        packet_nav=_resolve_nav(packet_nav, "."),
+        current_url="index.html",
+    )
+    (run_dir / "index.html").write_text(index_html, encoding="utf-8")
+    warnings.extend([Warning("index.html", w.kind, w.detail) for w in _validate_html(index_html, "index.html")])
+
+    # ── Search index
+    (run_dir / "search-index.json").write_text(
+        json.dumps(search_index, indent=2), encoding="utf-8"
+    )
+
+    # ── Warning manifest
+    if warnings:
+        (run_dir / "render_warnings.json").write_text(
+            json.dumps([asdict(w) for w in warnings], indent=2), encoding="utf-8"
+        )
+    else:
+        # Remove any stale warnings file from a previous run
+        wf = run_dir / "render_warnings.json"
+        if wf.exists():
+            wf.unlink()
+
+    return warnings
+
+
+# ─────────────────────────────────────────────────────────────────
+# Per-file render
+# ─────────────────────────────────────────────────────────────────
+
+def _resolve_nav(packet_nav: list[dict], rel_root: str) -> list[dict]:
+    """Replace the {rel} placeholder in nav URLs with the actual rel path."""
+    return [
+        {**n, "url": n["url"].format(rel=rel_root)}
+        for n in packet_nav
+    ]
+
+
+def _render_one(
+    *,
+    src: Path,
+    out_html: Path,
+    rel_root: str,
+    title: str,
+    subject: str,
+    packet_nav: list[dict],
+    current_url: str,
+    search_index: list[dict],
+    search_source: str,
+    search_url: str,
+    extra_crumb: str = "",
+    pager_html: str = "",
+) -> list[Warning]:
+    warnings: list[Warning] = []
+    raw = src.read_text(encoding="utf-8")
+
+    sanitized, sanitize_warns = normalize_md(raw)
+    for w in sanitize_warns:
+        sev = "info" if w.kind in _INFO_KINDS else "warn"
+        warnings.append(Warning(src.name, w.kind, w.detail, sev))
+
+    body_html, render_warns, meta = render(sanitized)
+    for w in render_warns:
+        sev = "info" if w.kind in _INFO_KINDS else "warn"
+        warnings.append(Warning(src.name, w.kind, w.detail, sev))
+
+    # Add to search index — one entry per heading
+    for h in meta.get("headings", []):
+        if h["level"] > 4:
+            continue
+        search_index.append({
+            "title": h["title"],
+            "anchor": h["slug"],
+            "url": search_url,
+            "source": search_source,
+            "level": h["level"],
+        })
+    # Plus a top-level entry for the doc itself
+    search_index.append({
+        "title": search_source,
+        "anchor": "",
+        "url": search_url,
+        "source": "page",
+        "level": 1,
+    })
+
+    full_html = assemble_page(
+        body=body_html,
+        title=title,
+        subject=subject,
+        rel_root=rel_root,
+        page_toc=meta.get("toc", []),
+        packet_nav=packet_nav,
+        current_url=current_url,
+        extra_crumb=extra_crumb,
+        pager_html=pager_html,
+    )
+
+    warnings.extend([Warning(src.name, w.kind, w.detail) for w in _validate_html(full_html, src.name)])
+
+    out_html.write_text(full_html, encoding="utf-8")
+    return warnings

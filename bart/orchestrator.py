@@ -162,11 +162,13 @@ class Orchestrator:
 
             # ----- 2. Top-level artifacts in parallel
             self.console.print("\n[bold #c96442]▸ Generating top-level artifacts[/bold #c96442]")
+            # max_tokens kept tight — every extra 1K tokens of generation is
+            # ~20s on Opus subscription. These ceilings are still generous.
             artifacts = [
-                ("schematics", "01_SCHEMATICS.md", _schematics_brief, 12000),
-                ("whimsical_notes", "02_WHIMSICAL_NOTES.md", _whimsy_brief, 12000),
-                ("short_study_guide", "03_SHORT_STUDY_GUIDE.md", _short_guide_brief, 8000),
-                ("practice_exam", "04_PRACTICE_EXAM.md", _practice_exam_brief, 16000),
+                ("schematics", "01_SCHEMATICS.md", _schematics_brief, 8000),
+                ("whimsical_notes", "02_WHIMSICAL_NOTES.md", _whimsy_brief, 8000),
+                ("short_study_guide", "03_SHORT_STUDY_GUIDE.md", _short_guide_brief, 6000),
+                ("practice_exam", "04_PRACTICE_EXAM.md", _practice_exam_brief, 12000),
             ]
             self._run_artifacts_parallel(artifacts, author, critic, reviser, master_plan)
 
@@ -177,6 +179,9 @@ class Orchestrator:
             # ----- 4. Manifest + telemetry + summary
             self._write_manifest(corpus, day_entries, master_plan_path)
             self.telemetry.write(self.paths.root / "telemetry.json")
+
+            # ----- 5. Render HTML packet
+            self._build_html_packet()
 
             self._print_summary()
             return 0
@@ -307,33 +312,36 @@ class Orchestrator:
             if is_complete(target):
                 self.logger.info("artifact %s already complete — skipping", filename)
                 return kind, target.read_text()
+            self.console.print(f"  [{ACCENT_HI}]→[/{ACCENT_HI}] starting [white]{filename}[/white] [dim](this can take 1–3 min on opus)[/dim]")
             brief = brief_fn(self.cfg, master_plan)
             text = author.write(kind, brief, max_tokens=max_tokens, label_suffix="initial")
             if self.use_critic:
+                self.console.print(f"  [{ACCENT_HI}]→[/{ACCENT_HI}] grading [white]{filename}[/white] [dim](critic)[/dim]")
                 cri = critic.critique(kind, text, brief)
                 self.logger.info("critic %s: score=%d, must_fix=%d", kind, cri.score, len(cri.must_fix))
                 if cri.should_revise:
+                    self.console.print(f"  [{ACCENT_HI}]→[/{ACCENT_HI}] revising [white]{filename}[/white] [dim](score {cri.score})[/dim]")
                     text = reviser.revise(kind, text, cri, brief, max_tokens=max_tokens)
             atomic_write_text(target, text)
             return kind, text
 
-        with ThreadPoolExecutor(max_workers=self.max_parallel) as pool, \
-             self._artifact_progress(len(artifacts)) as progress:
+        with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
             tasks = {
                 pool.submit(_gen_one, kind, filename, brief_fn, max_tokens): (kind, filename)
                 for kind, filename, brief_fn, max_tokens in artifacts
             }
-            task_id = progress.add_task("artifacts", total=len(artifacts))
+            done_count = 0
+            total = len(artifacts)
             for fut in as_completed(tasks):
                 kind, filename = tasks[fut]
+                done_count += 1
                 try:
                     k, txt = fut.result()
                     results[k] = txt
-                    self.console.print(f"  [green]✓[/green] {filename}")
+                    self.console.print(f"  [{RICH_OK}]✓[/{RICH_OK}] [{done_count}/{total}] {filename}")
                 except Exception as e:  # noqa: BLE001
                     self.logger.error("artifact %s failed: %s", kind, e)
-                    self.console.print(f"  [red]✗[/red] {filename} — {e}")
-                progress.advance(task_id)
+                    self.console.print(f"  [red]✗[/red] [{done_count}/{total}] {filename} — {e}")
 
     def _run_daily_lessons(self, day_entries, researcher, author, critic, reviser, master_plan):
         if not day_entries:
@@ -356,29 +364,33 @@ class Orchestrator:
             (self.paths.checkpoints_dir / f"research_day_{day_num:02d}.md").write_text(research)
 
             brief = _daily_lesson_brief(self.cfg, day_num, day_date, entry, master_plan, research)
-            text = author.write("daily_lesson", brief, max_tokens=16000, label_suffix=f"day{day_num}")
+            text = author.write("daily_lesson", brief, max_tokens=12000, label_suffix=f"day{day_num}")
             if self.use_critic:
                 cri = critic.critique("daily_lesson", text, brief)
                 self.logger.info("critic day %d: score=%d", day_num, cri.score)
                 if cri.should_revise:
-                    text = reviser.revise("daily_lesson", text, cri, brief, max_tokens=16000)
+                    text = reviser.revise("daily_lesson", text, cri, brief, max_tokens=12000)
             atomic_write_text(target, text)
             return day_num, filename, "written"
 
-        with ThreadPoolExecutor(max_workers=self.max_parallel) as pool, \
-             self._artifact_progress(len(day_entries)) as progress:
+        total_days = len(day_entries)
+        with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
             tasks = {pool.submit(_gen_day, e): e for e in day_entries}
-            task_id = progress.add_task("daily lessons", total=len(day_entries))
+            self.console.print(
+                f"  [dim]queued {total_days} day(s); running up to "
+                f"{self.max_parallel} in parallel[/dim]"
+            )
+            done_count = 0
             for fut in as_completed(tasks):
                 entry = tasks[fut]
+                done_count += 1
                 try:
                     day_num, filename, status = fut.result()
-                    icon = "[dim]●[/dim]" if status == "cached" else "[green]✓[/green]"
-                    self.console.print(f"  {icon} Day {day_num:02d} — {filename}")
+                    icon = f"[dim]●[/dim]" if status == "cached" else f"[{RICH_OK}]✓[/{RICH_OK}]"
+                    self.console.print(f"  {icon} [{done_count}/{total_days}] Day {day_num:02d} — {filename}")
                 except Exception as e:  # noqa: BLE001
                     self.logger.error("day %s failed: %s\n%s", entry.get("day"), e, traceback.format_exc())
-                    self.console.print(f"  [red]✗[/red] Day {entry.get('day')} — {e}")
-                progress.advance(task_id)
+                    self.console.print(f"  [red]✗[/red] [{done_count}/{total_days}] Day {entry.get('day')} — {e}")
 
     # ------------------------------------------------------------------
     def _write_manifest(self, corpus, day_entries, master_plan_path):
@@ -513,8 +525,47 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _build_html_packet(self) -> None:
+        """Render markdown artifacts to a polished HTML packet."""
+        self.console.print("\n[bold #c96442]▸ Building HTML packet[/bold #c96442]")
+        try:
+            from .render.packet import build_packet
+            manifest = json.loads((self.paths.manifest_path).read_text())
+            warnings = build_packet(self.paths.root, manifest)
+        except Exception as e:  # noqa: BLE001
+            self.logger.error("HTML packet build failed: %s\n%s", e, traceback.format_exc())
+            self.console.print(f"  [yellow]⚠[/yellow] HTML build failed: {e}")
+            self.console.print("  [dim]markdown originals are still available in the run dir.[/dim]")
+            return
+
+        problems = [w for w in warnings if w.severity != "info"]
+        infos = [w for w in warnings if w.severity == "info"]
+        if problems:
+            counts: dict[str, int] = {}
+            for w in problems:
+                counts[w.kind] = counts.get(w.kind, 0) + 1
+            summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            self.console.print(f"  [yellow]⚠[/yellow] {len(problems)} formatting issue(s): {summary}")
+            self.console.print(f"  [dim]see {self.paths.root / 'render_warnings.json'}[/dim]")
+        else:
+            extra = f" [dim]({len(infos)} normalizations applied)[/dim]" if infos else ""
+            self.console.print(f"  [{RICH_OK}]✓[/{RICH_OK}] HTML packet built cleanly{extra}")
+        self.console.print(f"  [dim]open[/dim] [white]{self.paths.root / 'index.html'}[/white]")
+
     def _on_llm_event(self, event: str, payload: dict):
         self.logger.debug("llm.%s %s", event, payload)
+        if event == "heartbeat":
+            elapsed = payload.get("elapsed_s", 0)
+            label = payload.get("label", "?")
+            self.console.print(
+                f"  [dim]…still working on [/dim][{ACCENT_HI}]{label}[/{ACCENT_HI}]"
+                f"[dim] ({elapsed}s elapsed — opus generation can take 4–6 min)[/dim]"
+            )
+        elif event == "slow_warning":
+            self.console.print(
+                f"  [dim]tip: kill with Ctrl-C and rerun with[/dim] [white]./run --fast[/white] "
+                f"[dim]for a 5x speedup if you don't need full opus quality.[/dim]"
+            )
 
     def _spinner(self, label: str):
         return self.console.status(f"[cyan]{label}…[/cyan]", spinner="dots")
