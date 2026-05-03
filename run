@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# bart — production-grade study-packet harness
+# Entry point. Bootstraps venv on first run, then delegates to the Python CLI.
+
+set -euo pipefail
+cd "$(dirname "$0")"
+
+VENV=".venv"
+REQS_HASH_FILE="$VENV/.reqs_hash"
+REQS_HASH=$(shasum -a 256 requirements.txt 2>/dev/null | cut -d' ' -f1 || echo "missing")
+
+# ─────────── small UI helpers ───────────
+ACCENT='\033[38;5;174m'   # warm terracotta-ish (closest 256-color match)
+DIM='\033[2m'
+BOLD='\033[1m'
+RESET='\033[0m'
+GREEN='\033[38;5;108m'
+
+# Spinner — runs while a background PID is alive; clears its line on exit.
+spin() {
+    local msg=$1
+    local pid=$2
+    local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+    local i=0
+    # Hide cursor while spinning
+    printf "\033[?25l"
+    trap 'printf "\033[?25h"' EXIT INT TERM
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  ${ACCENT}%s${RESET}  %s" "${frames[$i]}" "$msg"
+        i=$(( (i + 1) % ${#frames[@]} ))
+        sleep 0.08
+    done
+    wait "$pid" 2>/dev/null
+    local rc=$?
+    # Show cursor, clear line, print final state
+    printf "\r\033[K  ${GREEN}✓${RESET}  %s\n" "$msg"
+    printf "\033[?25h"
+    return $rc
+}
+
+# Friendly intro printed only when we actually need to bootstrap.
+intro() {
+    printf "\n${BOLD}bart${ACCENT}.${RESET} ${DIM}— first-run setup${RESET}\n"
+    printf "${DIM}this happens once. takes about a minute on a fast network.${RESET}\n\n"
+}
+
+run_step() {
+    local msg=$1
+    shift
+    "$@" > /tmp/bart_bootstrap.log 2>&1 &
+    local pid=$!
+    if ! spin "$msg" "$pid"; then
+        printf "\n${DIM}command failed. last 20 lines of output:${RESET}\n"
+        tail -20 /tmp/bart_bootstrap.log
+        printf "\nfull log: /tmp/bart_bootstrap.log\n"
+        exit 1
+    fi
+}
+
+# ─────────── bootstrap ───────────
+if [ ! -d "$VENV" ]; then
+    intro
+    run_step "creating python virtual environment" python3 -m venv "$VENV"
+    run_step "upgrading pip"                       "$VENV/bin/pip" install --quiet --upgrade pip wheel
+    run_step "installing dependencies"             "$VENV/bin/pip" install --quiet --progress-bar off -r requirements.txt
+    echo "$REQS_HASH" > "$REQS_HASH_FILE"
+    printf "\n  ${GREEN}✓${RESET}  ready.\n\n"
+elif [ ! -f "$REQS_HASH_FILE" ] || [ "$(cat "$REQS_HASH_FILE")" != "$REQS_HASH" ]; then
+    printf "\n${DIM}requirements changed — updating environment…${RESET}\n\n"
+    run_step "updating dependencies" "$VENV/bin/pip" install --quiet --progress-bar off -r requirements.txt
+    echo "$REQS_HASH" > "$REQS_HASH_FILE"
+    printf "\n"
+fi
+
+exec "$VENV/bin/python" -m bart "$@"

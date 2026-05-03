@@ -1,0 +1,50 @@
+# ─────────── secrets & local config ───────────
+.bart_config.json
+.env
+.env.*
+!.env.example
+
+# ─────────── python build / venv ───────────
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# ─────────── user-generated content ───────────
+output/
+materials/*
+!materials/.gitkeep
+!materials/_DROP_YOUR_NOTES_HERE.md
+logs/
+*.log
+
+# ─────────── caches ───────────
+.cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ─────────── internal / dev only (do not ship) ───────────
+tests/
+.design_pkg/
+.scratch/
+TODO.md
+NOTES.md
+
+# ─────────── editor / OS ───────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

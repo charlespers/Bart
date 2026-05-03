@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 120" width="360" height="120">
+  <text x="0" y="92"
+        font-family="Inter, system-ui, sans-serif"
+        font-weight="800"
+        font-size="110"
+        letter-spacing="-4.4"
+        fill="#221f1b">bart</text>
+  <circle cx="262" cy="86" r="14" fill="#c96442"/>
+</svg>
