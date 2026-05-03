@@ -44,6 +44,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    # If the user typed bare `./run` (or any flags but no subcommand), default
+    # the subcommand to `run`. This makes the run-subcommand's flags available
+    # on the namespace even when the user didn't type the word "run".
+    known_cmds = {"run", "setup", "list", "doctor"}
+    if not argv or argv[0] not in known_cmds:
+        argv = ["run", *argv]
     args = build_parser().parse_args(argv)
     cmd = args.cmd or "run"
 
@@ -64,9 +72,15 @@ def main(argv: list[str] | None = None) -> int:
         return doctor()
 
     if cmd == "run":
+        reconfigure = getattr(args, "reconfigure", False)
+        resume = getattr(args, "resume", None)
+        dry_run = getattr(args, "dry_run", False)
+        no_critic = getattr(args, "no_critic", False)
+        max_parallel = getattr(args, "max_parallel", 4)
+        days_override = getattr(args, "days", None)
+
         cfg = load_config()
-        if cfg is None or args.reconfigure:
-            # Quick sanity check: do they have any materials yet?
+        if cfg is None or reconfigure:
             from .paths import MATERIALS
             n_materials = 0
             if MATERIALS.exists():
@@ -76,20 +90,20 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if n_materials == 0 and cfg is None:
                 console.print(
-                    "\n[yellow]heads up:[/yellow] [cyan]materials/[/cyan] is empty.\n"
+                    "\n[yellow]heads up:[/yellow] [cyan]materials/[/cyan] looks empty.\n"
                     "  drop your course PDFs / slides / notes there first, then re-run.\n"
-                    "  [dim]we'll keep going for now in case you want to set up the wizard early.[/dim]\n"
+                    "  [dim](you can finish the setup wizard now and add materials after.)[/dim]\n"
                 )
-            cfg = run_setup_wizard(force=args.reconfigure)
-        paths = RunPaths.create(resume=args.resume)
+            cfg = run_setup_wizard(force=reconfigure)
+        paths = RunPaths.create(resume=resume)
         orch = Orchestrator(
             cfg=cfg,
             paths=paths,
             console=console,
-            dry_run=args.dry_run,
-            use_critic=not args.no_critic,
-            max_parallel=args.max_parallel,
-            days_override=args.days,
+            dry_run=dry_run,
+            use_critic=not no_critic,
+            max_parallel=max_parallel,
+            days_override=days_override,
         )
         return orch.run()
 

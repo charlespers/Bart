@@ -45,11 +45,20 @@ This bootstraps the venv, runs the wizard once (any dummy values are fine), extr
 
 ## 60-second start
 
+Drop everything from your course folder into `materials/`, then run:
+
 ```bash
 cd bart
-cp ~/your-class-notes/*.pdf materials/
+
+# copy a whole folder (recursive — works no matter what's in it)
+cp -R ~/your-class-notes/. materials/
+
+# …or drag-and-drop files in Finder/Explorer. flat or in subfolders, both fine.
+
 ./run
 ```
+
+bart finds every supported file under `materials/` recursively. You don't need to filter by extension or worry about empty globs.
 
 First run:
 

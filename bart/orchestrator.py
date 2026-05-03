@@ -154,14 +154,14 @@ class Orchestrator:
                 master_plan = master_plan_path.read_text()
                 day_entries = json.loads(day_plan_json.read_text())
             else:
-                self.console.print("\n[bold #c96442]▸Planning[/bold #c96442]")
+                self.console.print("\n[bold #c96442]▸ Planning[/bold #c96442]")
                 with self._spinner("planner"):
                     master_plan, day_entries = planner.plan(days_until, today_iso, corpus_summary)
                 atomic_write_text(master_plan_path, master_plan)
                 atomic_write_json(day_plan_json, day_entries)
 
             # ----- 2. Top-level artifacts in parallel
-            self.console.print("\n[bold #c96442]▸Generating top-level artifacts[/bold #c96442]")
+            self.console.print("\n[bold #c96442]▸ Generating top-level artifacts[/bold #c96442]")
             artifacts = [
                 ("schematics", "01_SCHEMATICS.md", _schematics_brief, 12000),
                 ("whimsical_notes", "02_WHIMSICAL_NOTES.md", _whimsy_brief, 12000),
@@ -171,7 +171,7 @@ class Orchestrator:
             self._run_artifacts_parallel(artifacts, author, critic, reviser, master_plan)
 
             # ----- 3. Daily lessons (researcher → author → critic → reviser)
-            self.console.print("\n[bold #c96442]▸Generating daily lessons[/bold #c96442]")
+            self.console.print("\n[bold #c96442]▸ Generating daily lessons[/bold #c96442]")
             self._run_daily_lessons(day_entries, researcher, author, critic, reviser, master_plan)
 
             # ----- 4. Manifest + telemetry + summary
@@ -187,13 +187,15 @@ class Orchestrator:
             return 130
         except Exception as e:
             self.logger.error("Orchestrator failed: %s\n%s", e, traceback.format_exc())
-            self.console.print(f"\n[red]✗ Run failed: {e}[/red]")
-            self.console.print(f"[dim]See {self.paths.log_path} for details.[/dim]")
+            err_type = type(e).__name__
+            self.console.print(f"\n[red]✗ Run failed:[/red] [bold]{err_type}[/bold]: {e}")
+            self.console.print(f"[dim]Full traceback in {self.paths.log_path}[/dim]")
+            self.console.print(f"[dim]Resume with:[/dim] [white]./run --resume {self.paths.run_id}[/white]")
             return 1
 
     # ------------------------------------------------------------------
     def _extract(self):
-        self.console.print("[bold #c96442]▸Extracting materials[/bold #c96442]")
+        self.console.print("[bold #c96442]▸ Extracting materials[/bold #c96442]")
         kept, skipped = extract_all(console=self.console)
         return kept, skipped
 

@@ -19,9 +19,7 @@ dist/
 
 # ─────────── user-generated content ───────────
 output/
-materials/*
-!materials/.gitkeep
-!materials/_DROP_YOUR_NOTES_HERE.md
+materials/
 logs/
 *.log
 
