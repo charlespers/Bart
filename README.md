@@ -169,6 +169,14 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
                             #   --fix       apply safe in-place repairs
                             #   --rerender  rebuild from markdown first (picks up CSS/template changes)
                             #   --strict    exit non-zero on any warning (CI mode)
+./run quality [run_id]      # quality harness — pure heuristics, zero API calls:
+                            #   coverage   does the packet review every chapter / lecture / unit
+                            #              the source materials labeled? lists missing topics.
+                            #   fidelity   do `cite` payloads in lessons resolve to a real corpus
+                            #              file or topic marker? flags likely-hallucinated cites.
+                            #   format     delegates to `format` for the HTML structural pass.
+                            # Writes `<run>/quality_audit.json`.
+                            #   --strict   exit non-zero if coverage <80% or any error finding
 ```
 
 ### Speed presets

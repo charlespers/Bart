@@ -89,6 +89,23 @@ def build_parser() -> argparse.ArgumentParser:
     fmt.add_argument("--rerender", action="store_true",
                      help="Re-render the packet from markdown after fixing — picks up CSS/template changes.")
 
+    qual = sub.add_parser(
+        "quality",
+        help="Quality harness: coverage (does the packet review every chapter / lecture / "
+             "section in your source materials?), fidelity (do cites point to real corpus "
+             "entries?), and formatting (delegates to `format`). Heuristic-only; zero API "
+             "calls. Writes <run>/quality_audit.json.",
+    )
+    qual.add_argument("run_id", nargs="?", help="Run id. Defaults to most recent.")
+    qual.add_argument("--strict", action="store_true",
+                      help="Exit non-zero if coverage < 80% or any error-level finding "
+                           "(CI mode).")
+    qual.add_argument(
+        "--coverage-threshold", type=float, default=80.0, metavar="PCT",
+        help="Coverage percentage below which the harness exits non-zero in --strict "
+             "(default 80.0).",
+    )
+
     return p
 
 
@@ -109,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     # If the user typed bare `./run` (or any flags but no subcommand), default
     # the subcommand to `run`. This makes the run-subcommand's flags available
     # on the namespace even when the user didn't type the word "run".
-    known_cmds = {"run", "setup", "list", "doctor", "render", "format"}
+    known_cmds = {"run", "setup", "list", "doctor", "render", "format", "quality"}
     if not argv or argv[0] not in known_cmds:
         argv = ["run", *argv]
     args = build_parser().parse_args(argv)
@@ -142,6 +159,14 @@ def main(argv: list[str] | None = None) -> int:
             apply_fixes=getattr(args, "fix", False),
             strict=getattr(args, "strict", False),
             rerender=getattr(args, "rerender", False),
+        )
+
+    if cmd == "quality":
+        from .commands import quality_audit
+        return quality_audit(
+            run_id=getattr(args, "run_id", None),
+            strict=getattr(args, "strict", False),
+            coverage_threshold=getattr(args, "coverage_threshold", 80.0),
         )
 
     if cmd == "run":

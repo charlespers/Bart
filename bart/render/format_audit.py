@@ -475,6 +475,169 @@ _KATEX_DISPLAY_INSIDE_P = re.compile(
 )
 
 
+# ─── Streaming-corruption detectors ───────────────────────────────
+# When the agent's output is truncated mid-stream (subscription mode hiccup,
+# transient network blip, or a `bart-*` fence that ate its closing ```), three
+# fingerprints appear in the final HTML:
+#   1. A naked `## 3. Heading` line surfaces as text inside the `<article>`.
+#   2. A naked `---` line surfaces as a horizontal-rule string instead of <hr>.
+#   3. Tag attributes get character-dropped: `class="…"` → `cls="…"`,
+#      `class="b-…"` → `clab-…"`, `<button class="…"` → `<button clan …"`.
+# We detect each in the final HTML; the only safe autofix is to re-render the
+# page from its sibling markdown source.
+
+# A line that is JUST whitespace + `---` / `***` / `___` (markdown HR token).
+_RAW_MD_HR_LINE = re.compile(r"(?:^|>|\n)\s*(?:-{3,}|_{3,}|\*{3,})\s*\n")
+# Lines like `## 3. Foo` or `### 2.1 Bar` floating in HTML body where a real
+# heading would be wrapped in <h2>/<h3>. We require the "## " token to be
+# adjacent to a tag-close `>` (or newline) so we don't false-positive on
+# inline ` ## ` strings that actually live inside prose.
+_RAW_MD_HEADING = re.compile(
+    r"(?:>|\n)\s*(#{2,6})\s+([0-9]+(?:\.[0-9]+)?[\.\)]?\s+[^\n<]{1,200})"
+)
+
+
+def _check_raw_md_hr_leak(rel: str, html: str) -> list[AuditIssue]:
+    """`---` on its own line that did NOT become an `<hr>`.
+
+    Restricts to the body and ignores `<pre>`, `<code>`, `<script>`. The
+    `_strip_protected` pass also masks out delim-config strings inside
+    auto-render JS so we don't false-positive on `'\\['`/`'\\]'`.
+    """
+    body = _strip_protected(html.split("<body", 1)[-1])
+    hits = list(_RAW_MD_HR_LINE.finditer(body))
+    if not hits:
+        return []
+    return [AuditIssue(
+        rel, "raw_md_hr_leak",
+        f"{len(hits)} raw `---` / `***` line(s) in HTML body — markdown HR "
+        f"failed to convert to <hr>; likely a streaming-truncation in the source",
+        "error",
+        line=_line_of(html, hits[0].start()),
+    )]
+
+
+def _check_raw_md_heading_leak(rel: str, html: str) -> list[AuditIssue]:
+    body = _strip_protected(html.split("<body", 1)[-1])
+    hits = list(_RAW_MD_HEADING.finditer(body))
+    if not hits:
+        return []
+    sample = hits[0].group(0).strip().splitlines()[-1][:80]
+    return [AuditIssue(
+        rel, "raw_md_heading_leak",
+        f"{len(hits)} raw markdown heading(s) in HTML body (e.g. '{sample}')"
+        f" — likely streaming-truncation; needs re-render from source markdown",
+        "error",
+        line=_line_of(html, hits[0].start()),
+    )]
+
+
+# Tag attributes whose value never closes (`class="b-…"\n` instead of
+# `class="b-…">`), or whose name was character-dropped (`cls=`, `clas=`,
+# `clan `, `claas=`). We pattern-match the most-frequent garblings rather
+# than try to be exhaustive — a single hit is enough to flag the page.
+_BROKEN_CLASS_ATTR = re.compile(
+    r'<\w+\s+(?:cls|clas|claas|clan|clab|classs|cass)\b[^>]*>',
+    re.IGNORECASE,
+)
+# Empty / orphan opening tags (`<>`, `<<div>`, `</>`).
+_EMPTY_TAG = re.compile(r"<\s*>|<<\w|</\s*>")
+
+
+def _check_broken_attrs(rel: str, html: str) -> list[AuditIssue]:
+    issues: list[AuditIssue] = []
+    m = _BROKEN_CLASS_ATTR.search(html)
+    if m:
+        issues.append(AuditIssue(
+            rel, "broken_class_attr",
+            f"streaming-corrupted attribute near '{m.group(0)[:60]}…' — "
+            f"page needs re-render or regeneration",
+            "error",
+            line=_line_of(html, m.start()),
+        ))
+    m2 = _EMPTY_TAG.search(html)
+    if m2:
+        issues.append(AuditIssue(
+            rel, "empty_tag",
+            f"empty/orphan tag '{m2.group(0)}' — likely streaming-corrupted",
+            "warn",
+            line=_line_of(html, m2.start()),
+        ))
+    return issues
+
+
+_DOUBLE_ENTITY = re.compile(r"&amp;(?:amp|lt|gt|quot|apos|nbsp|#\d+);")
+
+
+def _check_double_escaped_entities(rel: str, html: str) -> list[AuditIssue]:
+    """`&amp;amp;` / `&amp;lt;` etc. — entity got HTML-escaped twice.
+
+    Surfaces in TOC labels and prose when the markdown sanitizer feeds an
+    already-escaped string to the renderer. Cosmetic but ugly.
+    """
+    body = _strip_protected(html)
+    hits = list(_DOUBLE_ENTITY.finditer(body))
+    if not hits:
+        return []
+    return [AuditIssue(
+        rel, "double_escaped_entity",
+        f"{len(hits)} double-escaped HTML entit(y/ies) (e.g. '{hits[0].group(0)}')",
+        "warn",
+        line=_line_of(html, hits[0].start()),
+    )]
+
+
+def _fix_double_escaped_entities(html: str) -> tuple[str, int]:
+    """Collapse `&amp;amp;` → `&amp;`, `&amp;lt;` → `&lt;`, etc.
+
+    Single-pass — re-running format will catch any deeper nesting.
+    """
+    def _on(chunk: str) -> tuple[str, int]:
+        n = [0]
+        def _repl(m: re.Match) -> str:
+            n[0] += 1
+            return "&" + m.group(0)[len("&amp;"):]
+        new = _DOUBLE_ENTITY.sub(_repl, chunk)
+        return new, n[0]
+    return _apply_outside_protected(html, _on)
+
+
+# Re-render-from-source autofix. When a page has a streaming-corruption
+# fingerprint, the only safe repair is to rebuild it from the matching
+# markdown file in the same run directory. The format command is the only
+# place that knows the run_dir, so we attach the re-render closure dynamically
+# in `audit()` (one closure per page that has a sibling .md).
+_CORRUPTION_KINDS = frozenset({
+    "raw_md_hr_leak",
+    "raw_md_heading_leak",
+    "broken_class_attr",
+    "empty_tag",
+})
+
+
+def _markdown_sibling_for(html_path: Path, run_dir: Path) -> Path | None:
+    """Return the markdown file whose render produced this HTML page, or None.
+
+    bart's renderer pairs `01_schematics.html` with `01_SCHEMATICS.md`,
+    `lessons/day_03.html` with `daily_lessons/Day_03_<date>.md`, etc. We try
+    a few naming conventions and accept the first match we can verify.
+    """
+    name = html_path.stem
+    candidates: list[Path] = []
+    # Top-level artifacts (uppercase + same stem).
+    candidates.append(run_dir / f"{name.upper()}.md")
+    candidates.append(run_dir / f"{name}.md")
+    # Daily lessons: lessons/day_03.html → daily_lessons/Day_03_*.md
+    if html_path.parent.name == "lessons" and name.lower().startswith("day_"):
+        day_num = name.split("_", 1)[1]
+        for p in (run_dir / "daily_lessons").glob(f"Day_{day_num}_*.md"):
+            candidates.append(p)
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
 def _check_displaymath_inside_p(rel: str, html: str) -> list[AuditIssue]:
     """Display math wrapped in <p> means the markdown parser treated `\\[…\\]`
     as inline. Auto-render still works, but typography (centering, vertical
@@ -804,6 +967,10 @@ _CHECKS: list[Callable[[str, str], list[AuditIssue]]] = [
     _check_block_error,
     _check_raw_fence_leak,
     _check_markdown_leak,
+    _check_raw_md_hr_leak,
+    _check_raw_md_heading_leak,
+    _check_broken_attrs,
+    _check_double_escaped_entities,
     _check_anchors,
     _check_images,
     _check_inline_font_overrides,
@@ -826,6 +993,7 @@ _FIXES: list[tuple[str, Callable[[str], tuple[str, int]]]] = [
     ("katex_loader_injected",        _ensure_katex_loaded),
     ("inline_font_size_override",    _fix_inline_font_overrides),
     ("displaymath_in_paragraph",     _fix_displaymath_inside_p),
+    ("double_escaped_entity",        _fix_double_escaped_entities),
     ("img_missing_lazy_load",        _fix_lazy_load_images),
 ]
 
@@ -836,9 +1004,34 @@ def _iter_html_files(run_dir: Path) -> list[Path]:
 
 
 def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
-    """Run all checks; optionally apply autofixes in place."""
+    """Run all checks; optionally apply autofixes in place.
+
+    Two-stage autofix:
+
+      1. **String-level fixes** — collapse double-escaped math, balance stray
+         `\\[`, drop inline `font-size:` overrides, lazy-load offscreen
+         images. Cheap and idempotent.
+      2. **Structural rebuild** — when *any* page exhibits a streaming-
+         corruption fingerprint (raw `---` / `## H`, broken `class=` attrs,
+         empty tags), invoke `build_packet` once for the whole run. The
+         markdown source on disk is the source of truth; this is the only
+         fix that can synthesize the structure that streaming dropped.
+         Costs no API tokens (no agent calls).
+
+    The two-stage order matters: stage 1 might silence cosmetic issues
+    that would otherwise mask the corruption signal. We re-detect after
+    stage 1 to decide whether stage 2 is needed.
+    """
     result = AuditResult()
-    for path in _iter_html_files(run_dir):
+    file_paths = _iter_html_files(run_dir)
+
+    # ── Stage 1: per-file string fixes + initial detection ────────
+    file_html: dict[Path, str] = {}
+    file_original: dict[Path, str] = {}
+    needs_rerender = False
+    rerender_kinds_total = 0
+
+    for path in file_paths:
         rel = str(path.relative_to(run_dir))
         try:
             html = path.read_text(encoding="utf-8")
@@ -846,8 +1039,8 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
             result.issues.append(AuditIssue(rel, "read_error", str(e), "error"))
             continue
         result.files_scanned += 1
+        file_original[path] = html
 
-        original = html
         if apply_fixes:
             for kind, fix in _FIXES:
                 html, n = fix(html)
@@ -858,6 +1051,46 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
                         "info", fix_applied=True,
                     ))
 
+        # Detect corruption fingerprints to decide re-render eligibility.
+        corruption_hits: list[AuditIssue] = []
+        for check in (_check_raw_md_hr_leak, _check_raw_md_heading_leak,
+                      _check_broken_attrs):
+            try:
+                corruption_hits.extend(check(rel, html))
+            except Exception:
+                pass
+        if corruption_hits:
+            needs_rerender = True
+            rerender_kinds_total += len(corruption_hits)
+
+        file_html[path] = html
+
+    # ── Stage 2: full-packet rebuild when corruption was detected ──
+    if apply_fixes and needs_rerender:
+        rebuilt = _rebuild_packet_from_markdown(run_dir)
+        if rebuilt:
+            # Re-read every file post-rebuild so the regular check pass
+            # below sees the freshly-rendered HTML, not the corrupted copy.
+            for path in file_paths:
+                try:
+                    file_html[path] = path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+            result.fixes_applied += rerender_kinds_total
+            result.issues.append(AuditIssue(
+                "<run>", "fixed:packet_rerendered_from_markdown",
+                f"detected {rerender_kinds_total} streaming-corruption "
+                f"fingerprint(s); re-rendered the packet from sibling "
+                f"markdown sources (no API cost)",
+                "info", fix_applied=True,
+            ))
+
+    # ── Stage 3: regular check pass over (possibly rebuilt) HTML ──
+    for path in file_paths:
+        if path not in file_html:
+            continue
+        rel = str(path.relative_to(run_dir))
+        html = file_html[path]
         for check in _CHECKS:
             try:
                 result.issues.extend(check(rel, html))
@@ -865,11 +1098,37 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
                 result.issues.append(AuditIssue(
                     rel, "check_crash", f"{check.__name__}: {e}", "warn",
                 ))
-
-        if apply_fixes and html != original:
-            path.write_text(html, encoding="utf-8")
+        if apply_fixes and html != file_original.get(path, html):
+            try:
+                path.write_text(html, encoding="utf-8")
+            except Exception as e:  # noqa: BLE001
+                result.issues.append(AuditIssue(rel, "write_error", str(e), "error"))
 
     return result
+
+
+def _rebuild_packet_from_markdown(run_dir: Path) -> bool:
+    """Trigger a full packet rebuild from sibling markdown — no API cost.
+
+    Mirrors what `./run render` does, but invoked inline from `format --fix`
+    when a streaming-corruption fingerprint was detected. Returns True iff
+    the rebuild ran without raising. We swallow exceptions to keep the
+    audit driver going — the next pass of checks will still report any
+    issue the rebuild didn't actually fix.
+    """
+    try:
+        import json as _json
+        from .packet import build_packet
+        manifest_path = run_dir / "manifest.json"
+        manifest = (
+            _json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest_path.exists()
+            else {}
+        )
+        build_packet(run_dir, manifest)
+        return True
+    except Exception:
+        return False
 
 
 # ─── Reporting ───────────────────────────────────────────────────

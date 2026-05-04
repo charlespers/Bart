@@ -158,6 +158,78 @@ def _convert_math_delimiters(text: str) -> tuple[str, List[SanitizeWarning]]:
 _BLOCK_MATH_RE = re.compile(r"(?<!\n\n)(\\\[.+?\\\])(?!\n\n)", re.DOTALL)
 
 
+# Lines that start a numbered heading (`## 3.`, `### 2.1`) or a setext-style
+# horizontal rule (`---`, `***`, `___`). When these abut a closing HTML tag or
+# a `bart-*` fence with no blank line between them, python-markdown leaves the
+# whole region as raw HTML and the heading / hr surfaces in the page as
+# literal text. We pad such adjacencies with a blank line so the parser sees
+# them as standalone block tokens, even if a streaming hiccup ate the original
+# blank line.
+_HEADING_OR_HR_LINE = re.compile(
+    r"^(?:#{1,6}\s+\S|---+\s*$|\*\*\*+\s*$|___+\s*$)",
+)
+_HTML_BLOCK_BOUNDARY = re.compile(
+    r"^(?:</?(?:div|figure|section|article|table|tr|td|th|tbody|thead|"
+    r"tfoot|ul|ol|li|p|pre|details|summary|aside|header|footer|nav|"
+    r"main|svg|g|path|rect|circle|ellipse|line|polygon|polyline|"
+    r"text|defs|marker)\b|<!--|```bart-)"
+)
+
+
+def _pad_blocks_around_headings_and_rules(text: str) -> tuple[str, list["SanitizeWarning"]]:
+    """Insert a blank line whenever a heading / HR is fused to an HTML block
+    boundary (closing div, opening figure, library fence start/end, …).
+
+    Concrete trigger: line ``</div>`` immediately followed by ``## 3. Foo``
+    or ``---``. python-markdown bundles them into a single raw-HTML block;
+    KaTeX never sees them; the page surfaces literal ``---`` or ``## 3. Foo``.
+
+    We do NOT touch text inside fenced code blocks. We DO touch text inside
+    library `bart-*` JSON fences? — no: those are still wrapped by the
+    `_FENCE_RE` "code" segments and are skipped by `_split_segments`.
+    """
+    warns: list[SanitizeWarning] = []
+    n_padded = 0
+    out_parts: list[str] = []
+    for kind, content in _split_segments(text):
+        if kind == "code":
+            out_parts.append(content)
+            continue
+        lines = content.split("\n")
+        new_lines: list[str] = []
+        for idx, line in enumerate(lines):
+            stripped = line.lstrip()
+            is_heading_or_hr = bool(_HEADING_OR_HR_LINE.match(stripped))
+            if is_heading_or_hr:
+                # Need a blank line before — but only if the preceding line
+                # was an HTML block boundary AND the buffer doesn't already
+                # end on a blank line.
+                if new_lines and new_lines[-1].strip():
+                    prev_stripped = new_lines[-1].lstrip()
+                    if _HTML_BLOCK_BOUNDARY.match(prev_stripped) or prev_stripped.endswith(">"):
+                        new_lines.append("")
+                        n_padded += 1
+                new_lines.append(line)
+                # Need a blank line after — same conditions, looking forward.
+                next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+                next_stripped = next_line.lstrip()
+                if next_stripped and (
+                    _HTML_BLOCK_BOUNDARY.match(next_stripped)
+                    or next_stripped.startswith("<")
+                ):
+                    new_lines.append("")
+                    n_padded += 1
+                continue
+            new_lines.append(line)
+        out_parts.append("\n".join(new_lines))
+    if n_padded:
+        warns.append(SanitizeWarning(
+            "padded_heading_or_hr",
+            f"inserted {n_padded} blank line(s) around heading/HR adjacent to HTML",
+        ))
+    return "".join(out_parts), warns
+
+
 def _ensure_block_math_isolation(text: str) -> str:
     """Surround \\[...\\] block math with blank lines if missing.
 
@@ -405,6 +477,9 @@ def normalize_md(text: str) -> tuple[str, List[SanitizeWarning]]:
     warnings.extend(w)
 
     text, w = _convert_math_delimiters(text)
+    warnings.extend(w)
+
+    text, w = _pad_blocks_around_headings_and_rules(text)
     warnings.extend(w)
 
     text, w = _strip_emoji(text)

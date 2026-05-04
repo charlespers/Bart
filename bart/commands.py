@@ -344,3 +344,102 @@ def format_packet(
     if result.errors:
         return 1
     return 0
+
+
+# ── quality ───────────────────────────────────────────────────────
+
+
+def quality_audit(
+    run_id: str | None,
+    *,
+    strict: bool = False,
+    coverage_threshold: float = 80.0,
+) -> int:
+    """Run the coverage / fidelity / format harness over a generated packet.
+
+    No API calls — coverage and fidelity are pure regex; format delegates to
+    the existing `format_audit`. Writes `quality_audit.json` next to the
+    run's other artifacts.
+    """
+    console = Console()
+    target = _resolve_run_dir(run_id)
+    if target is None:
+        return 1
+    if not run_id:
+        console.print(f"[dim]auditing most recent run:[/dim] [cyan]{target.name}[/cyan]")
+
+    from .render.harness import audit_run, write_report
+    result = audit_run(target)
+    out_path = write_report(target, result)
+
+    # ── Coverage report ─────────────────────────────────────────
+    cov_color = (
+        "green" if result.coverage_pct >= coverage_threshold else
+        "yellow" if result.coverage_pct >= 50 else
+        "red"
+    )
+    console.print()
+    console.print(
+        f"[bold #c96442]▸ quality[/bold #c96442]  "
+        f"[{cov_color}]coverage {result.coverage_pct:.0f}%[/{cov_color}]  "
+        f"[dim]({result.coverage_hit}/{result.coverage_total} topics covered)[/dim]"
+    )
+    if result.coverage_findings:
+        n_show = min(12, len(result.coverage_findings))
+        console.print(f"\n  [yellow]missing topics[/yellow] [dim](first {n_show} of "
+                      f"{len(result.coverage_findings)}):[/dim]")
+        for f in result.coverage_findings[:n_show]:
+            sev_glyph = "[red]✗[/red]" if f.severity == "error" else "[yellow]•[/yellow]"
+            console.print(f"    {sev_glyph} [white]{f.topic}[/white]  "
+                          f"[dim]({f.source})[/dim]")
+        if len(result.coverage_findings) > n_show:
+            console.print(f"    [dim]… and {len(result.coverage_findings) - n_show} "
+                          f"more in {out_path.name}[/dim]")
+
+    # ── Fidelity report ─────────────────────────────────────────
+    fid_color = (
+        "green" if result.fidelity_pct >= 90 else
+        "yellow" if result.fidelity_pct >= 70 else
+        "red"
+    )
+    console.print()
+    console.print(
+        f"[bold #c96442]▸ fidelity[/bold #c96442]  "
+        f"[{fid_color}]{result.fidelity_pct:.0f}%[/{fid_color}]  "
+        f"[dim]({result.cites_total - result.cites_unmatched}/{result.cites_total} "
+        f"cites match the corpus)[/dim]"
+    )
+    if result.fidelity_findings:
+        n_show = min(8, len(result.fidelity_findings))
+        console.print(f"\n  [yellow]unmatched cites[/yellow] [dim](first {n_show} of "
+                      f"{len(result.fidelity_findings)}):[/dim]")
+        for f in result.fidelity_findings[:n_show]:
+            console.print(f"    [yellow]•[/yellow] [white]{f.cite}[/white]  "
+                          f"[dim]({f.artifact})[/dim]")
+
+    # ── Format summary ──────────────────────────────────────────
+    fmt = result.format_summary or {}
+    if "error" in fmt:
+        console.print(f"\n[bold #c96442]▸ format[/bold #c96442]  "
+                      f"[red]check failed: {fmt['error']}[/red]")
+    elif fmt:
+        errs = fmt.get("errors", 0)
+        warns = fmt.get("warnings", 0)
+        glyph = "[green]✓[/green]" if (errs == 0 and warns == 0) else \
+                "[red]✗[/red]" if errs else "[yellow]⚠[/yellow]"
+        console.print(f"\n[bold #c96442]▸ format[/bold #c96442]  {glyph}  "
+                      f"[dim]{fmt.get('files_scanned', 0)} HTML page(s)  ·  "
+                      f"{errs} error(s), {warns} warning(s)[/dim]")
+        if errs or warns:
+            console.print(f"  [dim]for line-level detail: ./run format {target.name}[/dim]")
+
+    console.print(f"\n[dim]full report:[/dim] {out_path}")
+
+    if strict:
+        if result.coverage_pct < coverage_threshold:
+            return 2
+        if any(f.severity == "error" for f in result.coverage_findings):
+            return 2
+        if (fmt or {}).get("errors", 0):
+            return 2
+    return 0
