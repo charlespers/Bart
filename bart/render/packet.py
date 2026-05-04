@@ -397,10 +397,28 @@ def _render_one(
     for w in expanded.warnings:
         warnings.append(Warning(src.name, w.kind, w.detail, "warn"))
 
+    # ── Format guardrail (pre-render) — auto-repair common issues that
+    # would otherwise make the page look crammed or render math wrong.
+    from .format_check import check as _format_check
+    sanitized, fmt_pre_warns = _format_check(sanitized)
+    for w in fmt_pre_warns:
+        warnings.append(Warning(src.name, w.kind, w.detail, w.severity))
+
     body_html, render_warns, meta = render(sanitized)
     for w in render_warns:
         sev = "info" if w.kind in _INFO_KINDS else "warn"
         warnings.append(Warning(src.name, w.kind, w.detail, sev))
+
+    # ── Format guardrail (post-render) — inspect rendered HTML for
+    # box-internal sloppiness (bare formula-cards, empty worked-examples,
+    # etc.) that only becomes apparent after expansion.
+    _, fmt_post_warns = _format_check(sanitized, body_html)
+    seen_kinds = {w.kind for w in fmt_pre_warns}
+    for w in fmt_post_warns:
+        # Don't double-report kinds the pre-pass already flagged.
+        if w.kind in seen_kinds:
+            continue
+        warnings.append(Warning(src.name, w.kind, w.detail, w.severity))
 
     # Add to search index — one entry per heading
     for h in meta.get("headings", []):

@@ -553,17 +553,47 @@ article details > p:first-of-type {
   margin-top: 0;
 }
 
-/* ─── Math ─── */
+/* ─── Math (KaTeX + legacy MathJax) ─── */
 
-mjx-container {
-  font-size: 1em !important;
-}
+/* KaTeX inline — keep at body size so it doesn't blow up line height. */
+.katex { font-size: 1em; line-height: 1.4; }
 
-mjx-container[display="true"] {
-  margin: 22px 0 !important;
+/* KaTeX display equations — generous breathing room. The previous 22px
+   was visibly cramped against surrounding prose; bumped to 30/24 with
+   horizontal scroll for long lines. */
+.katex-display {
+  margin: 32px 0 !important;
+  padding: 4px 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 4px 0;
+  /* Long balanced equations (e.g. multi-line reaction mechanisms) need
+     to scroll horizontally rather than overflow the page. */
+  max-width: 100%;
+}
+.katex-display > .katex {
+  font-size: 1.1em;          /* slightly larger than inline */
+  white-space: nowrap;       /* prevent mid-equation wrap */
+  text-align: center;
+  display: block;
+}
+/* When a display equation lives inside a tighter container (formula-card,
+   worked-example step), use scoped overrides — keep the breathing room
+   but prevent the equation from pushing the card wide. */
+.b-formula-card .katex-display,
+.b-worked-example .katex-display,
+.b-concept-build .katex-display {
+  margin: 18px 0 !important;
+  padding: 8px 12px;
+}
+
+/* Legacy MathJax (kept for fallback). Rules mirror KaTeX. */
+mjx-container { font-size: 1em !important; }
+mjx-container[display="true"] {
+  margin: 30px 0 !important;
+  padding: 6px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
 }
 
 .bad-latex {

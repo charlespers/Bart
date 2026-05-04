@@ -426,9 +426,11 @@
   background: var(--paper-hi);
   border: 1px solid var(--rule);
   border-radius: var(--r-lg);
-  padding: 24px 28px;
-  margin: 20px 0;
+  padding: 28px 32px 24px;
+  margin: 28px 0;
   box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+  /* Long equations should scroll, not break the card. */
+  overflow-x: auto;
 }
 .b-formula-card-title {
   font-family: var(--font-mono);
@@ -441,7 +443,8 @@
 .b-formula-card-body {
   text-align: center;
   font-size: 18px;
-  padding: 8px 0 12px;
+  padding: 14px 0 18px;
+  line-height: 1.6;
 }
 .b-formula-card-legend {
   display: grid;
@@ -621,7 +624,7 @@
 }
 .b-worked-example li {
   position: relative;
-  padding: 12px 0 12px 44px;
+  padding: 18px 0 18px 48px;
   border-top: 1px dashed var(--rule);
 }
 .b-worked-example li:first-child { border-top: 0; }
@@ -1919,6 +1922,59 @@
 }
 
 /* ════════════════════════════════════════════════════════════════
+   Block-internal spacing rules — preserve breathing room consistently
+   across every container that holds a formula or chem equation. Run
+   AFTER the per-block styles so they win where they need to.
+   ════════════════════════════════════════════════════════════════ */
+
+/* Any container that holds a math display block gets generous vertical
+   padding around the math. */
+.b-formula-card .katex-display,
+.b-formula-card mjx-container[display="true"],
+.b-worked-example li > div .katex-display,
+.b-worked-example li > div mjx-container[display="true"],
+.b-concept-build .katex-display,
+.b-concept-build mjx-container[display="true"] {
+  margin: 16px 0;
+  padding: 6px 10px;
+}
+
+/* Math inside narrow containers (tables, two-column proofs) shouldn't
+   blow up vertically — different override from the article-level math. */
+.b-proof-table .katex,
+.b-cmp-table .katex {
+  font-size: 0.95em;
+}
+
+/* Reaction equations inside formula-cards (rare but possible) keep
+   horizontal scrolling but lose the outer padding doubling. */
+.b-formula-card .b-rxn { margin: 8px 0; padding: 0; }
+
+/* Worked-example step's math text shouldn't run together when the
+   reasoning follows immediately. */
+.b-worked-example .b-step-action + div .katex-display {
+  margin-top: 12px;
+}
+.b-worked-example .b-step-reasoning {
+  margin-top: 10px;
+}
+
+/* Concept-build's `define_tex` and `example_tex` rungs — math sits in a
+   cell with limited horizontal room. Cap it and let it scroll. */
+.b-concept-rung-math {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 4px 0;
+}
+
+/* Quick check answers + multi-step solutions — give math space. */
+.b-quick-check-answer .katex-display,
+.b-multi-step-solution .katex-display,
+.b-multi-step-hint-body .katex-display {
+  margin: 14px 0;
+}
+
+/* ════════════════════════════════════════════════════════════════
    CHEM blocks (visuals + interactives)
    Ported from project/library/chem-{visuals,interactives}.jsx.
    ════════════════════════════════════════════════════════════════ */
@@ -1953,23 +2009,36 @@
   font-weight: 700;
 }
 
-/* ReactionEquation */
-.b-rxn { margin: 18px 0; }
-.b-rxn-eq {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
-  justify-content: center;
+/* ReactionEquation — long reactions need real breathing room and a
+   horizontal scroll rather than wrap, so the arrow stays attached to its
+   reagents. */
+.b-rxn {
+  margin: 28px 0;
+  padding: 18px 4px;
+  border-radius: var(--r-md);
+  background: var(--paper);
+  overflow-x: auto;
 }
+.b-rxn-eq {
+  display: flex; align-items: center; gap: 8px;
+  justify-content: flex-start;        /* let it scroll left-aligned */
+  min-width: max-content;
+  padding: 0 16px;
+}
+.b-rxn:has(.b-rxn-eq:not(:hover)) .b-rxn-eq { justify-content: center; }
 .b-rxn-species {
   display: flex; align-items: center;
-  font-family: var(--font-mono); font-size: 17px; color: var(--ink);
+  font-family: var(--font-mono); font-size: 18px; color: var(--ink);
+  white-space: nowrap;
+  padding: 4px 0;
 }
 .b-rxn-plus {
-  font-family: var(--font-serif); font-size: 26px;
-  color: var(--ink-mute); padding: 0 8px; align-self: center;
+  font-family: var(--font-serif); font-size: 28px;
+  color: var(--ink-mute); padding: 0 12px; align-self: center;
 }
 .b-rxn-arrow {
   display: flex; flex-direction: column; align-items: center;
-  min-width: 140px; padding: 0 14px; color: var(--ink);
+  min-width: 160px; padding: 0 18px; color: var(--ink);
 }
 .b-rxn-arrow-svg { display: block; width: 100%; height: 12px; }
 .b-rxn-reagents {
