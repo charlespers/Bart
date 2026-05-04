@@ -429,47 +429,68 @@
   padding: 28px 32px 24px;
   margin: 28px 0;
   box-shadow: 0 1px 0 rgba(0,0,0,0.02);
-  /* Long equations should scroll, not break the card. */
-  overflow-x: auto;
+  /* The card itself never scrolls (would clip the stamp + cite chip). The
+     scroll responsibility lives on `.b-formula-card-body` instead so
+     long equations move horizontally without dragging the card chrome. */
+  overflow: visible;
+  min-width: 0;
 }
 .b-formula-card-title {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-mute);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .b-formula-card-body {
   text-align: center;
-  font-size: 18px;
-  padding: 14px 0 18px;
+  font-size: 19px;
+  padding: 16px 0 20px;
   line-height: 1.6;
+  /* Allow horizontal scroll for very wide equations instead of clipping
+     at the right edge. `min-width: 0` is the grid/flex magic word that
+     lets a child shrink below its intrinsic content width. */
+  overflow-x: auto;
+  overflow-y: visible;
+  min-width: 0;
+}
+.b-formula-card-body .katex-display {
+  margin: 0 !important;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 1em;       /* the body already sets 19px */
 }
 .b-formula-card-legend {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 14px;
-  padding-top: 12px;
+  grid-template-columns: minmax(60px, auto) minmax(0, 1fr);
+  gap: 8px 16px;
+  padding-top: 14px;
   border-top: 1px dashed var(--rule);
 }
 .b-formula-card-legend .b-sym {
   font-family: var(--font-serif);
   font-style: italic;
-  font-size: 14px;
+  font-size: 15px;
   color: var(--accent);
   text-align: right;
+  min-width: 0;
 }
 .b-formula-card-legend .b-meaning {
   font-family: var(--font-serif);
-  font-size: 14px;
+  font-size: 15px;
   color: var(--ink-soft);
-  line-height: 1.4;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .b-formula-card-note {
-  margin-top: 12px;
+  margin-top: 14px;
   font-family: var(--font-hand);
-  font-size: 17px;
+  font-size: 18px;
   color: var(--accent-lo);
   transform: rotate(-0.4deg);
 }
@@ -515,31 +536,45 @@
   background: rgba(255,255,255,0.5);
   transform: rotate(-2deg);
 }
+/* Concept-build rung — was a 2-col grid with a fixed 130px label column
+   and a `1fr` body. Two problems showed up in the screenshots:
+     (a) `1fr` does not protect against intrinsic min-content overflow:
+         when the body holds a long inline KaTeX expression with
+         `white-space: nowrap`, the cell can outgrow its column, but the
+         display-math `.katex-display` plate happily clips at its right
+         edge — so equations like `x : R → R` or `x(t) = 0.1 sin(2π·60·t)`
+         get visually cut off mid-symbol.
+     (b) The `::before` left-rail glyph was rendering as a literal "|" in
+         some screenshots — happens when the row's font-stack doesn't have
+         the right glyph or when the pseudo-element is occluded; replacing
+         the bar with a thin solid border-left on the label is sturdier.
+   The fix: widen the label column to 156px with a min-content fallback,
+   set `min-width: 0` on the body cell so equations can use full width
+   (and overflow horizontally instead of clipping), and replace the bar
+   pseudo-element with a real border so it can never render as a glyph. */
 .b-concept-build-rung {
   display: grid;
-  grid-template-columns: 130px 1fr;
-  gap: 0 18px;
-  padding: 12px 18px;
+  grid-template-columns: minmax(140px, 156px) minmax(0, 1fr);
+  gap: 0 22px;
+  padding: 14px 18px;
   border-top: 1px dashed var(--rule);
+  align-items: start;
 }
 .b-concept-build-rung:first-of-type { border-top: none; }
 .b-concept-rung-label {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-mute);
-  padding-top: 3px;
-  position: relative;
-}
-.b-concept-rung-label::before {
-  content: "";
-  position: absolute;
-  left: -10px; top: 6px;
-  width: 4px; height: 14px;
-  border-radius: 2px;
-  background: currentColor;
+  padding-top: 4px;
+  padding-left: 10px;
+  border-left: 3px solid currentColor;
+  line-height: 1.35;
+  word-spacing: 0.05em;
+  white-space: normal;          /* allow "WHY WE NEED THIS" to wrap cleanly */
+  align-self: stretch;
 }
 .b-concept-rung-motivate  .b-concept-rung-label { color: var(--accent-lo); }
 .b-concept-rung-define    .b-concept-rung-label { color: var(--ink); }
@@ -549,13 +584,36 @@
 .b-concept-rung-apply     .b-concept-rung-label { color: var(--accent); }
 .b-concept-rung-body {
   font-family: var(--font-serif);
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: 16px;
+  line-height: 1.6;
   color: var(--ink);
+  min-width: 0;                  /* let inline KaTeX expand & scroll, not clip */
+  overflow-wrap: anywhere;       /* break very long unbroken tokens */
 }
 .b-concept-rung-math {
-  margin-top: 6px;
+  margin-top: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
 }
+/* Display math inside a rung: drop the global plate styling (already
+   inside a card frame), but keep enough air that the equation reads as
+   separate from the rung body text above it. Crucially, allow horizontal
+   scroll so a long equation never visually clips at the rung's right
+   edge — the symptom in the screenshots. */
+.b-concept-rung-math .katex-display {
+  margin: 6px 0 !important;
+  padding: 4px 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 1.08em;
+  overflow-x: auto;
+  overflow-y: visible;
+  text-align: left;              /* equations inside body prose read better left-aligned */
+}
+.b-concept-rung-math .katex-display > .katex { white-space: nowrap; }
 
 /* Citation chip — used inside formula-card and worked-example footers
    so the reader can trace back to the source corpus location. */
@@ -600,17 +658,22 @@
   justify-content: space-between;
   align-items: center;
 }
-.b-worked-example-body { padding: 20px 24px; }
+.b-worked-example-body {
+  padding: 20px 24px;
+  min-width: 0;          /* allow inline math to scroll, not clip */
+}
 .b-worked-example-problem {
   font-family: var(--font-serif);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.6;
   color: var(--ink);
-  margin-bottom: 16px;
+  margin-bottom: 18px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .b-worked-example-problem strong {
   font-family: var(--font-body);
-  font-weight: 600;
+  font-weight: 700;
   font-size: 13px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -626,6 +689,7 @@
   position: relative;
   padding: 18px 0 18px 48px;
   border-top: 1px dashed var(--rule);
+  min-width: 0;
 }
 .b-worked-example li:first-child { border-top: 0; }
 .b-worked-example li::before {
@@ -649,10 +713,29 @@
 .b-worked-example li ol { counter-reset: none; }
 .b-worked-example .b-step-action {
   font-family: var(--font-serif);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.55;
   color: var(--ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
+/* Display math inside a worked-example step: scoped scroll, generous
+   spacing above/below the step text but no plate (the step is already
+   inside the example's frame). Also align left so the equation reads
+   in the same column as the step's prose. */
+.b-worked-example li .katex-display {
+  margin: 10px 0 !important;
+  padding: 6px 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 1.08em;
+  text-align: left;
+  overflow-x: auto;
+  overflow-y: visible;
+}
+.b-worked-example li .katex-display > .katex { white-space: nowrap; }
 .b-worked-example .b-step-reasoning {
   font-family: var(--font-serif);
   font-style: italic;
