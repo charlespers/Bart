@@ -1,4 +1,4 @@
-"""Auxiliary CLI commands: list, doctor, render, format, quality, fix-patch."""
+"""Auxiliary CLI commands: list, doctor, render, format, quality, fix-patch, preview."""
 from __future__ import annotations
 
 import json
@@ -595,4 +595,137 @@ def fix_patch(
 
     console.print(f"\n[dim]quality report:[/dim] {out_path}")
     console.print(f"[dim]open[/dim] [white]{target}/index.html[/white]")
+    return 0
+
+
+# ── preview ───────────────────────────────────────────────────────
+
+
+def preview(
+    md_path: str | None = None,
+    *,
+    open_browser: bool = True,
+    out_dir: str | None = None,
+) -> int:
+    """Render an arbitrary markdown file through the bart pipeline and open
+    it in the browser. Sandbox for ad-hoc content (e.g. a practice exam
+    pasted in from elsewhere) — no API calls, no run_id required.
+
+    `md_path`: path to a .md file. If None, reads from STDIN.
+    `open_browser`: open the resulting HTML in the default browser.
+    `out_dir`: where to write the preview packet (default: a fresh tmp dir).
+    """
+    import json as _json
+    import shutil as _shutil
+    import sys as _sys
+    import tempfile as _tempfile
+    import webbrowser as _wb
+    from pathlib import Path as _P
+
+    console = Console()
+
+    # ── 1. Load the markdown ─────────────────────────────────────
+    if md_path:
+        src = _P(md_path).expanduser().resolve()
+        if not src.exists():
+            console.print(f"[red]✗[/red] file not found: {src}")
+            return 1
+        if src.is_dir():
+            console.print(f"[red]✗[/red] expected a file, got a directory: {src}")
+            return 1
+        try:
+            md_text = src.read_text(encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]✗[/red] cannot read {src}: {e}")
+            return 1
+        title_hint = src.stem
+    else:
+        if _sys.stdin.isatty():
+            console.print(
+                "[dim]reading markdown from stdin — paste content, then Ctrl-D:[/dim]"
+            )
+        md_text = _sys.stdin.read()
+        if not md_text.strip():
+            console.print("[red]✗[/red] no markdown content received on stdin.")
+            return 1
+        title_hint = "preview"
+
+    # ── 2. Stage a minimal run_dir so build_packet can do its job ─
+    if out_dir:
+        run_dir = _P(out_dir).expanduser().resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        run_dir = _P(_tempfile.mkdtemp(prefix="bart_preview_"))
+    console.print(f"[bold #c96442]▸ preview[/bold #c96442]  staging at [cyan]{run_dir}[/cyan]")
+
+    # Write the markdown as a top-level artifact so build_packet picks it up.
+    safe_stem = "".join(c for c in title_hint if c.isalnum() or c in "_-")[:40] or "preview"
+    md_filename = f"00_{safe_stem.upper()}.md"
+    (run_dir / md_filename).write_text(md_text, encoding="utf-8")
+
+    # Minimal manifest. build_packet inspects daily_lessons; we provide none.
+    manifest = {
+        "config": {
+            "subject": title_hint.replace("_", " ").title(),
+            "exam_date": "",
+        },
+        "generated_at": "",
+        "artifacts": [{"file": md_filename, "label": title_hint}],
+        "daily_lessons": [],
+    }
+    (run_dir / "manifest.json").write_text(
+        _json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+
+    # ── 3. Drive the renderer (no agent calls) ───────────────────
+    try:
+        from .render.packet import build_packet
+        warnings = build_packet(run_dir, manifest)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]✗[/red] render failed: {type(e).__name__}: {e}")
+        return 1
+
+    # Run format autofix once so the page is clean on first open.
+    try:
+        from .render.format_audit import audit, render_report
+        result = audit(run_dir, apply_fixes=True)
+        if result.errors:
+            console.print(
+                f"  [yellow]⚠[/yellow] {len(result.errors)} formatting error(s) — "
+                f"see the rendered page for visible markers"
+            )
+    except Exception:
+        pass
+
+    # Locate the HTML — build_packet emits using the artifact's `html` field
+    # (lowercased markdown filename with .html). For a top-level artifact
+    # named `00_FOO.md`, the HTML is `00_foo.html`.
+    candidates = [
+        run_dir / "index.html",
+        run_dir / md_filename.lower().replace(".md", ".html"),
+    ]
+    html_file = next((c for c in candidates if c.exists()), None)
+    # Fall back to any HTML found in the run dir.
+    if html_file is None:
+        for p in run_dir.rglob("*.html"):
+            html_file = p
+            break
+
+    if html_file is None:
+        console.print(f"[red]✗[/red] no HTML produced — nothing to open.")
+        return 1
+
+    console.print(f"  [green]✓[/green] rendered  [white]{html_file}[/white]")
+
+    if open_browser:
+        try:
+            _wb.open(html_file.as_uri())
+            console.print(f"  [dim]opened in default browser[/dim]")
+        except Exception:  # noqa: BLE001
+            console.print(f"  [dim]open manually:[/dim] [white]{html_file}[/white]")
+
+    n_warns = sum(1 for w in warnings if w.severity != "info")
+    if n_warns:
+        console.print(f"  [yellow]⚠[/yellow] {n_warns} render warning(s) — "
+                      f"check the page for inline issues.")
     return 0

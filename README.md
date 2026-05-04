@@ -183,6 +183,16 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
                             #   3. quality harness (coverage + fidelity + format)
                             #   4. per-page recovery for any page still broken
                             # idempotent; safe to re-run.
+./run preview <file.md>     # sandbox: render an arbitrary markdown file (or stdin) through
+                            # the full bart pipeline and open in browser. No API calls, no
+                            # run_id needed — paste in a practice exam, lesson draft, or
+                            # any test fragment and see it rendered with KaTeX, library
+                            # blocks, and CSS applied.
+                            #   --no-open   print the path instead of opening the browser
+                            #   --out DIR   write to DIR instead of a fresh tmp dir
+                            # examples:
+                            #   ./run preview path/to/exam.md
+                            #   cat exam.md | ./run preview
 ```
 
 ### Speed presets

@@ -89,6 +89,20 @@ def build_parser() -> argparse.ArgumentParser:
     fmt.add_argument("--rerender", action="store_true",
                      help="Re-render the packet from markdown after fixing — picks up CSS/template changes.")
 
+    pv = sub.add_parser(
+        "preview",
+        help="Sandbox: render an arbitrary markdown file (or stdin) through the full bart "
+             "pipeline and open it in the browser. No API calls, no run_id needed — just "
+             "paste in a practice exam, lesson draft, or test fragment and see it render. "
+             "Usage: ./run preview path/to/exam.md  OR  cat exam.md | ./run preview",
+    )
+    pv.add_argument("md_path", nargs="?",
+                    help="Path to a markdown file. Omit to read from stdin.")
+    pv.add_argument("--no-open", action="store_true",
+                    help="Don't open the result in the browser; just print the path.")
+    pv.add_argument("--out", type=str, default=None, metavar="DIR",
+                    help="Write the preview packet to DIR (default: a fresh tmp dir).")
+
     fp = sub.add_parser(
         "fix-patch",
         help="Recover an old run: re-render from markdown, apply every safe format autofix, "
@@ -138,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     # If the user typed bare `./run` (or any flags but no subcommand), default
     # the subcommand to `run`. This makes the run-subcommand's flags available
     # on the namespace even when the user didn't type the word "run".
-    known_cmds = {"run", "setup", "list", "doctor", "render", "format", "quality", "fix-patch"}
+    known_cmds = {"run", "setup", "list", "doctor", "render", "format", "quality", "fix-patch", "preview"}
     if not argv or argv[0] not in known_cmds:
         argv = ["run", *argv]
     args = build_parser().parse_args(argv)
@@ -186,6 +200,14 @@ def main(argv: list[str] | None = None) -> int:
         return fix_patch(
             run_id=getattr(args, "run_id", None),
             coverage_threshold=getattr(args, "coverage_threshold", 80.0),
+        )
+
+    if cmd == "preview":
+        from .commands import preview
+        return preview(
+            md_path=getattr(args, "md_path", None),
+            open_browser=not getattr(args, "no_open", False),
+            out_dir=getattr(args, "out", None),
         )
 
     if cmd == "run":

@@ -178,11 +178,14 @@ def expand_blocks(markdown_text: str) -> ExpansionResult:
         try:
             html = fn(**payload)
         except TypeError as e:
-            # Likely an unknown-kwarg from the author agent. Re-attempt with
-            # only the kwargs that the function's signature actually accepts;
-            # log the unknowns as info, not as a render failure. This keeps
-            # the page rendering when an author hallucinates a key like
-            # `title=`/`prompt=`/`label=` that the renderer doesn't model yet.
+            # The author's JSON either has unknown kwargs OR is missing
+            # required ones. We recover from both:
+            #   1. Drop unknown kwargs and retry with only accepted keys.
+            #   2. Synthesize placeholder defaults for missing required
+            #      keyword-only args (empty string for str, [] for list,
+            #      {} for dict, 0 for numeric). The block renders with a
+            #      "missing field" stamp instead of a blocking yellow stub
+            #      that hides the entire question.
             import inspect as _inspect
             try:
                 sig = _inspect.signature(fn)
@@ -190,15 +193,75 @@ def expand_blocks(markdown_text: str) -> ExpansionResult:
                 accepts_var_kw = any(
                     p.kind is _inspect.Parameter.VAR_KEYWORD for p in params.values()
                 )
-                if not accepts_var_kw and "unexpected keyword argument" in str(e):
+                err_str = str(e)
+                if not accepts_var_kw and "unexpected keyword argument" in err_str:
                     accepted = {k: v for k, v in payload.items() if k in params}
                     dropped = sorted(set(payload) - set(accepted))
+                    # After dropping unknowns, the call may still fail because
+                    # required kwargs are missing. Fill those with placeholders
+                    # so the block renders rather than collapsing to a stub.
+                    missing: list[str] = []
+                    for pname, p in params.items():
+                        if pname in accepted:
+                            continue
+                        if p.kind is _inspect.Parameter.KEYWORD_ONLY \
+                                and p.default is _inspect.Parameter.empty:
+                            missing.append(pname)
+                            accepted[pname] = _placeholder_for(pname, p.annotation)
                     html = fn(**accepted)
                     if dropped:
                         warnings.append(ExpansionWarning(
                             "unknown_kwargs",
                             f"bart-{name}: dropped unknown kwargs {dropped} "
                             f"(rendered with the rest)",
+                            name,
+                        ))
+                    if missing:
+                        html = (
+                            html
+                            + f'<div class="b-block-stub-note" style="margin:'
+                              f'8px 0 0;padding:6px 10px;font-size:11px;'
+                              f'color:#b48a3c;background:#fff3cd;'
+                              f'border-radius:4px;font-family:monospace">'
+                              f'⚠ bart-{name}: filled missing field(s) '
+                              f'{missing} with placeholder defaults — edit '
+                              f'the source markdown to provide real values.'
+                              f'</div>'
+                        )
+                        warnings.append(ExpansionWarning(
+                            "missing_required_kwargs",
+                            f"bart-{name}: filled missing required kwargs "
+                            f"{missing} with defaults",
+                            name,
+                        ))
+                elif "missing" in err_str and "required keyword-only argument" in err_str:
+                    # Determine which required kwargs the author skipped, then
+                    # supply a typed default so `fn()` succeeds. Render the
+                    # block with a small caveat note appended.
+                    missing: list[str] = []
+                    for pname, p in params.items():
+                        if pname in payload:
+                            continue
+                        if p.kind is _inspect.Parameter.KEYWORD_ONLY and p.default is _inspect.Parameter.empty:
+                            missing.append(pname)
+                            payload[pname] = _placeholder_for(pname, p.annotation)
+                    html = fn(**payload)
+                    if missing:
+                        html = (
+                            html
+                            + f'<div class="b-block-stub-note" style="margin:'
+                              f'8px 0 0;padding:6px 10px;font-size:11px;'
+                              f'color:#b48a3c;background:#fff3cd;'
+                              f'border-radius:4px;font-family:monospace">'
+                              f'⚠ bart-{name}: filled missing field(s) '
+                              f'{missing} with placeholder defaults — edit '
+                              f'the source markdown to provide real values.'
+                              f'</div>'
+                        )
+                        warnings.append(ExpansionWarning(
+                            "missing_required_kwargs",
+                            f"bart-{name}: filled missing required kwargs "
+                            f"{missing} with defaults",
                             name,
                         ))
                 else:
@@ -233,6 +296,45 @@ def _inline_warning(name: str, detail: str) -> str:
         f'border-radius:6px;font-family:monospace;font-size:13px;margin:12px 0">'
         f'<strong>bart-{escape(name)}</strong> failed: {escape(detail)}</div>\n\n'
     )
+
+
+def _placeholder_for(field_name: str, annotation: Any) -> Any:
+    """Synthesize a typed placeholder for a missing required kwarg.
+
+    Inspects the parameter's type annotation when available; falls back to
+    name heuristics (anything ending in `s` or with `list` in the name
+    becomes `[]`; otherwise empty string). The placeholder lets the block
+    render so the rest of the page is intact; an inline `⚠` note tells the
+    reader (and the author) that a real value is needed.
+    """
+    import typing as _typing
+    name_lc = field_name.lower()
+    if annotation is not None and annotation is not type(None):
+        origin = getattr(annotation, "__origin__", None)
+        if origin in (list, _typing.List):
+            return []
+        if origin in (dict, _typing.Dict):
+            return {}
+        if annotation is int or annotation is float:
+            return 0
+        if annotation is bool:
+            return False
+    if name_lc.endswith("s") or "list" in name_lc or "items" in name_lc \
+            or "choices" in name_lc or "steps" in name_lc \
+            or "hints" in name_lc or "rows" in name_lc:
+        return []
+    if "count" in name_lc or "num" in name_lc or "size" in name_lc:
+        return 0
+    fallback = {
+        "solution": "(solution to be provided)",
+        "answer": "(answer to be provided)",
+        "question": "(question text)",
+        "problem": "(problem statement)",
+        "tex": "?",
+        "title": "",
+        "body": "",
+    }
+    return fallback.get(name_lc, "(missing)")
 
 
 # ─── Documentation generator — used by prompts to advertise blocks ──
