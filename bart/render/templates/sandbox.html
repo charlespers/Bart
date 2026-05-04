@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-rel-root=".">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandbox · bart</title>
+<meta name="generator" content="bart packet renderer">
+<link rel="icon" href="./assets/bart-loaf.svg">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;600&family=Caveat:wght@500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="./packet.css">
+<link rel="stylesheet" href="./blocks.css">
+
+<link rel="stylesheet" href="./lib/katex/katex.min.css"
+      onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css';">
+<script defer src="./lib/katex/katex.min.js"
+        onerror="(function(){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js';s.defer=true;document.head.appendChild(s);})();"></script>
+<script defer src="./lib/katex/auto-render.min.js"
+        onerror="(function(){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js';s.defer=true;document.head.appendChild(s);})();"></script>
+<script defer src="./lib/katex/mhchem.min.js"
+        onerror="(function(){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/mhchem.min.js';s.defer=true;document.head.appendChild(s);})();"></script>
+
+<!-- marked.js for client-side markdown rendering. CDN-only since the
+     sandbox is a "paste-and-see" tool and adding 50KB of vendor JS to
+     every offline packet for a feature most readers won't use is wasteful. -->
+<script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+
+<style>
+.sb-shell { display: grid; grid-template-columns: 1fr 1fr; min-height: 100vh; }
+.sb-pane { padding: 24px 28px; min-width: 0; overflow: auto; max-height: 100vh; }
+.sb-pane.sb-input {
+  background: var(--paper-hi);
+  border-right: 1px solid var(--rule);
+}
+.sb-pane.sb-output { background: var(--paper); }
+.sb-pane h2 {
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-mute); margin: 0 0 12px;
+  border-bottom: 1px solid var(--rule); padding-bottom: 8px;
+}
+.sb-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+.sb-toolbar a {
+  font-family: var(--font-mono); font-size: 11px; color: var(--accent);
+  text-decoration: none; padding: 4px 8px; border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+.sb-toolbar a:hover { background: var(--accent-tint); }
+.sb-toolbar .sb-spacer { flex: 1; }
+.sb-toolbar .sb-status {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--ink-mute);
+}
+#sb-md {
+  width: 100%; min-height: calc(100vh - 140px);
+  font-family: var(--font-mono); font-size: 13px; line-height: 1.55;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 6px;
+  padding: 12px; resize: vertical;
+}
+#sb-md:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+#sb-rendered {
+  font-family: var(--font-serif); font-size: 17px; line-height: 1.7;
+}
+#sb-rendered article { max-width: 100%; }
+.sb-empty {
+  color: var(--ink-mute); font-family: var(--font-serif);
+  font-style: italic; font-size: 15px; padding: 32px 0;
+}
+@media (max-width: 900px) {
+  .sb-shell { grid-template-columns: 1fr; }
+  .sb-pane { max-height: none; }
+  #sb-md { min-height: 320px; }
+}
+</style>
+</head>
+<body>
+<div class="sb-shell">
+  <section class="sb-pane sb-input">
+    <h2>markdown input</h2>
+    <div class="sb-toolbar">
+      <a href="./index.html">← packet</a>
+      <a href="#" id="sb-clear">clear</a>
+      <a href="#" id="sb-sample">load sample</a>
+      <span class="sb-spacer"></span>
+      <span class="sb-status" id="sb-status">paste & see live preview →</span>
+    </div>
+<textarea id="sb-md" spellcheck="false" placeholder="# Paste any markdown here
+
+Math renders inline: \(E = mc^2\)
+
+```bart-formula-card
+{&quot;tex&quot;: &quot;a^2 + b^2 = c^2&quot;, &quot;title&quot;: &quot;Pythagoras&quot;}
+```
+
+The right pane updates as you type."></textarea>
+  </section>
+  <section class="sb-pane sb-output">
+    <h2>live preview</h2>
+    <div id="sb-rendered">
+      <div class="sb-empty">paste markdown on the left — the preview will render here.</div>
+    </div>
+  </section>
+</div>
+
+<script defer src="./lib_blocks.js"></script>
+<script defer src="./sandbox.js"></script>
+</body>
+</html>

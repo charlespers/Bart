@@ -94,6 +94,7 @@ _TOPBAR_TMPL = """\
     {extra_crumb}
   </div>
   <div class="topbar-actions">
+    <a class="btn btn-icon" href="{rel}/sandbox.html" id="sandbox-link" title="Sandbox — paste markdown, see live preview">⌗</a>
     <button class="btn btn-icon" id="search-btn" title="Search (⌘K)">⌕</button>
     <button class="btn btn-icon" id="theme-toggle" title="Theme">light</button>
   </div>

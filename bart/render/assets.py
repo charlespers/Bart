@@ -157,9 +157,15 @@ def copy_katex(packet_dir: Path) -> None:
 
 
 def copy_template_assets(packet_dir: Path) -> None:
-    """Copy packet.css/js + blocks.css + lib_blocks.js from templates."""
+    """Copy packet.css/js + blocks.css + lib_blocks.js + sandbox files
+    from templates. The sandbox is a self-contained client-side preview
+    page (sandbox.html) that lets the reader paste markdown and see it
+    render through the same library-block + KaTeX pipeline."""
     tpl_dir = Path(__file__).parent / "templates"
-    for fname in ("packet.css", "packet.js", "blocks.css", "lib_blocks.js"):
+    for fname in (
+        "packet.css", "packet.js", "blocks.css", "lib_blocks.js",
+        "sandbox.html", "sandbox.js",
+    ):
         s = tpl_dir / fname
         if s.exists():
             shutil.copy2(s, packet_dir / fname)

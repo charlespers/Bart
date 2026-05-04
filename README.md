@@ -195,6 +195,8 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
                             #   cat exam.md | ./run preview
 ```
 
+**In-packet sandbox (`sandbox.html`).** Every packet now ships a client-side sandbox at `<run>/sandbox.html` — open it (or click the ⌗ button in the topbar of any packet page) to paste markdown into a live-preview pane. No CLI required. The sandbox handles the most common library blocks (formula-card, trap-callout, quick-check, multi-step, multiple-choice, worked-example, mnemonic-card, flowchart, why-it-matters, fig-caption, tag, stamp, paper-rule, marginalia) and KaTeX math. SVG-heavy components (concept-map, anatomy-diagram, orbital-diagram) render as a placeholder with a hint to use `./run preview` for the full Python pipeline. `./run format --fix` backfills the sandbox into older runs that pre-date the feature.
+
 ### Speed presets
 
 ```bash

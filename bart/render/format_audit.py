@@ -319,7 +319,12 @@ _RAW_FENCE_LEAK = re.compile(r"```bart-[a-z\-]+", re.IGNORECASE)
 
 def _check_raw_fence_leak(rel: str, html: str) -> list[AuditIssue]:
     """`` ```bart-foo `` should always be expanded by block_expand. If we see
-    one in the final HTML, the expander missed it."""
+    one in the final HTML, the expander missed it.
+
+    The sandbox page legitimately displays `bart-*` fence syntax in its
+    sample-text placeholder, so it's exempt from this check."""
+    if rel.endswith("sandbox.html"):
+        return []
     if _RAW_FENCE_LEAK.search(html):
         return [AuditIssue(rel, "raw_bart_fence",
                            "raw ```bart-* code fence reached final HTML (block_expand missed it)",
@@ -1222,6 +1227,26 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
     result = AuditResult()
     file_paths = _iter_html_files(run_dir)
 
+    # ── Stage 0: backfill sandbox + ensure topbar link ────────────
+    # Older runs may pre-date the sandbox feature. The autofix drops
+    # sandbox.html / sandbox.js into the packet so every existing run
+    # gets the live-preview feature on next `format --fix`.
+    if apply_fixes:
+        try:
+            n = _ensure_sandbox_present(run_dir)
+            if n:
+                result.fixes_applied += n
+                result.issues.append(AuditIssue(
+                    "<run>", "fixed:sandbox_installed",
+                    f"backfilled sandbox.html + sandbox.js ({n} new file(s)) — "
+                    f"open `<run>/sandbox.html` to paste-and-preview markdown",
+                    "info", fix_applied=True,
+                ))
+        except Exception as e:  # noqa: BLE001
+            result.issues.append(AuditIssue(
+                "<run>", "sandbox_install_error", str(e), "warn",
+            ))
+
     # ── Stage 1: per-file string fixes + initial detection ────────
     file_html: dict[Path, str] = {}
     file_original: dict[Path, str] = {}
@@ -1321,6 +1346,26 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
                 result.issues.append(AuditIssue(rel, "write_error", str(e), "error"))
 
     return result
+
+
+def _ensure_sandbox_present(run_dir: Path) -> int:
+    """Drop the sandbox.html / sandbox.js pair into the packet if missing.
+
+    The sandbox is a self-contained client-side markdown preview page —
+    paste any markdown, see it rendered through the bart library-block +
+    KaTeX pipeline. Older runs (generated before sandbox shipped) won't
+    have it; this autofix backfills them so every packet exposes the
+    feature without requiring a full re-render. Returns the count of
+    files actually copied.
+    """
+    from .assets import copy_template_assets
+    n = 0
+    for fname in ("sandbox.html", "sandbox.js"):
+        if not (run_dir / fname).exists():
+            n += 1
+    if n:
+        copy_template_assets(run_dir)
+    return n
 
 
 def _rebuild_packet_from_markdown(run_dir: Path) -> bool:
