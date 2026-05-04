@@ -48,7 +48,7 @@ CRITICAL_CSS = """
 * { box-sizing: border-box; }
 html, body {
   margin: 0; padding: 0; background: var(--bg); color: var(--fg);
-  font-family: var(--font-body); font-size: 17px; line-height: 1.7;
+  font-family: var(--font-body); font-size: 19px; line-height: 1.75;
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
 }
 .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
@@ -69,8 +69,8 @@ article {
   max-width: 880px;
   margin: 0 auto;
   font-family: var(--font-serif);
-  font-size: 17px;
-  line-height: 1.7;
+  font-size: 19px;
+  line-height: 1.75;
 }
 article p { margin: 0 0 1.4rem; text-wrap: pretty; }
 article h1, article h2, article h3, article h4 {
@@ -78,20 +78,25 @@ article h1, article h2, article h3, article h4 {
   letter-spacing: -0.015em; line-height: 1.25; color: var(--fg);
   scroll-margin-top: 80px;
 }
-article h1 { font-size: 38px; margin: 0 0 8px; letter-spacing: -0.025em; }
+article h1 { font-size: 44px; margin: 0 0 10px; letter-spacing: -0.028em; }
 article h2 {
-  font-size: 26px; margin: 56px 0 12px; padding-top: 28px;
+  font-size: 30px; margin: 60px 0 14px; padding-top: 30px;
   border-top: 1px solid var(--border);
 }
 article h2:first-of-type { border-top: 0; padding-top: 0; margin-top: 36px; }
-article h3 { font-size: 20px; margin: 36px 0 10px; }
-article h4 { font-size: 17px; margin: 24px 0 8px; color: var(--ink-soft); }
+article h3 { font-size: 23px; margin: 38px 0 10px; }
+article h4 { font-size: 19px; margin: 26px 0 8px; color: var(--ink-soft); }
 .hero { padding: 64px 0 48px; border-bottom: 1px solid var(--border); margin-bottom: 56px; }
-.hero h1 { font-size: 56px; letter-spacing: -0.035em; }
+.hero h1 { font-size: 60px; letter-spacing: -0.035em; }
 .hero h1 .dot { color: var(--accent); }
 /* Pre-load reservation for KaTeX-rendered display math: prevents the row
-   collapsing to zero before the script runs, which would jump the page. */
-.katex-display { margin: 1.4em 0 !important; min-height: 1.6em; }
+   collapsing to zero before the script runs, which would jump the page.
+   Until KaTeX swaps in the rendered HTML, hide the raw `\[…\]` source so
+   the reader never sees the garbled-looking pre-render flash. */
+.katex-display { margin: 1.6em 0 !important; min-height: 2.4em; }
+.arithmatex { color: transparent; }
+html.katex-rendered .arithmatex { color: inherit; }
+.katex .arithmatex, .katex-display .arithmatex { color: inherit; }
 @media (max-width: 1100px) {
   article { max-width: 760px; }
 }

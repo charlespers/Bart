@@ -205,6 +205,46 @@ cp examples/sample_notes.md materials/
 ./run render run_2026-05-03_141503
 ```
 
+---
+
+## Re-rendering an existing packet
+
+`./run render` rebuilds the HTML packet from markdown that's already on disk. **No API calls. No tokens spent.** Use it whenever you change anything in `bart/bart/render/` (CSS, KaTeX/mhchem loader, page template, design library blocks) and want the change to land on a packet you've already generated.
+
+```bash
+# Rebuild the most recent run:
+./run render
+
+# Rebuild a specific run (find the id with `./run list`):
+./run render run_2026-05-03_141503
+```
+
+What `render` re-does:
+
+- Re-reads every `.md` artifact under `output/<run_id>/`.
+- Re-runs the sanitizer, markdown renderer, and design-library block expander.
+- Copies fresh KaTeX + mhchem + brand assets into `<run_id>/lib/` and `<run_id>/assets/`.
+- Re-applies the current `packet.css`, `blocks.css`, and the inline critical CSS.
+- Re-builds `index.html`, `lessons/day_NN.html`, the search index, and the packet manifest.
+
+It's idempotent: running it twice produces identical output. It never calls the API, so it's safe to loop while iterating on visuals.
+
+### When equations or styling don't render
+
+If LaTeX still looks like raw `\[…\]` source, or the page reverts to plain Inter instead of Source Serif 4, your *generated* HTML was produced by a previous version of the renderer. Just run `./run render` — the new code paths (broadened `has_math` detection, mhchem loader, critical-CSS `--font-serif` declaration, scoped `.katex-display` plate) will replace the stale output. The markdown source is untouched.
+
+### When some daily lessons are missing
+
+If the index page shows fewer day cards than the master plan listed (or the new orange "N day(s) did not generate" banner appears), the orchestrator hit a transient API error in a parallel worker. The day-level retry pass added in this version usually catches them in the same run; if it didn't, recover with:
+
+```bash
+./run --resume <run_id>
+```
+
+`--resume` skips every day file already on disk and only regenerates the missing ones. To find the run id, use `./run list` (or read it off the banner).
+
+---
+
 ### Environment variables
 
 | Variable | Effect |

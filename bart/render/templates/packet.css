@@ -46,10 +46,10 @@
   --font-serif: "Source Serif 4", "Iowan Old Style", "Source Serif Pro", Georgia, serif;
   --font-hand:  "Caveat", "Bradley Hand", cursive;
 
-  --text-base: 17px;     /* widened for screen readability */
-  --text-sm:   14px;
-  --text-xs:   12px;
-  --leading:   1.7;
+  --text-base: 19px;     /* bumped from 17 for textbook readability on screens */
+  --text-sm:   15px;
+  --text-xs:   13px;
+  --leading:   1.75;
   --tracking-mono: 0.005em;
 
   /* spacing */
@@ -358,12 +358,12 @@ article h1, article h2, article h3, article h4, article h5, article h6 {
   scroll-margin-top: 80px;
 }
 
-article h1 { font-size: 38px; margin: 0 0 8px; letter-spacing: -0.025em; }
-article h2 { font-size: 26px; margin: 56px 0 12px; padding-top: 28px; border-top: 1px solid var(--border); }
+article h1 { font-size: 44px; margin: 0 0 10px; letter-spacing: -0.028em; }
+article h2 { font-size: 30px; margin: 60px 0 14px; padding-top: 30px; border-top: 1px solid var(--border); }
 article h2:first-of-type { border-top: 0; padding-top: 0; margin-top: 36px; }
-article h3 { font-size: 20px; margin: 36px 0 10px; }
-article h4 { font-size: 17px; margin: 24px 0 8px; color: var(--fg-soft); }
-article h5, article h6 { font-size: 15px; margin: 18px 0 6px; color: var(--fg-soft); text-transform: uppercase; letter-spacing: 0.05em; }
+article h3 { font-size: 23px; margin: 38px 0 10px; }
+article h4 { font-size: 19px; margin: 26px 0 8px; color: var(--fg-soft); }
+article h5, article h6 { font-size: 17px; margin: 20px 0 6px; color: var(--fg-soft); text-transform: uppercase; letter-spacing: 0.05em; }
 
 article p {
   margin: 0 0 var(--gutter-y);
@@ -553,37 +553,132 @@ article details > p:first-of-type {
   margin-top: 0;
 }
 
-/* ─── Math (KaTeX + legacy MathJax) ─── */
+/* ─── Math (KaTeX) ─────────────────────────────────────────────────
+   A few invariants the rules below enforce:
+     1.  Raw `\[…\]` / `\(…\)` source must never flash visible to the
+         reader before KaTeX swaps it for rendered HTML — that's the
+         "garbled" look. We hide arithmatex spans/divs by default and
+         re-show only the rendered `.katex` subtree.
+     2.  Display math must be obviously separate from prose: indented
+         plate, accent rule, generous air.
+     3.  Inline math must NOT inflate line-height — KaTeX's default
+         `line-height: 1.2` already does the right thing; we just keep
+         the wrapper tight and never let the chip background spill onto
+         the next line. */
 
-/* KaTeX inline — keep at body size so it doesn't blow up line height. */
-.katex { font-size: 1em; line-height: 1.4; }
+/* Raw arithmatex containers, before KaTeX runs:
+   `<span class="arithmatex">\(…\)</span>`  /  `<div class="arithmatex">\[…\]</div>`
+   We hide raw source so unrendered LaTeX never appears as "garbage", and
+   reveal once <html> gets the `katex-rendered` class set by auto-render. */
+.arithmatex { color: transparent; user-select: none; }
+html.katex-rendered .arithmatex { color: inherit; user-select: text; }
+.arithmatex .katex,
+.arithmatex .katex-display,
+html.katex-rendered .arithmatex .katex,
+html.katex-rendered .arithmatex .katex-display { color: var(--fg); user-select: text; }
+/* If KaTeX failed to load entirely (no internet, no CDN), reveal the
+   raw source after 4s as a graceful fallback so the reader still gets
+   *something* legible instead of a blank gap. */
+@keyframes bart-reveal-math { to { color: inherit; } }
+.arithmatex { animation: bart-reveal-math 0s linear 4s forwards; }
+html.katex-rendered .arithmatex { animation: none; }
 
-/* KaTeX display equations — generous breathing room. The previous 22px
-   was visibly cramped against surrounding prose; bumped to 30/24 with
-   horizontal scroll for long lines. */
+/* KaTeX inline — keep at body size, no extra padding around the wrapper
+   itself; the inline-chip styling below handles the visual tint. */
+.katex {
+  font-size: 1.04em;
+  line-height: normal;
+  white-space: normal;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "tnum" 0, "lnum" 1;
+}
+
+/* Display equations — visually a "plate" anchored under the prose:
+   generous vertical air, paper-toned background, accent left rule, and
+   horizontal scroll for very long expressions (a rendered KaTeX line
+   beats a wrapped one for legibility). */
 .katex-display {
-  margin: 32px 0 !important;
-  padding: 4px 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  /* Long balanced equations (e.g. multi-line reaction mechanisms) need
-     to scroll horizontally rather than overflow the page. */
+  margin: 32px auto !important;
+  padding: 22px 28px;
   max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  background: var(--paper-hi);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  font-size: 1.18em;       /* notably larger than prose; equations are the focus */
+  text-align: center;
+  /* Flat shadow ladder, not a card lift — keeps the page calm. */
+  box-shadow: 0 1px 0 rgba(34,30,25,0.02);
+}
+[data-theme="dark"] .katex-display,
+[data-theme="auto"] .katex-display {
+  background: rgba(255,255,255,0.03);
+  border-color: rgba(255,255,255,0.10);
+  border-left-color: var(--accent-hi);
 }
 .katex-display > .katex {
-  font-size: 1.1em;          /* slightly larger than inline */
-  white-space: nowrap;       /* prevent mid-equation wrap */
+  display: inline-block;
+  white-space: nowrap;
   text-align: center;
-  display: block;
+  font-size: 1em;          /* inherit the 1.18em from the plate */
+  max-width: 100%;
 }
-/* When a display equation lives inside a tighter container (formula-card,
-   worked-example step), use scoped overrides — keep the breathing room
-   but prevent the equation from pushing the card wide. */
+.katex-display > .katex > .katex-html { white-space: nowrap; }
+
+/* Equations inside cards (formula-card, worked-example, concept-build)
+   inherit the card's frame — drop the plate styling, keep the size. */
 .b-formula-card .katex-display,
 .b-worked-example .katex-display,
 .b-concept-build .katex-display {
-  margin: 18px 0 !important;
-  padding: 8px 12px;
+  margin: 16px 0 !important;
+  padding: 8px 4px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 1.12em;
+}
+
+/* Inline math chip — subtle accent tint so equations read as discrete
+   tokens against the serif body. Padding kept small so the wrapper
+   never bumps the surrounding line-height. */
+article p .katex,
+article li .katex,
+article td .katex,
+article dd .katex {
+  background: rgba(201,100,66,0.05);
+  border-radius: 3px;
+  padding: 0 3px;
+  /* `clone` lets the tint break across line wraps without leaving a
+     single huge background rectangle. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+[data-theme="dark"] article p .katex,
+[data-theme="auto"] article p .katex,
+[data-theme="dark"] article li .katex,
+[data-theme="auto"] article li .katex {
+  background: rgba(232,138,106,0.10);
+}
+.b-formula-card .katex,
+.b-worked-example .katex,
+.b-concept-build .katex,
+.katex-display .katex,
+.katex-display .katex * {
+  background: transparent;
+  padding: 0;
+}
+
+/* Pre-render reservation: while KaTeX is downloading, give a display
+   block enough vertical space that page layout doesn't visibly jump
+   when the rendered equation lands. */
+.arithmatex[display],
+div.arithmatex {
+  display: block;
+  min-height: 2.4em;
+  margin: 24px 0;
 }
 
 /* Legacy MathJax (kept for fallback). Rules mirror KaTeX. */
@@ -1064,3 +1159,49 @@ mjx-container ~ .arithmatex { color: inherit; }
 article dl { margin: 18px 0; }
 article dl dt { font-weight: 600; color: var(--accent-lo); margin-top: 10px; }
 article dl dd { margin: 2px 0 8px 18px; color: var(--fg-soft); }
+
+/* ─── Missing-days banner (index page) ───
+   Surfaces "the planner asked for N days but only K landed on disk" so a
+   reader can act on it instead of getting a silently-truncated packet. */
+.missing-days-banner {
+  display: flex; gap: 14px;
+  margin: 24px 0 32px;
+  padding: 18px 22px;
+  background: rgba(184,137,58,0.10);
+  border: 1px solid rgba(184,137,58,0.35);
+  border-left: 4px solid #b8893a;
+  border-radius: 10px;
+}
+.missing-days-banner-icon {
+  font-size: 22px;
+  color: #b8893a;
+  font-weight: 700;
+  line-height: 1.1;
+  flex-shrink: 0;
+}
+.missing-days-banner-title {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+}
+.missing-days-banner-text {
+  font-family: var(--font-serif);
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+.missing-days-banner-text code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: rgba(34,30,25,0.06);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+[data-theme="dark"] .missing-days-banner,
+[data-theme="auto"] .missing-days-banner {
+  background: rgba(184,137,58,0.16);
+  border-color: rgba(184,137,58,0.40);
+}

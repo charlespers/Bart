@@ -150,6 +150,8 @@ def _build_index_page(
     days: list[dict],
     topics_by_day: dict[int, str],
     days_focuses: dict[int, str],
+    missing_day_nums: list[int] | None = None,
+    run_id: str = "",
 ) -> str:
     """Compose the landing page from structural blocks."""
     page = Page()
@@ -191,6 +193,27 @@ def _build_index_page(
         ]
         page.add(DayGridBlock(cards=day_cards))
 
+    # Visible recovery banner when the planner asked for more days than the
+    # orchestrator wrote — gives the reader a one-line action instead of
+    # silently shipping a holey packet.
+    if missing_day_nums:
+        nums = ", ".join(str(n) for n in missing_day_nums)
+        cmd = f"./run --resume {run_id}" if run_id else "./run --resume <run_id>"
+        from .blocks.base import ProseBlock
+        page.add(ProseBlock(html=(
+            '<section class="missing-days-banner">'
+            '<div class="missing-days-banner-icon">⚠</div>'
+            '<div class="missing-days-banner-body">'
+            f'<div class="missing-days-banner-title">{len(missing_day_nums)} day(s) did not generate</div>'
+            f'<div class="missing-days-banner-text">'
+            f'Missing day numbers: <strong>{nums}</strong>. '
+            f'The planner expected them but the orchestrator did not write the file '
+            f'(usually a transient API error in a parallel worker). '
+            f'Recover with <code>{cmd}</code> — completed days are skipped, only '
+            f'the missing ones are regenerated.'
+            f'</div></div></section>'
+        )))
+
     return page.render()
 
 
@@ -228,6 +251,26 @@ def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
     # ── Discover days + extract topic labels from manifest
     days = _discover_days(run_dir)
     topics_by_day = {d.get("day"): d.get("topic", "") for d in manifest.get("daily_lessons", [])}
+
+    # ── Surface dropped days. The manifest is the source of truth for what
+    # the planner intended to produce; the disk only has what the orchestrator
+    # actually wrote. If they diverge, the run lost days (transient API
+    # failure, rate-limit, OOM in a parallel worker) and the packet should
+    # tell the reader exactly which days are missing instead of silently
+    # shipping a holey table of contents. The manifest day numbers come
+    # from the planner; disk numbers come from `_discover_days`.
+    expected_day_nums = sorted({
+        d.get("day") for d in manifest.get("daily_lessons", []) if d.get("day") is not None
+    })
+    on_disk_day_nums = {d["day_num"] for d in days}
+    missing_day_nums = [n for n in expected_day_nums if n not in on_disk_day_nums]
+    if missing_day_nums:
+        detail = (
+            f"manifest expected {len(expected_day_nums)} day(s) but disk has "
+            f"{len(on_disk_day_nums)}. Missing: {missing_day_nums}. "
+            f"Recover with: ./run --resume {run_dir.name}"
+        )
+        warnings.append(Warning("daily_lessons", "missing_days", detail))
 
     # ── Build the cross-page nav (sidebar "packet" section)
     packet_nav: list[dict] = []
@@ -319,6 +362,8 @@ def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
         days=days,
         topics_by_day=topics_by_day,
         days_focuses=days_focuses,
+        missing_day_nums=missing_day_nums,
+        run_id=run_dir.name,
     )
     index_html = assemble_page(
         body=body,

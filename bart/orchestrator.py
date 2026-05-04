@@ -764,6 +764,7 @@ class Orchestrator:
             return day_num, filename, "written"
 
         total_days = len(day_entries)
+        failed_entries: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
             tasks = {pool.submit(_gen_day, e): e for e in day_entries}
             self.console.print(
@@ -780,7 +781,45 @@ class Orchestrator:
                     self.console.print(f"  {icon} [{done_count}/{total_days}] Day {day_num:02d} — {filename}")
                 except Exception as e:  # noqa: BLE001
                     self.logger.error("day %s failed: %s\n%s", entry.get("day"), e, traceback.format_exc())
-                    self.console.print(f"  [red]✗[/red] [{done_count}/{total_days}] Day {entry.get('day')} — {e}")
+                    self.console.print(
+                        f"  [red]✗[/red] [{done_count}/{total_days}] Day {entry.get('day')} — {e} "
+                        f"[dim](will retry serially)[/dim]"
+                    )
+                    failed_entries.append(entry)
+
+        # ── Day-level retry pass ─────────────────────────────────────
+        # Parallel runs lose entire days when an API error exhausts the
+        # call-level retries (transient 529s, regional rate-limits, the
+        # connection pool dropping). Re-attempt failures one at a time so
+        # they have the full per-call retry budget without contention. This
+        # is the difference between shipping a packet with days 1, 3, 5
+        # vs. all 8 days from the same run.
+        if failed_entries:
+            self.console.print(
+                f"  [{ACCENT_HI}]↻[/{ACCENT_HI}] retrying {len(failed_entries)} failed day(s) serially "
+                f"[dim](parallel run lost them — likely rate-limit / transient)[/dim]"
+            )
+            still_failed: list[dict[str, Any]] = []
+            for entry in failed_entries:
+                try:
+                    day_num, filename, status = _gen_day(entry)
+                    self.console.print(
+                        f"  [{RICH_OK}]✓[/{RICH_OK}] Day {day_num:02d} — {filename} [dim](recovered)[/dim]"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    self.logger.error("day %s failed on retry: %s", entry.get("day"), e)
+                    self.console.print(
+                        f"  [red]✗[/red] Day {entry.get('day')} — {e} [dim](still failing)[/dim]"
+                    )
+                    still_failed.append(entry)
+            if still_failed:
+                missing = ", ".join(str(e.get("day")) for e in still_failed)
+                self.console.print(
+                    f"  [yellow]⚠ {len(still_failed)} day(s) still missing after retry: {missing}.[/yellow]"
+                )
+                self.console.print(
+                    f"  [dim]resume with:[/dim] [bold]./run --resume {self.paths.run_id}[/bold]"
+                )
 
     # ------------------------------------------------------------------
     def _write_manifest(self, corpus, day_entries, master_plan_path):

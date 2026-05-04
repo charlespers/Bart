@@ -17,26 +17,61 @@ from typing import Iterable
 # to the MathJax pattern that came before.
 _KATEX_AUTORENDER_CONFIG = """
 (function () {
-  function run() {
-    if (!window.renderMathInElement) return;
-    window.renderMathInElement(document.body, {
-      delimiters: [
-        {left: '\\\\(', right: '\\\\)', display: false},
-        {left: '\\\\[', right: '\\\\]', display: true},
-        {left: '$$', right: '$$', display: true}
-      ],
-      ignoredTags: ['script','noscript','style','textarea','pre','code'],
-      ignoredClasses: ['no-katex'],
-      throwOnError: false,
-      strict: 'ignore',
-      trust: function (ctx) { return ['\\\\htmlId','\\\\href'].includes(ctx.command); },
-      output: 'html'
-    });
+  // Polls for KaTeX to be ready, then runs auto-render across the body.
+  // Polling is more robust than a single DOMContentLoaded listener because
+  // we load katex/auto-render with `defer` AND fall back to the CDN via
+  // <script onerror>; the CDN copy may arrive after DOMContentLoaded.
+  var TRIES = 0, MAX = 200;
+  function ready() {
+    return window.katex && window.renderMathInElement;
+  }
+  function go() {
+    try {
+      window.renderMathInElement(document.body, {
+        delimiters: [
+          {left: '\\\\(', right: '\\\\)', display: false},
+          {left: '\\\\[', right: '\\\\]', display: true},
+          {left: '$$',     right: '$$',     display: true}
+        ],
+        // `pre`/`code`/`script` shouldn't be parsed as math. arithmatex
+        // wraps math in <span class="arithmatex"> / <div class="arithmatex">
+        // which auto-render walks INTO — that's intentional.
+        ignoredTags: ['script','noscript','style','textarea','pre','code','tt'],
+        ignoredClasses: ['no-katex'],
+        throwOnError: false,
+        errorColor: '#9a4628',
+        strict: 'ignore',
+        // 'html' is widest-supported (works on every browser); 'mathml' is
+        // crisper on Safari but renders boxes on Chromium-without-fonts.
+        // 'htmlAndMathml' is the safest default — KaTeX picks per-browser.
+        output: 'htmlAndMathml',
+        macros: {
+          // Common shortcuts used by the design library + author prompts.
+          '\\\\R': '\\\\mathbb{R}',
+          '\\\\C': '\\\\mathbb{C}',
+          '\\\\Z': '\\\\mathbb{Z}',
+          '\\\\N': '\\\\mathbb{N}',
+          '\\\\eps': '\\\\varepsilon',
+          '\\\\half': '\\\\tfrac{1}{2}'
+        }
+      });
+      // Reveal the arithmatex wrappers (we hide them in CSS to prevent the
+      // raw `\[…\]` source from flashing before KaTeX swaps in the render).
+      document.documentElement.classList.add('katex-rendered');
+    } catch (e) {
+      // never let a single bad equation crash the whole page render
+      console && console.warn && console.warn('[bart] KaTeX render error:', e);
+    }
+  }
+  function tick() {
+    if (ready()) { go(); return; }
+    if (++TRIES > MAX) return;
+    setTimeout(tick, 25);
   }
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', run);
+    document.addEventListener('DOMContentLoaded', tick);
   } else {
-    run();
+    tick();
   }
 })();
 """
