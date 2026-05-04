@@ -71,6 +71,32 @@ def doctor() -> int:
             console.print(f"[red]✗[/red] {mod} not importable: {e}")
             ok = False
 
+    # Optional PDF fallbacks — not required, but enable extraction from
+    # tricky PDFs (broken font maps, image-only scans).
+    import os as _os
+    try:
+        __import__("pdfplumber")
+        console.print("[green]✓[/green] pdfplumber importable [dim](handles broken font maps)[/dim]")
+    except ImportError:
+        console.print("[yellow]⊘[/yellow] pdfplumber not installed [dim](optional — install for better PDF extraction on tricky files)[/dim]")
+    try:
+        __import__("pytesseract")
+        __import__("pdf2image")
+        import shutil as _sh
+        if _sh.which("tesseract") and _sh.which("pdftoppm"):
+            disabled = _os.environ.get("BART_PDF_OCR") == "0"
+            state = "disabled (BART_PDF_OCR=0)" if disabled else "auto-runs on image-only PDFs"
+            console.print(f"[green]✓[/green] OCR ready [dim]({state})[/dim]")
+        elif not _sh.which("tesseract"):
+            console.print("[yellow]⊘[/yellow] OCR libs installed but `tesseract` binary missing [dim](brew install tesseract)[/dim]")
+        else:
+            console.print("[yellow]⊘[/yellow] OCR libs installed but `pdftoppm` (poppler) missing [dim](brew install poppler)[/dim]")
+    except ImportError:
+        console.print(
+            "[yellow]⊘[/yellow] OCR not installed "
+            "[dim](optional — `pip install pytesseract pdf2image` + `brew install tesseract poppler` to auto-OCR image PDFs)[/dim]"
+        )
+
     # Config
     cfg = load_config()
     if not cfg:

@@ -72,10 +72,31 @@ def extract_all(console: Console | None = None) -> tuple[list[ExtractedFile], li
                 console.print(f"  [yellow]⊘[/yellow] skip [dim]{rel}[/dim] ({sf.skip_reason})")
             continue
         text, err = extract(path)
-        if err or not text.strip():
+        # Treat empty AND mojibake outputs as failures — gibberish poisons
+        # downstream agents (the model wastes tokens trying to make sense
+        # of OCR-of-handwriting / broken-font-map output).
+        is_pdf = path.suffix.lower() == ".pdf"
+        looks_bad = False
+        bad_reason = ""
+        if is_pdf and text.strip():
+            try:
+                from ..extractors.pdf_ex import _is_gibberish
+                if _is_gibberish(text):
+                    looks_bad = True
+                    bad_reason = "extracted text is mojibake (broken font map or OCR-of-handwriting)"
+            except Exception:  # noqa: BLE001
+                pass
+        if err or not text.strip() or looks_bad:
+            reason = err or bad_reason or "empty"
+            if is_pdf and not err:
+                try:
+                    from ..extractors.pdf_ex import diagnose_pdf
+                    reason = diagnose_pdf(path)
+                except Exception:  # noqa: BLE001
+                    pass
             sf = ExtractedFile(
                 rel_path=rel, text="", char_count=0, skipped=True,
-                skip_reason=err or "empty",
+                skip_reason=reason,
             )
             skipped.append(sf)
             if console:
@@ -84,7 +105,17 @@ def extract_all(console: Console | None = None) -> tuple[list[ExtractedFile], li
         ef = ExtractedFile(rel_path=rel, text=text, char_count=len(text))
         kept.append(ef)
         if console:
-            console.print(f"  [green]✓[/green] [dim]{rel}[/dim] ([cyan]{ef.char_count:,}[/cyan] chars)")
+            # If a PDF still came back thin AFTER OCR auto-trigger, the
+            # user is missing the OCR stack. Surface the install hint.
+            tail = ""
+            if is_pdf and ef.char_count < 500:
+                from ..extractors.pdf_ex import _ocr_stack_available
+                if not _ocr_stack_available():
+                    tail = (
+                        " [yellow](mostly image — install tesseract+pdf2image "
+                        "for auto-OCR)[/yellow]"
+                    )
+            console.print(f"  [green]✓[/green] [dim]{rel}[/dim] ([cyan]{ef.char_count:,}[/cyan] chars){tail}")
     return kept, skipped
 
 

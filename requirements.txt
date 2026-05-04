@@ -9,3 +9,11 @@ markdown>=3.5
 pymdown-extensions>=10.7
 beautifulsoup4>=4.12
 genanki>=0.13
+# Optional: PDF OCR stack — auto-triggers when extraction returns empty
+# / mostly-image text. System deps: `brew install tesseract poppler`
+# (or apt-get install tesseract-ocr poppler-utils).
+pytesseract>=0.3.10
+pdf2image>=1.17
+# Optional secondary text extractor — handles broken font maps better
+# than pypdf. We try it before falling all the way down to OCR.
+pdfplumber>=0.11
