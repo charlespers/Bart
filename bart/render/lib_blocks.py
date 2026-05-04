@@ -41,6 +41,43 @@ def _block_math(tex: str) -> str:
     return f"\\[{tex}\\]"
 
 
+import re as _re
+
+_INLINE_BOLD_RE = _re.compile(r"\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*")
+# Italic must hug its content (no whitespace immediately inside the *…* pair)
+# AND must not abut a word character on either flank — otherwise stray
+# asterisks in prose ("the * is a label.") swallow the surrounding text up to
+# the next asterisk.
+_INLINE_ITAL_RE = _re.compile(
+    r"(?<![\*\w])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\*\w])"
+)
+_INLINE_CODE_RE = _re.compile(r"`([^`\n]+?)`")
+
+
+def _inline_md(text: str) -> str:
+    """Render the most common inline markdown patterns (`**bold**`, `*italic*`,
+    `` `code` ``) inside library-block body strings.
+
+    Library blocks are emitted as raw HTML *before* the markdown pass, so any
+    `**bold**` syntax in their body fields would otherwise reach the page
+    literally (the symptom: "**Wrong intuition:**" leaking into trap-callouts
+    in the Misconceptions section). We apply HTML-escape first, then run the
+    inline regexes so the output is safe to interpolate. Math spans (`\\(…\\)`,
+    `\\[…\\]`) are preserved verbatim — KaTeX needs them untouched.
+    """
+    # Stash math spans first so we don't HTML-escape backslashes inside them.
+    holds: list[str] = []
+    def _stash(m: _re.Match) -> str:
+        holds.append(m.group(0))
+        return f"\x00M{len(holds)-1}\x00"
+    masked = _re.sub(r"\\\([^\)]*?\\\)|\\\[[\s\S]*?\\\]", _stash, text)
+    masked = _esc(masked)
+    masked = _INLINE_CODE_RE.sub(lambda m: f"<code>{m.group(1)}</code>", masked)
+    masked = _INLINE_BOLD_RE.sub(lambda m: f"<strong>{m.group(1)}</strong>", masked)
+    masked = _INLINE_ITAL_RE.sub(lambda m: f"<em>{m.group(1)}</em>", masked)
+    return _re.sub(r"\x00M(\d+)\x00", lambda m: holds[int(m.group(1))], masked)
+
+
 # ─── Primitives ───────────────────────────────────────────────────
 
 
@@ -260,7 +297,7 @@ def trap_callout(*, kind: str = "trap", title: str = "", body: str) -> str:
         f'<span class="b-trap-callout-icon">{_esc(icon)}</span>'
         f'<div class="b-trap-callout-body">'
         f'<div class="b-trap-callout-title">{_esc(label)}</div>'
-        f'<div class="b-trap-callout-content">{body}</div>'
+        f'<div class="b-trap-callout-content">{_inline_md(body)}</div>'
         f'</div></div>'
     )
 
@@ -311,7 +348,7 @@ def concept_build(
             f'<div class="b-concept-rung-label">{label}</div>',
         ]
         if prose:
-            rung_parts.append(f'<div class="b-concept-rung-body">{_esc(prose)}</div>')
+            rung_parts.append(f'<div class="b-concept-rung-body">{_inline_md(prose)}</div>')
         if tex:
             rung_parts.append(f'<div class="b-concept-rung-math">{_block_math(tex)}</div>')
         rung_parts.append("</div>")
@@ -329,7 +366,7 @@ def why_it_matters(body: str, *, bart_svg: str = "") -> str:
         '<div class="b-why-it-matters">'
         f'{bart_html}'
         '<div class="b-why-it-matters-eyebrow">Why this matters</div>'
-        f'<div class="b-why-it-matters-content">{body}</div>'
+        f'<div class="b-why-it-matters-content">{_inline_md(body)}</div>'
         '</div>'
     )
 
@@ -416,12 +453,12 @@ def multi_step_problem(
     """
     parts: list[str] = ['<div class="b-multi-step">']
     parts.append(f'<div class="b-multi-step-label">{_esc(label)}</div>')
-    parts.append(f'<div class="b-multi-step-problem">{_esc(problem)}</div>')
+    parts.append(f'<div class="b-multi-step-problem">{_inline_md(problem)}</div>')
     for i, h in enumerate(hints):
         parts.append(
             f'<details class="b-multi-step-hint">'
             f'<summary class="b-multi-step-hint-label">Hint {i+1} of {len(hints)}</summary>'
-            f'<div class="b-multi-step-hint-body">{_esc(h)}</div>'
+            f'<div class="b-multi-step-hint-body">{_inline_md(h)}</div>'
             f'</details>'
         )
     parts.append(
@@ -429,7 +466,7 @@ def multi_step_problem(
         f'<summary class="b-qc-button" style="margin-top:14px">Show full solution</summary>'
         f'<div class="b-multi-step-solution">'
         f'<div class="b-multi-step-solution-label">Solution</div>'
-        f'{solution}'
+        f'{_inline_md(solution)}'
         f'</div></details>'
     )
     parts.append("</div>")
@@ -1143,16 +1180,29 @@ def match_pairs(
     """
     pairs = pairs or []
     eyebrow = prompt or title or label
+    # Authors usually omit the `id` field (the design schema treats it as
+    # optional). Without per-pair ids the JS comparison `selL === selR` becomes
+    # `"None" === "None"` and every click registers as correct. Synthesize a
+    # stable id from the row index when one isn't supplied so each pair has a
+    # unique key.
+    keyed_pairs = [
+        {
+            "id": str(p.get("id") if p.get("id") is not None else f"p{i}"),
+            "left": p.get("left", ""),
+            "right": p.get("right", ""),
+        }
+        for i, p in enumerate(pairs)
+    ]
     # Deterministic shuffle (matches the design's algorithm: j = (i*7 + 3) % (i+1)).
-    rights = [{"id": str(p.get("id")), "label": p.get("right", "")} for p in pairs]
+    rights = [{"id": p["id"], "label": p["right"]} for p in keyed_pairs]
     for i in range(len(rights) - 1, 0, -1):
         j = (i * 7 + 3) % (i + 1)
         rights[i], rights[j] = rights[j], rights[i]
 
     left_html = "".join(
-        f'<div class="b-mp-card b-mp-left" data-id="{_esc(str(p.get("id")), quote=True)}">'
-        f'{_esc(p.get("left", ""))}</div>'
-        for p in pairs
+        f'<div class="b-mp-card b-mp-left" data-id="{_esc(p["id"], quote=True)}">'
+        f'{_esc(p["left"])}</div>'
+        for p in keyed_pairs
     )
     right_html = "".join(
         f'<div class="b-mp-card b-mp-right" data-id="{_esc(r["id"], quote=True)}">'

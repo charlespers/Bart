@@ -22,6 +22,20 @@ def build_parser() -> argparse.ArgumentParser:
         prog="bart",
         description="Agentic study-packet harness. Drop materials in, run once, get a personalized exam-prep packet out.",
     )
+    # Top-level --format shortcut: re-render + autofix the most recent (or
+    # named) run in one call. Equivalent to `./run format --rerender --fix`,
+    # but available as a bare top-level flag so any project can keep a single
+    # "make my packet pretty" muscle-memory command: `./run --format`.
+    p.add_argument(
+        "--format",
+        nargs="?",
+        const="__latest__",
+        default=None,
+        metavar="RUN_ID",
+        help="Re-render and autofix an existing run's HTML packet in one step. "
+             "Pass a run id to target a specific run; omit to use the most "
+             "recent. Equivalent to `./run format --rerender --fix`.",
+    )
     sub = p.add_subparsers(dest="cmd")
 
     run = sub.add_parser("run", help="Generate a study packet (default).")
@@ -81,6 +95,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    # Top-level --format shortcut: short-circuit straight into the format
+    # command before the run-subcommand fallback below grabs the args.
+    if any(a == "--format" or a.startswith("--format=") for a in argv):
+        # argparse handles --format value parsing; build a tiny parser for it.
+        top = argparse.ArgumentParser(add_help=False)
+        top.add_argument("--format", nargs="?", const="__latest__", default=None)
+        ns, _rest = top.parse_known_args(argv)
+        from .commands import format_packet
+        run_id = None if ns.format == "__latest__" else ns.format
+        return format_packet(run_id=run_id, apply_fixes=True, rerender=True, strict=False)
+
     # If the user typed bare `./run` (or any flags but no subcommand), default
     # the subcommand to `run`. This makes the run-subcommand's flags available
     # on the namespace even when the user didn't type the word "run".

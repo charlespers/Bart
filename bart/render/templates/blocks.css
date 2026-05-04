@@ -584,17 +584,23 @@
 .b-concept-rung-apply     .b-concept-rung-label { color: var(--accent); }
 .b-concept-rung-body {
   font-family: var(--font-serif);
-  font-size: 16px;
-  line-height: 1.6;
+  font-size: 18px;
+  line-height: 1.65;
   color: var(--ink);
   min-width: 0;                  /* let inline KaTeX expand & scroll, not clip */
   overflow-wrap: anywhere;       /* break very long unbroken tokens */
 }
 .b-concept-rung-math {
+  /* Span the full row (across the label + body grid columns) so long
+     equations don't clip inside the narrower body cell — the rung-math is
+     the centerpiece of each rung, not a footnote to the prose. */
+  grid-column: 1 / -1;
   margin-top: 8px;
+  padding: 4px 8px;
   min-width: 0;
   overflow-x: auto;
   overflow-y: visible;
+  text-align: center;
 }
 /* Display math inside a rung: drop the global plate styling (already
    inside a card frame), but keep enough air that the equation reads as
@@ -611,7 +617,7 @@
   font-size: 1.08em;
   overflow-x: auto;
   overflow-y: visible;
-  text-align: left;              /* equations inside body prose read better left-aligned */
+  text-align: center;
 }
 .b-concept-rung-math .katex-display > .katex { white-space: nowrap; }
 

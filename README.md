@@ -153,6 +153,11 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
 
 ```bash
 ./run                       # generate a packet (alias for `./run run`)
+./run --format [run_id]     # one-shot "make my packet pretty" — re-renders the HTML from
+                            # markdown AND applies every safe autofix. Equivalent to
+                            # `./run format --rerender --fix`. Defaults to the most recent run.
+                            # Use this whenever you change CSS / templates, or to recover an
+                            # output folder that picked up a renderer regression.
 ./run setup                 # re-run the configuration wizard
 ./run list                  # show every packet you've ever generated, with cost
 ./run doctor                # health check: Python, deps, auth, materials folder

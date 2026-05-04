@@ -386,8 +386,15 @@ def _autofix_double_escaped_math(text: str) -> tuple[str, int]:
     """
     n = 0
 
-    # 1. Collapse `\\<delim>` first.
-    for pat in (r"\\\\\(", r"\\\\\)", r"\\\\\[", r"\\\\\]"):
+    # 1. Collapse `\\<delim>` first. The `\\[` form has a negative lookahead
+    # for `\d+(pt|em|in|...)` so a LaTeX vertical-space command like `\\[6pt]`
+    # isn't mistaken for a double-escaped display-math delimiter.
+    for pat in (
+        r"\\\\\(",
+        r"\\\\\)",
+        r"\\\\\[(?!\d+\s*(?:pt|em|in|mm|cm|ex|sp|pc|bp|dd|cc)\b)",
+        r"\\\\\]",
+    ):
         new = re.sub(pat, lambda m: m.group(0).replace("\\\\", "\\"), text)
         if new != text:
             n += new.count("\\") - text.count("\\")

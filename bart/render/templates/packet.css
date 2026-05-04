@@ -46,7 +46,7 @@
   --font-serif: "Source Serif 4", "Iowan Old Style", "Source Serif Pro", Georgia, serif;
   --font-hand:  "Caveat", "Bradley Hand", cursive;
 
-  --text-base: 19px;     /* bumped from 17 for textbook readability on screens */
+  --text-base: 21px;     /* bumped — readable textbook scale on widescreen displays */
   --text-sm:   15px;
   --text-xs:   13px;
   --leading:   1.75;
@@ -54,8 +54,9 @@
 
   /* spacing */
   --gutter-y:    1.4rem;
-  --max-prose:   880px;  /* widened from 720 — gives long-form content room
-                            without overshooting comfortable line length */
+  --max-prose:   100%;   /* article fills the content column; prose paragraphs
+                            cap their own measure (78ch) for readability while
+                            library blocks and display math use the full width */
   --r-sm:        4px;
   --r-md:        8px;
   --r-lg:        12px;
@@ -314,7 +315,7 @@ html, body {
 /* ─── Content ─── */
 
 .content {
-  padding: 48px 64px 96px;
+  padding: 48px 48px 96px;
   min-width: 0;  /* allow flex/grid children to shrink past intrinsic */
 }
 
@@ -323,12 +324,28 @@ html, body {
 }
 
 article {
-  max-width: var(--max-prose);
+  max-width: 100%;
   margin: 0 auto;
   font-family: var(--font-serif);
   font-size: var(--text-base);
   line-height: var(--leading);
 }
+/* Long-form text paragraphs keep a comfortable measure (~75ch) for
+   readability, but the article container itself fills the column so library
+   blocks (concept-build, formula-card, worked-example) and display-math
+   plates can use the full width — that's the "doesn't use the full page"
+   complaint when display equations clipped at the old 880px cap. */
+article p, article ul, article ol, article blockquote {
+  max-width: 78ch;
+}
+article > h1, article > h2, article > h3, article > h4 { max-width: 78ch; }
+article > .b-formula-card,
+article > .b-worked-example,
+article > .b-concept-build,
+article > .b-trap-callout,
+article > .b-why-it-matters,
+article > .b-quick-check,
+article > .arithmatex { max-width: 100%; }
 article p {
   margin: 0 0 1.3em;
   /* Slightly wider letter-spacing on body serif aids small-text legibility. */

@@ -209,7 +209,15 @@ def _check_math_balance(rel: str, html: str) -> list[AuditIssue]:
     return issues
 
 
-_DOUBLE_ESCAPED = re.compile(r"\\\\(\(|\)|\[|\])")
+# Match `\\(`, `\\)`, `\\[`, `\\]` — but NOT `\\[6pt]` / `\\[1em]` / etc.,
+# which is the LaTeX `\\` (linebreak) followed by an optional vertical-space
+# argument `[Npt]`. Collapsing those would smash `\\[6pt]\text{1 order}` into
+# `\[6pt]\text{1 order}`, and KaTeX then treats the `\[` as a brand-new
+# display-math opener — splitting the equation onto multiple visual lines and
+# leaving stray `\[6pt]` source in the page.
+_DOUBLE_ESCAPED = re.compile(
+    r"\\\\(\(|\)|\[(?!\d+\s*(?:pt|em|in|mm|cm|ex|sp|pc|bp|dd|cc)\b)|\])"
+)
 
 
 def _check_double_escaped_math(rel: str, html: str) -> list[AuditIssue]:
@@ -593,8 +601,71 @@ def _fix_displaymath_inside_p(html: str) -> tuple[str, int]:
     return new, n
 
 
+# Plain-prose math tokens that should be inline math:
+#   k_1, k_2, k_{-1}, K_M, t_{1/2}        — subscripted rate / equilibrium constants
+#   σ_{2p}, π_{2p}, σ*_{2s}                — Greek-base subscripts in MO discussions
+#   [A], [B], [I], [ES], [E]_total, [E]_T — bracketed concentrations (with optional underscore tail)
+#   d[X]/dt                               — time derivative shorthand
+#
+# Conservative on purpose — only triggers on tokens that read as math, not on
+# words like "C_program" or sentence-bracketed annotations like "[hint]". The
+# `[A-Za-zα-ωΑ-Ωσπμλεαβγδθω]` flank guards prevent matching the middle of a
+# regular word like "key_value".
+_GREEK = "αβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ"
+_PROSE_MATH_TOKEN_RE = re.compile(
+    rf"""(
+        (?<![\w\\])
+        (?:
+            d\[[A-Za-z{_GREEK}]{{1,4}}\]/dt
+          | \[[A-Za-z{_GREEK}]{{1,4}}\](?:_(?:[0-9A-Za-z]+|\{{[^}}]+\}}))?
+          | [A-Za-z{_GREEK}]\*?_(?:\{{[^}}]+\}}|-?\d+|[A-Za-z])
+        )
+        (?![\w])
+    )""",
+    re.VERBOSE,
+)
+
 _DOUBLE_BS_LATEX_CMD = re.compile(r"\\\\([A-Za-z]+)")
 _MATH_SPAN_RE = re.compile(r"(\\\(.+?\\\)|\\\[.+?\\\])", re.DOTALL)
+
+
+def _fix_prose_math_wrap(html: str) -> tuple[str, int]:
+    """Wrap unbracketed math tokens in `\\(...\\)` so KaTeX renders them.
+
+    Targets the pattern where authors emit `k_{-1}`, `[I]`, `d[I]/dt` etc.
+    inline in prose without delimiters — those slip past KaTeX and surface
+    as raw source. Skips:
+      - text already inside a math span (`\\(…\\)` or `\\[…\\]`)
+      - text inside attribute values, code, scripts (handled by
+        `_apply_outside_protected` plus an attribute-skip pass below)
+    """
+    def _on(chunk: str) -> tuple[str, int]:
+        # First, mask out math spans so we don't double-wrap.
+        sentinels: list[str] = []
+        def _stash_span(m: re.Match) -> str:
+            sentinels.append(m.group(0))
+            return f"\x00MS{len(sentinels)-1}\x00"
+        masked = _MATH_SPAN_RE.sub(_stash_span, chunk)
+
+        # And mask HTML tags / attributes — we only want to touch text between
+        # tags, never tag attributes.
+        tag_holds: list[str] = []
+        def _stash_tag(m: re.Match) -> str:
+            tag_holds.append(m.group(0))
+            return f"\x00T{len(tag_holds)-1}\x00"
+        masked2 = re.sub(r"<[^>]+>", _stash_tag, masked)
+
+        n = [0]
+        def _wrap(m: re.Match) -> str:
+            n[0] += 1
+            return f"\\({m.group(0)}\\)"
+        masked2 = _PROSE_MATH_TOKEN_RE.sub(_wrap, masked2)
+
+        # Restore tags then math spans.
+        masked2 = re.sub(r"\x00T(\d+)\x00", lambda m: tag_holds[int(m.group(1))], masked2)
+        masked2 = re.sub(r"\x00MS(\d+)\x00", lambda m: sentinels[int(m.group(1))], masked2)
+        return masked2, n[0]
+    return _apply_outside_protected(html, _on)
 
 
 def _fix_double_escaped_latex_commands(html: str) -> tuple[str, int]:
@@ -637,6 +708,64 @@ def _fix_double_superscript(html: str) -> tuple[str, int]:
         new = _HTML_DOUBLE_SUPER_RE.sub(_wrap, chunk)
         return new, n[0]
     return _apply_outside_protected(html, _on)
+
+
+def _ensure_katex_loaded(html: str) -> tuple[str, int]:
+    """Inject the KaTeX loader bundle when the autofix introduces math markers
+    onto a page that didn't have any at render time.
+
+    Sequence-of-events matters here: the renderer decides whether to inject
+    `<script>` tags for KaTeX based on `has_math(html)` at render time. If the
+    page contained zero math (e.g. a whimsical-notes page), KaTeX is omitted.
+    A later autofix pass (`_fix_prose_math_wrap`) may then wrap `[A]` /
+    `k_{-1}` / `\\(T_d\\)` patterns it found in prose — which puts new math
+    markers into the HTML *after* the renderer's decision. Without re-injecting
+    KaTeX, those markers stay as raw `\\(T_d\\)` source on screen.
+    """
+    body_start = html.find("<body")
+    if body_start < 0:
+        return html, 0
+    body = html[body_start:]
+    needs_math = (
+        'class="arithmatex"' in body
+        or "\\(" in _strip_protected(body)
+        or "\\[" in _strip_protected(body)
+        or "\\ce{" in body
+        or "\\pu{" in body
+    )
+    if not needs_math:
+        return html, 0
+    if "katex.min.js" in html and "auto-render.min.js" in html:
+        return html, 0
+    # Figure out the rel-root the page already uses (data-rel-root attribute)
+    m = re.search(r'data-rel-root="([^"]*)"', html)
+    rel = m.group(1) if m else "."
+    needs_chem = "\\ce{" in body or "\\pu{" in body
+    from .assets import (
+        KATEX_CSS_CDN, KATEX_JS_CDN, KATEX_AUTORENDER_CDN, KATEX_MHCHEM_CDN,
+    )
+    from .page import _KATEX_AUTORENDER_CONFIG
+    chem_script = (
+        f'<script defer src="{rel}/lib/katex/mhchem.min.js" '
+        f'onerror="(function(){{var s=document.createElement(\'script\');'
+        f's.src=\'{KATEX_MHCHEM_CDN}\';s.defer=true;document.head.appendChild(s);}})();"></script>'
+    ) if needs_chem else ""
+    block = (
+        f'<link rel="stylesheet" href="{rel}/lib/katex/katex.min.css" '
+        f'onerror="this.onerror=null;this.href=\'{KATEX_CSS_CDN}\';">'
+        f'<script defer src="{rel}/lib/katex/katex.min.js" '
+        f'onerror="(function(){{var s=document.createElement(\'script\');'
+        f's.src=\'{KATEX_JS_CDN}\';s.defer=true;document.head.appendChild(s);}})();"></script>'
+        f'{chem_script}'
+        f'<script defer src="{rel}/lib/katex/auto-render.min.js" '
+        f'onerror="(function(){{var s=document.createElement(\'script\');'
+        f's.src=\'{KATEX_AUTORENDER_CDN}\';s.defer=true;document.head.appendChild(s);}})();"></script>'
+        f'<script defer>{_KATEX_AUTORENDER_CONFIG}</script>'
+    )
+    head_end = html.lower().find("</head>")
+    if head_end < 0:
+        return html, 0
+    return html[:head_end] + block + html[head_end:], 1
 
 
 def _fix_lazy_load_images(html: str) -> tuple[str, int]:
@@ -692,6 +821,9 @@ _FIXES: list[tuple[str, Callable[[str], tuple[str, int]]]] = [
     ("double_escaped_latex_command", _fix_double_escaped_latex_commands),
     ("double_superscript",           _fix_double_superscript),
     ("math_unbalanced_block",        _fix_unbalanced_block_math),
+    ("prose_math_wrap",              _fix_prose_math_wrap),
+    # Re-inject the KaTeX bundle if a previous fix introduced new math markers.
+    ("katex_loader_injected",        _ensure_katex_loaded),
     ("inline_font_size_override",    _fix_inline_font_overrides),
     ("displaymath_in_paragraph",     _fix_displaymath_inside_p),
     ("img_missing_lazy_load",        _fix_lazy_load_images),

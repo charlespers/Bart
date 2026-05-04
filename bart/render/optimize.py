@@ -48,7 +48,7 @@ CRITICAL_CSS = """
 * { box-sizing: border-box; }
 html, body {
   margin: 0; padding: 0; background: var(--bg); color: var(--fg);
-  font-family: var(--font-body); font-size: 19px; line-height: 1.75;
+  font-family: var(--font-body); font-size: 21px; line-height: 1.75;
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
 }
 .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
@@ -57,7 +57,7 @@ html, body {
   border-right: 1px solid var(--border); background: var(--bg);
   position: sticky; top: 0; max-height: 100vh; overflow-y: auto;
 }
-.content { padding: 48px clamp(24px, 4vw, 64px) 96px; min-width: 0; }
+.content { padding: 48px clamp(32px, 5vw, 96px) 96px; min-width: 0; }
 .topbar {
   display: flex; justify-content: space-between; align-items: center;
   padding: 12px 32px; border-bottom: 1px solid var(--border);
@@ -66,12 +66,16 @@ html, body {
    matching the design library's Source Serif 4 default. Headings stay sans
    for the editorial contrast pictured in library.html's PageHeader. */
 article {
-  max-width: 880px;
+  max-width: 100%;
   margin: 0 auto;
   font-family: var(--font-serif);
-  font-size: 19px;
+  font-size: 21px;
   line-height: 1.75;
 }
+article p { max-width: 78ch; }
+/* Display math may extend wider than the prose column without clipping —
+   horizontal scroll only when the equation truly overflows the container. */
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
 article p { margin: 0 0 1.4rem; text-wrap: pretty; }
 article h1, article h2, article h3, article h4 {
   font-family: var(--font-body); font-weight: 700;
@@ -98,13 +102,13 @@ article h4 { font-size: 19px; margin: 26px 0 8px; color: var(--ink-soft); }
 html.katex-rendered .arithmatex { color: inherit; }
 .katex .arithmatex, .katex-display .arithmatex { color: inherit; }
 @media (max-width: 1100px) {
-  article { max-width: 760px; }
+  article { font-size: 20px; }
 }
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .content { padding: 28px 20px 80px; }
-  article { font-size: 17px; }
+  article { font-size: 18px; }
 }
 """
 
