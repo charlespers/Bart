@@ -635,6 +635,98 @@ def _check_double_escaped_entities(rel: str, html: str) -> list[AuditIssue]:
     )]
 
 
+_MATH_LT_LEAK = re.compile(r"\\\([^\\\)<>\n]*<\w[^\\\)<>\n]*\\\)")
+_MATH_GT_LEAK = re.compile(r"\\\([^\\\)<>\n]*\w>[^\\\)<>\n]*\\\)")
+# Also any \[…\] block with raw <\w / \w>
+_MATHBLOCK_LT_LEAK = re.compile(
+    r"\\\[(?:[^\\]|\\(?!\]))*?<\w(?:[^\\]|\\(?!\]))*?\\\]"
+)
+
+
+def _check_math_html_leak(rel: str, html: str) -> list[AuditIssue]:
+    """A literal `<` next to a letter inside `\\(…\\)` makes the HTML
+    parser treat math as a tag, eating the next `</div>`. Surfaces as
+    horizontal-flow layout + raw markdown leak after the affected block.
+    """
+    body = _strip_protected(html.split("<body", 1)[-1])
+    hits = (
+        list(_MATH_LT_LEAK.finditer(body))
+        + list(_MATH_GT_LEAK.finditer(body))
+        + list(_MATHBLOCK_LT_LEAK.finditer(body))
+    )
+    if not hits:
+        return []
+    sample = hits[0].group(0)[:50]
+    return [AuditIssue(
+        rel, "math_html_leak",
+        f"{len(hits)} math span(s) contain raw `<`/`>` next to a letter "
+        f"(e.g. `{sample}`) — HTML parser will eat the next closing tag",
+        "error",
+        line=_line_of(html, hits[0].start()),
+    )]
+
+
+def _fix_math_html_leak(html: str) -> tuple[str, int]:
+    """Escape `<`, `>`, `&` inside math spans in *rendered* HTML.
+
+    The page may already be live-broken — bogus tags ate `</div>`s and
+    layout is collapsed. This fix:
+
+      1. Finds every `\\(…\\)` / `\\[…\\]` span outside protected regions.
+      2. HTML-escapes raw `<` / `>` / `&` inside each span.
+
+    KaTeX decodes the entities at render time, so the math still renders
+    correctly (`T_1<T_2` displays as expected). The class structure is
+    repaired enough that subsequent layout doesn't horizontalize, even
+    if a separate full rebuild from markdown isn't triggered. The
+    rebuild path still runs from the corruption-fingerprint stage; this
+    fix is the safety net for cases where rebuild isn't possible.
+    """
+    _ENT_RE = re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|amp|lt|gt|quot|apos|nbsp);")
+
+    def _esc_inside(inner: str) -> str:
+        sentinels: list[str] = []
+
+        def _stash(m: re.Match) -> str:
+            sentinels.append(m.group(0))
+            return f"\x00E{len(sentinels)-1}\x00"
+
+        masked = _ENT_RE.sub(_stash, inner)
+        masked = masked.replace("&", "&amp;")
+        masked = masked.replace("<", "&lt;").replace(">", "&gt;")
+        return re.sub(
+            r"\x00E(\d+)\x00",
+            lambda m: sentinels[int(m.group(1))],
+            masked,
+        )
+
+    inline_re = re.compile(r"\\\(([^\n]*?)\\\)", re.DOTALL)
+    block_re = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
+
+    def _on(chunk: str) -> tuple[str, int]:
+        n = [0]
+
+        def _wrap_inline(m: re.Match) -> str:
+            inner = m.group(1)
+            esc = _esc_inside(inner)
+            if esc != inner:
+                n[0] += 1
+            return f"\\({esc}\\)"
+
+        def _wrap_block(m: re.Match) -> str:
+            inner = m.group(1)
+            esc = _esc_inside(inner)
+            if esc != inner:
+                n[0] += 1
+            return f"\\[{esc}\\]"
+
+        chunk = inline_re.sub(_wrap_inline, chunk)
+        chunk = block_re.sub(_wrap_block, chunk)
+        return chunk, n[0]
+
+    return _apply_outside_protected(html, _on)
+
+
 def _fix_double_escaped_entities(html: str) -> tuple[str, int]:
     """Collapse `&amp;amp;` → `&amp;`, `&amp;lt;` → `&lt;`, etc.
 
@@ -1018,6 +1110,7 @@ _CHECKS: list[Callable[[str, str], list[AuditIssue]]] = [
     _check_raw_md_hr_leak,
     _check_raw_md_heading_leak,
     _check_broken_attrs,
+    _check_math_html_leak,
     _check_double_escaped_entities,
     _check_anchors,
     _check_images,
@@ -1032,6 +1125,11 @@ _CHECKS: list[Callable[[str, str], list[AuditIssue]]] = [
 
 
 _FIXES: list[tuple[str, Callable[[str], tuple[str, int]]]] = [
+    # Run math-HTML-escape FIRST: leaving `<` next to a letter inside `\(…\)`
+    # would let the autorender helper treat math as HTML and eat closing tags
+    # again at view time. Escaping early also stops downstream prose-math
+    # detection from picking up the raw `<` as new math.
+    ("math_html_leak",               _fix_math_html_leak),
     ("double_escaped_math",          _fix_double_escaped_math),
     ("double_escaped_latex_command", _fix_double_escaped_latex_commands),
     ("double_superscript",           _fix_double_superscript),
@@ -1100,6 +1198,9 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
                     ))
 
         # Detect corruption fingerprints to decide re-render eligibility.
+        # `_check_math_html_leak` doesn't go in this set because it has a
+        # fast string-only autofix above (`_fix_math_html_leak`); rebuild
+        # is only needed when string fixes can't synthesize structure.
         corruption_hits: list[AuditIssue] = []
         for check in (_check_raw_md_hr_leak, _check_raw_md_heading_leak,
                       _check_broken_attrs):

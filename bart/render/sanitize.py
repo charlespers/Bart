@@ -155,6 +155,95 @@ def _convert_math_delimiters(text: str) -> tuple[str, List[SanitizeWarning]]:
     return text, warns
 
 
+# ─────────────────────────────────────────────────────────────────
+# Transform — Escape stray `<`, `>`, `&` inside math spans
+#
+# A literal `<` next to a letter inside `\(…\)` (e.g. `\(T_1<T_2\)`) makes
+# the HTML parser treat `<T_2\)` as the start of a tag. It then consumes
+# characters as bogus attributes until the next `>`, which usually lives
+# inside a closing `</div>` — silently eating that close tag and leaving
+# every following section nested inside whatever container was open.
+# In the wild this surfaces as horizontal-flow layout for the rest of the
+# page plus raw `## H` / `---` markdown bleeding through (because the
+# parser switched to "inside raw HTML block" mode and stopped processing
+# markdown).
+#
+# KaTeX itself decodes `&lt;` / `&gt;` / `&amp;` at render time, so
+# escaping is safe and inequalities still render correctly.
+# ─────────────────────────────────────────────────────────────────
+
+_MATH_INLINE_RE = re.compile(r"\\\((.+?)\\\)", re.DOTALL)
+_MATH_BLOCK_RE = re.compile(r"\\\[(.+?)\\\]", re.DOTALL)
+
+
+def _escape_html_in_math(text: str) -> tuple[str, list["SanitizeWarning"]]:
+    """Replace `<` / `>` / `&` with HTML entities inside `\\(…\\)` and
+    `\\[…\\]` math spans. Operates only on prose segments — code spans
+    are skipped by `_split_segments`.
+
+    Bare `&` is escaped to `&amp;`, but already-escaped sequences
+    (`&lt;`, `&gt;`, `&amp;`, numeric refs) are left alone so we don't
+    double-encode.
+    """
+    warns: list[SanitizeWarning] = []
+    n_inline = 0
+    n_block = 0
+
+    _ENT_RE = re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|amp|lt|gt|quot|apos|nbsp);")
+
+    def _esc(s: str) -> str:
+        # Protect existing entities, escape bare special chars, restore.
+        sentinels: list[str] = []
+
+        def _stash(m: re.Match) -> str:
+            sentinels.append(m.group(0))
+            return f"\x00E{len(sentinels)-1}\x00"
+
+        masked = _ENT_RE.sub(_stash, s)
+        masked = masked.replace("&", "&amp;")
+        masked = masked.replace("<", "&lt;").replace(">", "&gt;")
+        masked = re.sub(
+            r"\x00E(\d+)\x00",
+            lambda m: sentinels[int(m.group(1))],
+            masked,
+        )
+        return masked
+
+    out_parts: list[str] = []
+    for kind, content in _split_segments(text):
+        if kind == "code":
+            out_parts.append(content)
+            continue
+
+        def _on_inline(m: re.Match) -> str:
+            nonlocal n_inline
+            inner = m.group(1)
+            esc = _esc(inner)
+            if esc != inner:
+                n_inline += 1
+            return f"\\({esc}\\)"
+
+        def _on_block(m: re.Match) -> str:
+            nonlocal n_block
+            inner = m.group(1)
+            esc = _esc(inner)
+            if esc != inner:
+                n_block += 1
+            return f"\\[{esc}\\]"
+
+        content = _MATH_INLINE_RE.sub(_on_inline, content)
+        content = _MATH_BLOCK_RE.sub(_on_block, content)
+        out_parts.append(content)
+
+    if n_inline or n_block:
+        warns.append(SanitizeWarning(
+            "math_html_escaped",
+            f"escaped <,>,& in {n_inline} inline + {n_block} block math span(s) — "
+            f"prevents bogus HTML tag parsing (e.g. <T_2\\) eating </div>)",
+        ))
+    return "".join(out_parts), warns
+
+
 _BLOCK_MATH_RE = re.compile(r"(?<!\n\n)(\\\[.+?\\\])(?!\n\n)", re.DOTALL)
 
 
@@ -477,6 +566,15 @@ def normalize_md(text: str) -> tuple[str, List[SanitizeWarning]]:
     warnings.extend(w)
 
     text, w = _convert_math_delimiters(text)
+    warnings.extend(w)
+
+    # CRITICAL: escape `<`/`>`/`&` inside math spans BEFORE any further
+    # transformation. A bare `<` next to a letter inside `\(…\)` (e.g.
+    # `\(T_1<T_2\)`) makes python-markdown's HTML parser treat the math
+    # as the start of a `<T_2\)` tag, which then consumes characters
+    # until the next `>` (often inside a `</div>`). Escaping early closes
+    # the entire class of bugs.
+    text, w = _escape_html_in_math(text)
     warnings.extend(w)
 
     text, w = _pad_blocks_around_headings_and_rules(text)
