@@ -72,7 +72,6 @@ article {
   font-size: 21px;
   line-height: 1.75;
 }
-article p { max-width: 78ch; }
 /* Display math may extend wider than the prose column without clipping —
    horizontal scroll only when the equation truly overflows the container. */
 .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }

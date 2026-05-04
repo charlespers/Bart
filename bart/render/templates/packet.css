@@ -330,22 +330,14 @@ article {
   font-size: var(--text-base);
   line-height: var(--leading);
 }
-/* Long-form text paragraphs keep a comfortable measure (~75ch) for
-   readability, but the article container itself fills the column so library
-   blocks (concept-build, formula-card, worked-example) and display-math
-   plates can use the full width — that's the "doesn't use the full page"
-   complaint when display equations clipped at the old 880px cap. */
-article p, article ul, article ol, article blockquote {
-  max-width: 78ch;
+/* Article fills the full content column — prose, lists, headings, and
+   library blocks all use the available width. The page padding plus sidebar
+   already provide reading-friendly side margins; capping paragraphs to a
+   narrow measure inside that just left huge empty gutters. */
+article p, article ul, article ol, article blockquote,
+article h1, article h2, article h3, article h4, article h5, article h6 {
+  max-width: 100%;
 }
-article > h1, article > h2, article > h3, article > h4 { max-width: 78ch; }
-article > .b-formula-card,
-article > .b-worked-example,
-article > .b-concept-build,
-article > .b-trap-callout,
-article > .b-why-it-matters,
-article > .b-quick-check,
-article > .arithmatex { max-width: 100%; }
 article p {
   margin: 0 0 1.3em;
   /* Slightly wider letter-spacing on body serif aids small-text legibility. */
