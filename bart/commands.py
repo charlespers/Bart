@@ -1,4 +1,4 @@
-"""Auxiliary CLI commands: list, doctor, render, format."""
+"""Auxiliary CLI commands: list, doctor, render, format, quality, fix-patch."""
 from __future__ import annotations
 
 import json
@@ -442,4 +442,157 @@ def quality_audit(
             return 2
         if (fmt or {}).get("errors", 0):
             return 2
+    return 0
+
+
+# ── fix-patch ─────────────────────────────────────────────────────
+
+
+def fix_patch(
+    run_id: str | None,
+    *,
+    coverage_threshold: float = 80.0,
+    allow_api: bool = False,
+) -> int:
+    """One-shot recovery: bring an existing packet up to current quality.
+
+    Pipeline (every stage is idempotent and skipped when nothing to do):
+
+      1. **Re-render**   from sibling markdown — picks up CSS / template /
+         renderer fixes that landed after the run was generated.
+      2. **Format --fix** — applies every safe in-place repair (double-
+         escaped math, unbalanced \\[, font-size overrides, lazy-loaded
+         images, double-escaped entities) and triggers another rebuild
+         if a streaming-corruption fingerprint is detected.
+      3. **Quality audit** — runs coverage + fidelity + format; surfaces
+         the same report `./run quality` would.
+      4. **Per-page recovery** — for every HTML page that is still
+         broken (errors after the format pass) AND has a sibling .md,
+         force one more `build_packet` cycle. The markdown is the source
+         of truth and re-rendering twice is free.
+
+    No new agent calls. Safe to run on any run. Mirrors what a user would
+    do by hand: `./run render && ./run format --fix && ./run quality`.
+
+    `allow_api` is reserved for a future stage that would regenerate
+    artifacts which can't be rebuilt from on-disk markdown (e.g. a day
+    file the orchestrator dropped). Off by default — keeps the cost
+    floor at zero.
+    """
+    console = Console()
+    target = _resolve_run_dir(run_id)
+    if target is None:
+        return 1
+    if not run_id:
+        console.print(f"[dim]patching most recent run:[/dim] [cyan]{target.name}[/cyan]")
+
+    # ── Stage 1: rerender ──────────────────────────────────────
+    manifest_path = target / "manifest.json"
+    if not manifest_path.exists():
+        console.print(f"[red]✗[/red] manifest.json missing in {target}; cannot patch.")
+        return 1
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as e:
+        console.print(f"[red]✗[/red] manifest.json invalid: {e}")
+        return 1
+
+    console.print(f"\n[bold #c96442]▸ stage 1[/bold #c96442]  re-render from markdown  "
+                  f"[dim](no API cost)[/dim]")
+    from .render.packet import build_packet
+    render_warnings = build_packet(target, manifest)
+    rebuild_problems = [w for w in render_warnings if w.severity != "info"]
+    if rebuild_problems:
+        counts: dict[str, int] = {}
+        for w in rebuild_problems:
+            counts[w.kind] = counts.get(w.kind, 0) + 1
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        console.print(f"  [yellow]⚠[/yellow] {len(rebuild_problems)} render warning(s): {summary}")
+    else:
+        console.print(f"  [green]✓[/green] render clean")
+
+    # Re-emit domain-tool reference pages too — same rationale as render_packet.
+    try:
+        from .tools import TOOLS
+        for tool in TOOLS:
+            try:
+                tool.run(target, manifest)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ── Stage 2: format --fix ──────────────────────────────────
+    console.print(f"\n[bold #c96442]▸ stage 2[/bold #c96442]  format --fix  "
+                  f"[dim](in-place repairs + corruption rebuild)[/dim]")
+    from .render.format_audit import audit, render_report
+    fmt_result = audit(target, apply_fixes=True)
+    if fmt_result.fixes_applied:
+        console.print(f"  [green]✓[/green] applied {fmt_result.fixes_applied} repair(s) "
+                      f"across {fmt_result.files_scanned} page(s)")
+    else:
+        console.print(f"  [green]✓[/green] no repairs needed across {fmt_result.files_scanned} page(s)")
+
+    # ── Stage 3: quality harness ───────────────────────────────
+    console.print(f"\n[bold #c96442]▸ stage 3[/bold #c96442]  quality harness  "
+                  f"[dim](coverage + fidelity + format)[/dim]")
+    from .render.harness import audit_run, write_report
+    q = audit_run(target)
+    out_path = write_report(target, q)
+    cov_color = (
+        "green" if q.coverage_pct >= coverage_threshold else
+        "yellow" if q.coverage_pct >= 50 else
+        "red"
+    )
+    fid_color = (
+        "green" if q.fidelity_pct >= 90 else
+        "yellow" if q.fidelity_pct >= 70 else
+        "red"
+    )
+    console.print(
+        f"  [{cov_color}]coverage {q.coverage_pct:.0f}%[/{cov_color}] "
+        f"[dim]({q.coverage_hit}/{q.coverage_total})[/dim]   "
+        f"[{fid_color}]fidelity {q.fidelity_pct:.0f}%[/{fid_color}] "
+        f"[dim]({q.cites_total - q.cites_unmatched}/{q.cites_total})[/dim]"
+    )
+    if q.coverage_findings:
+        n_show = min(8, len(q.coverage_findings))
+        console.print(f"  [yellow]missing topics[/yellow] [dim]({n_show}/{len(q.coverage_findings)} shown):[/dim]")
+        for f in q.coverage_findings[:n_show]:
+            console.print(f"    • [white]{f.topic}[/white]  [dim]({f.source})[/dim]")
+
+    # ── Stage 4: per-page recovery for still-broken pages ──────
+    fmt_post = audit(target, apply_fixes=False)
+    still_broken = [i for i in fmt_post.errors]
+    by_file: dict[str, list] = {}
+    for i in still_broken:
+        if i.file == "<run>":
+            continue
+        by_file.setdefault(i.file, []).append(i)
+
+    if by_file:
+        console.print(f"\n[bold #c96442]▸ stage 4[/bold #c96442]  per-page recovery  "
+                      f"[dim]({len(by_file)} page(s) still broken)[/dim]")
+        # build_packet is whole-packet; running it again after stage 1
+        # rarely helps, but it's the only no-cost lever we have. Then
+        # re-audit and surface what's left.
+        build_packet(target, manifest)
+        fmt_final = audit(target, apply_fixes=True)
+        leftover = [i for i in fmt_final.errors if i.file != "<run>"]
+        if leftover:
+            console.print(f"  [yellow]⚠[/yellow] {len(leftover)} error(s) remain after rebuild")
+            if not allow_api:
+                console.print(
+                    f"  [dim]these need agent regeneration; rerun with[/dim] "
+                    f"[cyan]./run --resume {target.name}[/cyan] "
+                    f"[dim]to regenerate the affected day(s).[/dim]"
+                )
+        else:
+            console.print(f"  [green]✓[/green] every page now passes")
+    else:
+        console.print(f"\n[bold #c96442]▸ stage 4[/bold #c96442]  per-page recovery  "
+                      f"[dim](nothing to do — every page passed stage 2)[/dim]")
+
+    console.print(f"\n[dim]quality report:[/dim] {out_path}")
+    console.print(f"[dim]open[/dim] [white]{target}/index.html[/white]")
     return 0

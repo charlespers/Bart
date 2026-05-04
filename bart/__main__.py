@@ -89,6 +89,18 @@ def build_parser() -> argparse.ArgumentParser:
     fmt.add_argument("--rerender", action="store_true",
                      help="Re-render the packet from markdown after fixing — picks up CSS/template changes.")
 
+    fp = sub.add_parser(
+        "fix-patch",
+        help="Recover an old run: re-render from markdown, apply every safe format autofix, "
+             "run the quality harness, and force-rebuild pages that are still broken. Zero "
+             "API cost. Idempotent — safe to re-run.",
+    )
+    fp.add_argument("run_id", nargs="?", help="Run id. Defaults to most recent.")
+    fp.add_argument(
+        "--coverage-threshold", type=float, default=80.0, metavar="PCT",
+        help="Coverage percentage to warn below (default 80.0).",
+    )
+
     qual = sub.add_parser(
         "quality",
         help="Quality harness: coverage (does the packet review every chapter / lecture / "
@@ -126,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     # If the user typed bare `./run` (or any flags but no subcommand), default
     # the subcommand to `run`. This makes the run-subcommand's flags available
     # on the namespace even when the user didn't type the word "run".
-    known_cmds = {"run", "setup", "list", "doctor", "render", "format", "quality"}
+    known_cmds = {"run", "setup", "list", "doctor", "render", "format", "quality", "fix-patch"}
     if not argv or argv[0] not in known_cmds:
         argv = ["run", *argv]
     args = build_parser().parse_args(argv)
@@ -166,6 +178,13 @@ def main(argv: list[str] | None = None) -> int:
         return quality_audit(
             run_id=getattr(args, "run_id", None),
             strict=getattr(args, "strict", False),
+            coverage_threshold=getattr(args, "coverage_threshold", 80.0),
+        )
+
+    if cmd == "fix-patch":
+        from .commands import fix_patch
+        return fix_patch(
+            run_id=getattr(args, "run_id", None),
             coverage_threshold=getattr(args, "coverage_threshold", 80.0),
         )
 

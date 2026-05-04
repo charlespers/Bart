@@ -177,6 +177,12 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
                             #   format     delegates to `format` for the HTML structural pass.
                             # Writes `<run>/quality_audit.json`.
                             #   --strict   exit non-zero if coverage <80% or any error finding
+./run fix-patch [run_id]    # one-shot recovery for an old run, zero API cost:
+                            #   1. re-render from sibling markdown (picks up CSS/template fixes)
+                            #   2. format --fix (in-place repairs + auto-rebuild on corruption)
+                            #   3. quality harness (coverage + fidelity + format)
+                            #   4. per-page recovery for any page still broken
+                            # idempotent; safe to re-run.
 ```
 
 ### Speed presets
