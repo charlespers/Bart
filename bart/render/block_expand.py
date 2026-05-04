@@ -149,10 +149,36 @@ def expand_blocks(markdown_text: str) -> ExpansionResult:
         try:
             html = fn(**payload)
         except TypeError as e:
-            warnings.append(ExpansionWarning(
-                "render_error", f"bart-{name}: {e}", name,
-            ))
-            return _inline_warning(name, str(e))
+            # Likely an unknown-kwarg from the author agent. Re-attempt with
+            # only the kwargs that the function's signature actually accepts;
+            # log the unknowns as info, not as a render failure. This keeps
+            # the page rendering when an author hallucinates a key like
+            # `title=`/`prompt=`/`label=` that the renderer doesn't model yet.
+            import inspect as _inspect
+            try:
+                sig = _inspect.signature(fn)
+                params = sig.parameters
+                accepts_var_kw = any(
+                    p.kind is _inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+                if not accepts_var_kw and "unexpected keyword argument" in str(e):
+                    accepted = {k: v for k, v in payload.items() if k in params}
+                    dropped = sorted(set(payload) - set(accepted))
+                    html = fn(**accepted)
+                    if dropped:
+                        warnings.append(ExpansionWarning(
+                            "unknown_kwargs",
+                            f"bart-{name}: dropped unknown kwargs {dropped} "
+                            f"(rendered with the rest)",
+                            name,
+                        ))
+                else:
+                    raise
+            except Exception:
+                warnings.append(ExpansionWarning(
+                    "render_error", f"bart-{name}: {e}", name,
+                ))
+                return _inline_warning(name, str(e))
         except Exception as e:  # noqa: BLE001
             warnings.append(ExpansionWarning(
                 "render_error", f"bart-{name}: {type(e).__name__}: {e}", name,

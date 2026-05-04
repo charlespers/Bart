@@ -211,10 +211,21 @@ def mnemonic_card(
     acronym: str = "",
     expansion: list[dict[str, str]] | None = None,
     story: str = "",
+    title: str = "",      # accepted alias — author models often emit `title`
+    label: str = "",      # accepted alias — author models often emit `label`
+    **_extras: Any,       # swallow other unknown kwargs instead of crashing the page
 ) -> str:
-    """<MnemonicCard> — acronym + per-letter expansion + optional story."""
+    """<MnemonicCard> — acronym + per-letter expansion + optional story.
+
+    `title` / `label` overrides the default "Mnemonic" eyebrow; both are
+    accepted because the author agents in different prompt revisions have
+    used both spellings. `**_extras` is a render-time safety net: when an
+    author hallucinates a key like `cite` or `tag`, the page still renders
+    instead of dropping the entire block as a render_error.
+    """
+    eyebrow = title or label or "Mnemonic"
     parts: list[str] = ['<div class="b-mnemonic-card">',
-                        '<div class="b-mnemonic-card-label">Mnemonic</div>']
+                        f'<div class="b-mnemonic-card-label">{_esc(eyebrow)}</div>']
     if acronym:
         parts.append(f'<div class="b-mnemonic-card-acronym">{_esc(acronym)}</div>')
     if expansion:
@@ -1052,18 +1063,28 @@ def drag_order(
 
 def fill_in_blank(
     *,
-    template: str,
-    blanks: list[dict[str, Any]],
+    template: str = "",
+    blanks: list[dict[str, Any]] | None = None,
     hint: str = "",
+    prompt: str = "",     # alias — authors sometimes emit `prompt` for the sentence
+    label: str = "",      # accepted alias — author hallucinated key
+    title: str = "",      # accepted alias — author hallucinated key
+    **_extras: Any,       # swallow unknown kwargs instead of crashing the render
 ) -> str:
     """<FillInBlank> — sentence with `{{0}}`, `{{1}}` placeholders.
 
     `blanks`: [{accept: [str], placeholder?: str}].
     Acceptance is case-insensitive, whitespace-trimmed; handled in JS.
+    Accepts `template` (canonical) or `prompt` (alias the author models
+    sometimes emit). Unknown extras are ignored so a single bad kwarg
+    doesn't drop the block.
     """
     import json as _json
     import re as _re
 
+    template = template or prompt or ""
+    blanks = blanks or []
+    eyebrow = title or label
     accept = [[str(a) for a in b.get("accept", [])] for b in blanks]
     placeholders = [b.get("placeholder", "____") for b in blanks]
     accept_json = _json.dumps(accept)
@@ -1088,10 +1109,14 @@ def fill_in_blank(
         f'<div class="b-fib-hint">{_esc(hint)}</div>'
         '</details>' if hint else ""
     )
+    eyebrow_block = (
+        f'<div class="b-fib-label">{_esc(eyebrow)}</div>' if eyebrow else ""
+    )
 
     return (
         '<div class="b-fib" data-fib '
         f'data-accept=\'{_esc(accept_json, quote=True)}\'>'
+        f'{eyebrow_block}'
         f'<div class="b-fib-template">{"".join(rendered)}</div>'
         '<div class="b-fib-actions">'
         '<button class="b-btn-primary" data-action="check">Check</button>'
@@ -1101,9 +1126,23 @@ def fill_in_blank(
     )
 
 
-def match_pairs(*, prompt: str, pairs: list[dict[str, str]]) -> str:
+def match_pairs(
+    *,
+    prompt: str = "",
+    pairs: list[dict[str, str]] | None = None,
+    title: str = "",      # accepted alias — author models sometimes emit `title`
+    label: str = "",      # accepted alias
+    **_extras: Any,       # swallow unknown kwargs instead of crashing the render
+) -> str:
     """<MatchPairs> — two columns; click pairs to match. Right column shuffled
-    deterministically at render time."""
+    deterministically at render time.
+
+    Accepts `prompt` (canonical) and tolerates `title` / `label` as aliases
+    the author models sometimes emit. Unknown extras are ignored so a single
+    bad kwarg doesn't drop the entire block.
+    """
+    pairs = pairs or []
+    eyebrow = prompt or title or label
     # Deterministic shuffle (matches the design's algorithm: j = (i*7 + 3) % (i+1)).
     rights = [{"id": str(p.get("id")), "label": p.get("right", "")} for p in pairs]
     for i in range(len(rights) - 1, 0, -1):
@@ -1123,7 +1162,7 @@ def match_pairs(*, prompt: str, pairs: list[dict[str, str]]) -> str:
     return (
         '<div class="b-mp" data-mp '
         f'data-total="{len(pairs)}">'
-        f'<div class="b-mp-prompt"><strong>Match</strong>{_esc(prompt)}</div>'
+        f'<div class="b-mp-prompt"><strong>Match</strong>{_esc(eyebrow)}</div>'
         '<div class="b-mp-grid">'
         f'<div class="b-mp-col">{left_html}</div>'
         f'<div class="b-mp-col">{right_html}</div>'

@@ -185,8 +185,94 @@ def _ensure_block_math_isolation(text: str) -> str:
 # Transform 3 — Detect unbalanced math delimiters
 # ─────────────────────────────────────────────────────────────────
 
+def _repair_unbalanced_math(text: str) -> tuple[str, List[SanitizeWarning]]:
+    """Close stray `\\[` blocks before they bleed into surrounding prose.
+
+    A common author failure mode is opening a block-math segment with `\\[`
+    and forgetting the matching `\\]`. The previous behavior logged a
+    warning and let the broken markdown reach the renderer — KaTeX then
+    treats every following character (sometimes whole paragraphs of prose)
+    as math, which is exactly the "garbled" look the user reported.
+
+    Strategy: walk the prose segments; whenever we see an open `\\[` whose
+    next delimiter token is *not* a `\\]`, insert a synthetic `\\]` just
+    before the next blank line (or end of doc). The same logic runs for
+    inline `\\(...\\)`. We only repair stray *opens*; stray closes are
+    left in place as text (KaTeX silently ignores them).
+    """
+    warns: List[SanitizeWarning] = []
+    out_parts: List[str] = []
+    n_repaired_block = 0
+    n_repaired_inline = 0
+
+    for kind, content in _split_segments(text):
+        if kind == "code":
+            out_parts.append(content)
+            continue
+
+        # Block-level repair: scan for `\[` not followed by `\]`.
+        # We rebuild the segment piece-by-piece so we can insert the close.
+        i = 0
+        buf: list[str] = []
+        while i < len(content):
+            j = content.find("\\[", i)
+            if j < 0:
+                buf.append(content[i:])
+                break
+            buf.append(content[i:j])
+            close = content.find("\\]", j + 2)
+            next_open = content.find("\\[", j + 2)
+            # Stray if no close, OR close is past the next open.
+            if close < 0 or (next_open >= 0 and next_open < close):
+                # Insert close at the next blank line, or end of segment.
+                blank = content.find("\n\n", j + 2)
+                end = blank if blank >= 0 else len(content)
+                buf.append(content[j:end].rstrip())
+                buf.append("\\]")
+                buf.append(content[end:end + 2])  # preserve the blank line
+                i = end + 2 if blank >= 0 else len(content)
+                n_repaired_block += 1
+            else:
+                buf.append(content[j:close + 2])
+                i = close + 2
+        repaired = "".join(buf)
+
+        # Inline repair: a stray `\(` on a single line (no `\)` before EOL).
+        def _close_stray_inline(m: re.Match) -> str:
+            nonlocal n_repaired_inline
+            line = m.group(0)
+            n_open = line.count("\\(")
+            n_close = line.count("\\)")
+            if n_open > n_close:
+                n_repaired_inline += (n_open - n_close)
+                return line + ("\\)" * (n_open - n_close))
+            return line
+
+        repaired = re.sub(r"[^\n]*\\\([^\n]*", _close_stray_inline, repaired)
+
+        out_parts.append(repaired)
+
+    if n_repaired_block:
+        warns.append(SanitizeWarning(
+            "math_repaired_block",
+            f"auto-closed {n_repaired_block} stray '\\[' block(s) at the next blank line",
+        ))
+    if n_repaired_inline:
+        warns.append(SanitizeWarning(
+            "math_repaired_inline",
+            f"auto-closed {n_repaired_inline} stray '\\(' inline span(s) at line end",
+        ))
+    return "".join(out_parts), warns
+
+
 def _check_math_balance(text: str) -> List[SanitizeWarning]:
-    """Count opens vs closes of \\(…\\) and \\[…\\]. Mismatch -> warning."""
+    """Count opens vs closes of \\(…\\) and \\[…\\]. Mismatch -> warning.
+
+    Runs AFTER `_repair_unbalanced_math`, so any remaining mismatch is
+    something the repair couldn't fix (e.g. a stray `\\]` with no opener).
+    Severity stays at warn rather than error since the repair already
+    prevented the visible "garbled" failure mode.
+    """
     warns: List[SanitizeWarning] = []
     prose = "".join(c for k, c in _split_segments(text) if k == "prose")
     n_open_inline = prose.count("\\(")
@@ -197,14 +283,14 @@ def _check_math_balance(text: str) -> List[SanitizeWarning]:
         warns.append(
             SanitizeWarning(
                 "unbalanced_math_inline",
-                f"\\( count={n_open_inline} but \\) count={n_close_inline}",
+                f"\\( count={n_open_inline} but \\) count={n_close_inline} (post-repair)",
             )
         )
     if n_open_block != n_close_block:
         warns.append(
             SanitizeWarning(
                 "unbalanced_math_block",
-                f"\\[ count={n_open_block} but \\] count={n_close_block}",
+                f"\\[ count={n_open_block} but \\] count={n_close_block} (post-repair)",
             )
         )
     # Also detect leftover bare $ pairs (might indicate failed conversion)
@@ -326,6 +412,12 @@ def normalize_md(text: str) -> tuple[str, List[SanitizeWarning]]:
 
     text = _normalize_quotes(text)
     text = _tag_quickcheck_blocks(text)
+
+    # Repair stray `\[` / `\(` BEFORE the balance check so the post-repair
+    # warning correctly reflects what KaTeX will see, not what the author
+    # originally wrote.
+    text, w = _repair_unbalanced_math(text)
+    warnings.extend(w)
 
     warnings.extend(_check_math_balance(text))
     return text, warnings

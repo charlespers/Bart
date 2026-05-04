@@ -386,6 +386,64 @@ def _autofix_blank_lines_around_block_math(text: str) -> tuple[str, int]:
     return text, n
 
 
+def _autofix_unbalanced_block_math(text: str) -> tuple[str, int]:
+    """Close stray `\\[` blocks at the next blank line.
+
+    Mirrors `sanitize._repair_unbalanced_math` but runs at format-check time
+    against the *post-block-expand* text, where lib_blocks-emitted formula
+    cards have introduced their own `\\[…\\]` segments. If a sanitize pass
+    missed an open delimiter (e.g. an author wrote `\\[Q = CV`without
+    the close, then a paragraph break), we close it here so KaTeX doesn't
+    swallow the rest of the page as math.
+
+    Iterates until counts balance OR no further repairs apply, since one
+    pass can leave behind a now-different stray that the next pass catches.
+    """
+    total = 0
+    for _ in range(8):  # bounded loop — never infinite even on pathological input
+        n_open = text.count("\\[")
+        n_close = text.count("\\]")
+        if n_open == n_close:
+            break
+        out: list[str] = []
+        i = 0
+        repaired_this_pass = 0
+        while i < len(text):
+            j = text.find("\\[", i)
+            if j < 0:
+                out.append(text[i:])
+                break
+            out.append(text[i:j])
+            close = text.find("\\]", j + 2)
+            next_open = text.find("\\[", j + 2)
+            if close < 0 or (next_open >= 0 and next_open < close):
+                # Close at the next blank line, or end of doc.
+                blank = text.find("\n\n", j + 2)
+                end = blank if blank >= 0 else len(text)
+                out.append(text[j:end].rstrip())
+                out.append("\\]")
+                if blank >= 0:
+                    out.append(text[end:end + 2])
+                    i = end + 2
+                else:
+                    i = len(text)
+                repaired_this_pass += 1
+            else:
+                out.append(text[j:close + 2])
+                i = close + 2
+        text = "".join(out)
+        total += repaired_this_pass
+        if repaired_this_pass == 0:
+            break
+    # Last-resort: if we still have a leftover stray `\[`, append a
+    # closing `\]` at end-of-doc so KaTeX doesn't run away with the prose.
+    leftover = text.count("\\[") - text.count("\\]")
+    if leftover > 0:
+        text = text + ("\n" + ("\\]" * leftover) + "\n")
+        total += leftover
+    return text, total
+
+
 # ─── Public entry point ─────────────────────────────────────────
 
 
@@ -406,12 +464,14 @@ def check(text: str, html: str = "") -> tuple[str, List[FormatWarning]]:
     text, n1 = _autofix_double_escaped_math(text)
     text, n2 = _autofix_naked_dollar_math(text)
     text, n3 = _autofix_blank_lines_around_block_math(text)
-    if n1 + n2 + n3:
+    text, n4 = _autofix_unbalanced_block_math(text)
+    total_fixes = n1 + n2 + n3 + n4
+    if total_fixes:
         warnings.append(FormatWarning(
             "auto_repaired",
-            f"applied {n1 + n2 + n3} auto-repair(s): "
+            f"applied {total_fixes} auto-repair(s): "
             f"{n1} double-escaped delim(s), {n2} dollar-math conversion(s), "
-            f"{n3} blank-line padding(s)",
+            f"{n3} blank-line padding(s), {n4} stray-`\\[` close(s)",
             severity="info",
         ))
 
