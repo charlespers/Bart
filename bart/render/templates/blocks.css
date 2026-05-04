@@ -2453,3 +2453,490 @@
   font-family: var(--font-mono); font-size: 12px; color: var(--ink-soft);
 }
 .b-config-summary sup { font-size: 0.7em; }
+
+/* ─── Domain-pack components (ml / cs / phil / math / lit) ─────────
+ * Skeletal styling shared across every `b-pack` figure: cap width to
+ * the article column, never overflow the page on re-render, and keep
+ * SVGs responsive on narrow viewports. The article container in
+ * page.html caps at the prose column; we mirror that here so a packet
+ * that ships an oversized SVG can't push horizontal scroll on the
+ * whole page (the bug surfaces on `./run --format` re-renders).
+ */
+.b-pack {
+  margin: 28px 0;
+  max-width: 100%;
+  overflow-x: auto;            /* scroll inside the figure, not the page */
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.b-pack figure, .b-pack > figure { margin: 0; max-width: 100%; }
+.b-pack-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  font-family: var(--font-body);
+}
+.b-pack-svg-paper {
+  background: var(--paper-hi);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.b-pack-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  margin-bottom: 8px;
+}
+.b-pack-axis,
+.b-pack-axis-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  fill: var(--ink-mute);
+  letter-spacing: 0.06em;
+}
+.b-pack-axis-label {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 13px;
+  fill: var(--ink);
+}
+.b-pack-cell-label {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 13px;
+  fill: var(--ink);
+}
+.b-pack-cell-num {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  fill: var(--ink);
+}
+.b-pack-cell-num.diag { fill: var(--accent-lo); }
+.b-pack-token {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  fill: var(--ink);
+}
+.b-pack-point-label,
+.b-pack-mark-label,
+.b-pack-fn-label,
+.b-pack-edge-label,
+.b-pack-row-label,
+.b-pack-theme-label,
+.b-pack-graph-node {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: var(--ink-soft);
+}
+.b-pack-fn-label { font-family: var(--font-serif); font-style: italic; font-size: 13px; }
+.b-pack-graph-node { font-family: var(--font-serif); font-size: 13px; font-weight: 600; fill: var(--ink); }
+.b-pack-theme-label { font-family: var(--font-serif); font-style: italic; font-size: 14px; fill: var(--ink); }
+.b-pack-row-label { font-weight: 600; font-size: 12px; fill: var(--ink); }
+.b-pack-node-label { font-family: var(--font-mono); font-weight: 700; font-size: 13px; fill: var(--ink); }
+.b-pack-series-label { font-family: var(--font-mono); font-size: 11px; }
+
+/* ── Code block ───────────────────────────────────────────────── */
+.b-code .b-code-block {
+  background: #1c1d20;
+  color: #e8e6df;
+  border-radius: 8px;
+  padding: 14px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+.b-code .b-code-block table { border-collapse: collapse; width: 100%; }
+.b-code .b-code-num-cell {
+  color: #666;
+  text-align: right;
+  user-select: none;
+  padding: 0 12px 0 0;
+  vertical-align: top;
+  width: 30px;
+}
+.b-code .b-code-line { white-space: pre; padding: 0; }
+.b-code .b-code-str { color: #b8d090; }
+.b-code .b-code-kw  { color: #d8a060; }
+.b-code .b-code-num { color: #a0c0e0; }
+.b-code .b-code-com { color: #7a7a72; font-style: italic; }
+.b-code .b-code-ann {
+  margin-left: 12px;
+  font-family: var(--font-hand, "Caveat", cursive);
+  font-size: 16px;
+}
+
+/* ── Call stack ───────────────────────────────────────────────── */
+.b-call-stack-body {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 6px;
+  padding: 16px;
+  background: var(--paper-hi);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.b-frame {
+  background: var(--paper);
+  border: 1.5px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.b-frame-top {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+.b-frame-fn { font-weight: 700; color: var(--ink); }
+.b-frame-locals {
+  font-size: 11px;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+.b-frame-locals span { margin-right: 10px; }
+.b-frame-marker {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-mute);
+  text-align: center;
+  letter-spacing: 0.1em;
+}
+.b-frame-marker.top { margin-bottom: 4px; }
+.b-frame-marker.bottom { margin-top: 4px; }
+
+/* ── Memory layout ────────────────────────────────────────────── */
+.b-memory-layout-body {
+  display: flex;
+  gap: 14px;
+  padding: 16px;
+  background: var(--paper-hi);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+.b-mem-region { flex: 1; min-width: 160px; }
+.b-mem-region-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  margin-bottom: 6px;
+  color: var(--ink-mute);
+}
+.b-mem-rows { display: flex; flex-direction: column; }
+.b-mem-row {
+  display: flex;
+  border-bottom: 1px solid var(--rule);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.b-mem-addr { color: var(--ink-faint, var(--ink-mute)); min-width: 60px; }
+.b-mem-label { color: var(--ink); font-weight: 600; }
+.b-mem-val { margin-left: auto; color: var(--accent); }
+
+/* ── Argument map / dialectic / quote pull ────────────────────── */
+.b-argument-map .b-arg-body {
+  padding: 18px;
+  background: var(--paper-hi);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.b-arg-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 4px 0;
+}
+.b-arg-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mute);
+  margin-top: 2px;
+  min-width: 24px;
+}
+.b-arg-tag-then { color: var(--accent); font-weight: 700; }
+.b-arg-text {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  color: var(--ink);
+  flex: 1;
+}
+.b-arg-conclusion .b-arg-text { font-size: 17px; font-weight: 600; }
+.b-arg-rule {
+  border-top: 2px solid var(--ink);
+  margin: 14px 0;
+  width: 60%;
+}
+
+.b-dialectic-tree .b-dial-body {
+  padding: 18px;
+  background: var(--paper-hi);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.b-dial-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.b-dial-arrow {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--ink-mute);
+}
+.b-dial-syn { width: 70%; margin: 0 auto; }
+.b-dial-box {
+  padding: 12px;
+  border: 1.5px solid;
+  background: var(--paper);
+  border-radius: 8px;
+}
+.b-dial-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.b-dial-text {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+.b-quote-pull .b-qp-body {
+  padding: 16px 24px;
+  border-left: 3px solid var(--accent);
+  background: var(--paper-hi);
+}
+.b-qp-text {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-style: italic;
+  color: var(--ink);
+  line-height: 1.4;
+}
+.b-qp-attr {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mute);
+}
+.b-qp-work { font-style: italic; }
+
+/* ── Truth table ──────────────────────────────────────────────── */
+.b-truth-table .b-tt-wrap {
+  padding: 14px;
+  background: var(--paper-hi);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  display: inline-block;
+  min-width: 280px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.b-truth-table table {
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.b-tt-var {
+  padding: 6px 14px;
+  text-align: center;
+  color: var(--ink-soft);
+  border-bottom: 2px solid var(--ink);
+}
+.b-tt-formula {
+  padding: 6px 14px;
+  text-align: center;
+  color: var(--accent);
+  font-style: italic;
+  border-left: 1px solid var(--rule);
+  border-bottom: 2px solid var(--ink);
+}
+.b-tt-cell {
+  padding: 5px 14px;
+  text-align: center;
+}
+.b-tt-cell.on { color: var(--ink); }
+.b-tt-cell.off { color: var(--ink-faint, var(--ink-mute)); }
+.b-tt-result {
+  padding: 5px 14px;
+  text-align: center;
+  font-weight: 700;
+  border-left: 1px solid var(--rule);
+}
+.b-tt-result.on { color: var(--accent); }
+.b-tt-result.off { color: var(--ink-faint, var(--ink-mute)); }
+.b-truth-table tbody tr { border-bottom: 1px solid var(--rule); }
+
+.b-venn-label {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 16px;
+  fill: var(--ink);
+}
+
+/* ── Proof block ──────────────────────────────────────────────── */
+.b-proof-block .b-pf-body {
+  padding: 18px;
+  background: var(--paper-hi);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.b-pf-given { margin-bottom: 12px; font-family: var(--font-serif); }
+.b-pf-given-label { font-style: italic; font-weight: 600; font-size: 14px; margin-right: 6px; }
+.b-pf-body table { width: 100%; border-collapse: collapse; }
+.b-pf-num {
+  padding: 8px 8px 8px 0;
+  vertical-align: top;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mute);
+  width: 30px;
+}
+.b-pf-stmt {
+  padding: 8px 14px 8px 0;
+  vertical-align: top;
+  font-family: var(--font-serif);
+  font-size: 16px;
+  color: var(--ink);
+}
+.b-pf-just {
+  padding: 8px 0;
+  vertical-align: top;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-mute);
+  font-style: italic;
+  text-align: right;
+}
+.b-pf-body tr { border-bottom: 1px dashed var(--rule); }
+.b-pf-qed {
+  margin-top: 10px;
+  text-align: right;
+  font-family: var(--font-serif);
+  font-size: 18px;
+  color: var(--ink);
+}
+
+/* ── Matrix view ──────────────────────────────────────────────── */
+.b-matrix-view .b-mx-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.b-mx-label {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-style: italic;
+  color: var(--ink);
+}
+.b-mx-bracket {
+  display: inline-flex;
+  position: relative;
+  padding: 4px 10px;
+}
+.b-mx-bk {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+}
+.b-mx-bk-l {
+  left: 0;
+  border-left: 2px solid var(--ink);
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+.b-mx-bk-r {
+  right: 0;
+  border-right: 2px solid var(--ink);
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+.b-mx-bracket table { border-collapse: collapse; margin: 0 6px; }
+.b-mx-cell {
+  padding: 6px 12px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--ink);
+}
+.b-mx-cell.hi {
+  color: var(--accent);
+  font-weight: 700;
+  background: var(--accent-tint);
+}
+
+/* ── Passage annotated ────────────────────────────────────────── */
+.b-passage-annotated .b-pa-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 24px;
+  padding: 18px;
+  background: var(--paper-hi);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.b-pa-passage {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--ink);
+  min-width: 0;
+}
+.b-pa-mark {
+  background: var(--accent-tint);
+  border-bottom: 2px solid var(--accent);
+  padding: 0 1px;
+}
+.b-pa-sup {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  margin-left: 2px;
+  font-weight: 700;
+}
+.b-pa-attr {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-mute);
+  font-style: italic;
+}
+.b-pa-notes {
+  border-left: 1px solid var(--rule);
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.b-pa-note {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+/* ── Narrow-viewport safety ───────────────────────────────────── */
+@media (max-width: 720px) {
+  .b-passage-annotated .b-pa-body { grid-template-columns: 1fr; }
+  .b-dial-row { grid-template-columns: 1fr; }
+  .b-dial-syn { width: 100%; }
+}

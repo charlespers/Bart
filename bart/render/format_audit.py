@@ -543,6 +543,27 @@ _BROKEN_CLASS_ATTR = re.compile(
 # Empty / orphan opening tags (`<>`, `<<div>`, `</>`).
 _EMPTY_TAG = re.compile(r"<\s*>|<<\w|</\s*>")
 
+# Inside an opening tag, a `\w` token followed directly by `"` and no `=` —
+# the `=` got dropped, leaving `<div c-formula-card-title">` (the attribute
+# value's leading char is gone) or `<div class-node">`. We require the `"`
+# to immediately follow a non-`=` word char.
+_ORPHAN_QUOTE_IN_TAG = re.compile(r'<\w+\s+[A-Za-z][\w\-]*[A-Za-z0-9]"')
+# A tag where an attribute name starts with a non-letter char that's typical
+# of a character-drop (`<div -node">` — the `class=` got eaten leaving the
+# value with a leading hyphen).
+_LEADING_HYPHEN_ATTR = re.compile(r'<\w+\s+-\w[\w\-]*"')
+# An equals sign attached to the tag NAME instead of an attribute name —
+# `<style="b-ribbon-beats">` should be `<div class="b-ribbon-beats">` but
+# the leading tag word + `class` got conflated. Match a known void / non-
+# attribute-bearing element name immediately followed by `=`.
+_TAGNAME_WITH_EQUALS = re.compile(
+    r'<(?:style|script|html|body|head|meta|link|br|hr|p|div|span|ul|ol|'
+    r'li|h[1-6]|table|tr|td|th|tbody|thead|tfoot|figure|section|article|'
+    r'header|footer|nav|main|aside|button|input|label|svg|path|g|rect|'
+    r'circle|line|text|defs|marker)=',
+    re.IGNORECASE,
+)
+
 
 def _check_broken_attrs(rel: str, html: str) -> list[AuditIssue]:
     issues: list[AuditIssue] = []
@@ -562,6 +583,33 @@ def _check_broken_attrs(rel: str, html: str) -> list[AuditIssue]:
             f"empty/orphan tag '{m2.group(0)}' — likely streaming-corrupted",
             "warn",
             line=_line_of(html, m2.start()),
+        ))
+    m3 = _ORPHAN_QUOTE_IN_TAG.search(html)
+    if m3:
+        issues.append(AuditIssue(
+            rel, "orphan_quote_in_tag",
+            f"attribute missing `=` near '{m3.group(0)[:60]}…' — "
+            f"streaming-corrupted; page needs rebuild from markdown",
+            "error",
+            line=_line_of(html, m3.start()),
+        ))
+    m4 = _LEADING_HYPHEN_ATTR.search(html)
+    if m4:
+        issues.append(AuditIssue(
+            rel, "leading_hyphen_attr",
+            f"tag attribute starts with `-` ('{m4.group(0)[:60]}…') — "
+            f"likely a character-drop in the attribute name",
+            "error",
+            line=_line_of(html, m4.start()),
+        ))
+    m5 = _TAGNAME_WITH_EQUALS.search(html)
+    if m5:
+        issues.append(AuditIssue(
+            rel, "tagname_with_equals",
+            f"tag name fused with `=` ('{m5.group(0)[:30]}…') — the "
+            f"`class` / `id` keyword got dropped from the attribute",
+            "error",
+            line=_line_of(html, m5.start()),
         ))
     return issues
 

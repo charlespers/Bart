@@ -442,6 +442,19 @@ def _render_one(
     for w in expanded.warnings:
         warnings.append(Warning(src.name, w.kind, w.detail, "warn"))
 
+    # Re-run the heading/HR padding now that bart fences have been replaced
+    # with raw HTML. The pre-expansion pass can only see `\`\`\`bart-*` fences
+    # as code-segments; once expand_blocks() has emitted `<figure>…</figure>`
+    # blobs, a `---` or `## 3. Foo` line that the author wrote flush against
+    # the next block is suddenly adjacent to a closing `</div>` in raw HTML
+    # — exactly the fingerprint that makes python-markdown bundle them as a
+    # single raw-HTML region and never convert the heading. This second pass
+    # inserts the blank line that breaks that adjacency.
+    from .sanitize import _pad_blocks_around_headings_and_rules
+    sanitized, pad_warns = _pad_blocks_around_headings_and_rules(sanitized)
+    for w in pad_warns:
+        warnings.append(Warning(src.name, w.kind, w.detail, "info"))
+
     # ── Format guardrail (pre-render) — auto-repair common issues that
     # would otherwise make the page look crammed or render math wrong.
     from .format_check import check as _format_check

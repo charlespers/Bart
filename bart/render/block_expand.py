@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import lib_blocks
+from . import lib_blocks_packs as lbp
 
 
 # Map of fence-name -> (lib_blocks function, expected kwargs).
@@ -79,6 +80,34 @@ _BLOCK_REGISTRY: dict[str, Callable[..., str]] = {
     "isomer-spotter":    lib_blocks.isomer_spotter,
     "titration-curve":   lib_blocks.titration_curve,
     "electron-config":   lib_blocks.electron_config,
+    # ML pack
+    "confusion-matrix":  lbp.confusion_matrix,
+    "loss-curve":        lbp.loss_curve,
+    "neural-net-diagram": lbp.neural_net_diagram,
+    "attention-matrix":  lbp.attention_matrix,
+    "embedding-scatter": lbp.embedding_scatter,
+    # CS pack
+    "code-block":        lbp.code_block,
+    "call-stack":        lbp.call_stack,
+    "memory-layout":     lbp.memory_layout,
+    "binary-tree":       lbp.binary_tree,
+    "process-timeline":  lbp.process_timeline,
+    # Phil pack
+    "argument-map":      lbp.argument_map,
+    "truth-table":       lbp.truth_table,
+    "venn-logic":        lbp.venn_logic,
+    "dialectic-tree":    lbp.dialectic_tree,
+    "quote-pull":        lbp.quote_pull,
+    # Math pack
+    "proof-block":       lbp.proof_block,
+    "matrix-view":       lbp.matrix_view,
+    "graph-plot":        lbp.graph_plot,
+    "integral-area":     lbp.integral_area,
+    # Lit pack
+    "passage-annotated": lbp.passage_annotated,
+    "character-graph":   lbp.character_graph,
+    "theme-weave":       lbp.theme_weave,
+    "style-spectrum":    lbp.style_spectrum,
 }
 
 
@@ -264,6 +293,34 @@ def render_block_catalog(only: list[str] | None = None) -> str:
         "isomer-spotter":    '{"prompt": "...", "target?": "<HTML>", "candidates": [{"id":"a","label":"A","diagram":"<HTML>","isMatch":true,"reason?":"..."}]}',
         "titration-curve":   '{"label?": "...", "acid_vol?": 25, "acid_conc?": 0.1, "base_conc?": 0.1, "pka?": 4.76, "max_base?": 50}',
         "electron-config":   '{"element": "Carbon", "atomic_number": 6, "correct_config": [{"label":"1s","slots":1},{"label":"2s","slots":1},{"label":"2p","slots":3}]}',
+        # ML pack
+        "confusion-matrix":  '{"classes": ["neg","neu","pos"], "counts": [[82,12,6],[10,70,20],[4,14,82]], "title?": "...", "normalize?": false, "caption?": "..."}',
+        "loss-curve":        '{"series": [{"label":"train","data":[1.5,1.0,0.7,0.5]},{"label":"val","data":[1.4,1.1,0.9,0.85]}], "x_label?": "epoch", "y_label?": "loss", "title?": "...", "caption?": "..."}',
+        "neural-net-diagram":'{"layers": [{"label":"input · 4","units":4},{"label":"hidden · 8","units":8},{"label":"output · 3","units":3}], "title?": "...", "caption?": "..."}',
+        "attention-matrix":  '{"row_tokens": ["The","cat"], "col_tokens": ["The","cat"], "weights": [[0.5,0.3],[0.4,0.5]], "title?": "...", "caption?": "..."}',
+        "embedding-scatter": '{"points": [{"x":1.2,"y":2.1,"label":"cat","group":"A"}], "title?": "...", "caption?": "..."}',
+        # CS pack
+        "code-block":        '{"lines": ["def fib(n):","    return n if n<2 else fib(n-1)+fib(n-2)"], "language?": "python", "annotations?": [{"line":1,"text":"base case"}], "title?": "...", "caption?": "..."}',
+        "call-stack":        '{"frames": [{"fn":"main","args":[{"value":3}]},{"fn":"fib","args":[{"value":2}],"locals":[{"name":"n","value":2}]}], "title?": "...", "caption?": "..."}',
+        "memory-layout":     '{"regions": [{"name":"stack","items":[{"addr":"0x7ffe","label":"x","value":42}]},{"name":"heap","items":[{"addr":"0x6010","label":"buf"}]}], "title?": "...", "caption?": "..."}',
+        "binary-tree":       '{"root": {"value":5,"left":{"value":3},"right":{"value":7,"left":{"value":6},"right":{"value":9}}}, "title?": "...", "caption?": "..."}',
+        "process-timeline":  '{"processes": [{"name":"P1","segments":[{"start":0,"dur":3,"kind":"run"},{"start":3,"dur":2,"kind":"wait"}]}], "total_time?": 20, "title?": "...", "caption?": "..."}',
+        # Phil pack
+        "argument-map":      '{"premises": ["All men are mortal","Socrates is a man"], "conclusion": "Socrates is mortal", "title?": "...", "caption?": "..."}',
+        "truth-table":       '{"vars": ["P","Q"], "formula": "P → Q", "rows": [{"values":[true,true],"result":true},{"values":[true,false],"result":false}], "title?": "...", "caption?": "..."}',
+        "venn-logic":        '{"sets?": [{"label":"A","cx":130,"cy":110,"r":70},{"label":"B","cx":230,"cy":110,"r":70}], "shaded?": ["AB"], "title?": "...", "caption?": "..."}',
+        "dialectic-tree":    '{"thesis": "...", "antithesis": "...", "synthesis": "...", "title?": "...", "caption?": "..."}',
+        "quote-pull":        '{"quote": "...", "attribution?": "...", "work?": "...", "caption?": "..."}',
+        # Math pack
+        "proof-block":       '{"steps": [{"statement":"a²+b²=c²","justification":"Pythagoras"}], "given?": ["right triangle ABC"], "qed?": true, "title?": "...", "caption?": "..."}',
+        "matrix-view":       '{"rows": [[1,2],[3,4]], "label?": "A", "highlight?": {"cell":[0,1]}, "title?": "...", "caption?": "..."}',
+        "graph-plot":        '{"fns": [{"points":[[-2,4],[-1,1],[0,0],[1,1],[2,4]],"color?":"...","label?":"y=x²"}], "x_range?": [-5,5], "y_range?": [-5,5], "marks?": [{"x":0,"y":0,"label":"origin"}], "title?": "...", "caption?": "..."}',
+        "integral-area":     '{"points": [[0,0],[1,1],[2,4],[3,9]], "a": 0, "b": 3, "x_range?": [-1,5], "y_range?": [-1,10], "title?": "...", "caption?": "..."}',
+        # Lit pack
+        "passage-annotated": '{"passage": "Long passage text here.", "annotations?": [{"phrase":"passage","note":"meta-reference"}], "attribution?": "...", "title?": "...", "caption?": "..."}',
+        "character-graph":   '{"nodes": [{"id":"a","label":"Hamlet","x":120,"y":120}], "edges": [{"from":"a","to":"b","kind":"family","label":"son"}], "title?": "...", "caption?": "..."}',
+        "theme-weave":       '{"chapters": ["Ch.1","Ch.2","Ch.3"], "themes": ["guilt","exile"], "presence": [[0.2,0.6,0.9],[0.8,0.4,0.1]], "title?": "...", "caption?": "..."}',
+        "style-spectrum":    '{"axis_x": ["concrete","abstract"], "axis_y": ["sparse","dense"], "items": [{"label":"Hemingway","x":-0.7,"y":-0.4}], "title?": "...", "caption?": "..."}',
     }
     names = [n for n in BLOCK_NAMES if (only is None or n in only)]
     lines = []
@@ -305,6 +362,37 @@ _CATALOG_BY_ARTIFACT = {
         "balance-equation", "isomer-spotter", "titration-curve",
         "electron-config",
     ],
+    # Domain packs — keyed off subject keywords (see helpers below).
+    "ml_daily_lesson": [
+        "why-it-matters", "concept-build", "formula-card", "trap-callout",
+        "quick-check", "worked-example", "multi-step", "checkpoint",
+        "confusion-matrix", "loss-curve", "neural-net-diagram",
+        "attention-matrix", "embedding-scatter",
+    ],
+    "cs_daily_lesson": [
+        "why-it-matters", "concept-build", "formula-card", "trap-callout",
+        "quick-check", "worked-example", "multi-step", "checkpoint",
+        "code-block", "call-stack", "memory-layout", "binary-tree",
+        "process-timeline",
+    ],
+    "phil_daily_lesson": [
+        "why-it-matters", "concept-build", "trap-callout", "quick-check",
+        "worked-example", "checkpoint",
+        "argument-map", "truth-table", "venn-logic", "dialectic-tree",
+        "quote-pull",
+    ],
+    "math_daily_lesson": [
+        "why-it-matters", "concept-build", "formula-card", "trap-callout",
+        "quick-check", "worked-example", "multi-step", "checkpoint",
+        "proof-block", "proof-ladder", "matrix-view", "graph-plot",
+        "integral-area", "number-line",
+    ],
+    "lit_daily_lesson": [
+        "why-it-matters", "concept-build", "trap-callout", "quick-check",
+        "checkpoint", "annotated-quote",
+        "passage-annotated", "character-graph", "theme-weave",
+        "style-spectrum", "quote-pull", "timeline",
+    ],
 }
 
 
@@ -314,22 +402,69 @@ _CHEM_KEYWORDS = (
     "chem", "organic", "inorganic", "biochem", "pchem", "kinetic",
     "thermodynamic",
 )
+_ML_KEYWORDS = (
+    "machine learning", "ml", " ai", "deep learning", "neural", "nlp",
+    "natural language", "computer vision", "cv ", "data science",
+    "statistics learning",
+)
+_CS_KEYWORDS = (
+    "operating system", "compilers", "systems", "computer architecture",
+    "computer science", "data structures", "algorithms", "networking",
+    "databases", "distributed", "concurrency",
+)
+_PHIL_KEYWORDS = (
+    "philosophy", "ethics", "logic", "epistemology", "metaphysics",
+    "phenomenology", "philos",
+)
+_MATH_KEYWORDS = (
+    "calculus", "linear algebra", "real analysis", "topology", "geometry",
+    "number theory", "discrete math", "abstract algebra", "differential",
+    "math ", "mathematics",
+)
+_LIT_KEYWORDS = (
+    "literature", "lit ", "comp lit", "comparative lit", "fiction",
+    "poetry", "drama", "shakespeare", "novel",
+)
 
 
 def is_chem_subject(subject: str) -> bool:
-    s = (subject or "").lower()
-    return any(k in s for k in _CHEM_KEYWORDS)
+    return _matches(subject, _CHEM_KEYWORDS)
+
+
+def _matches(subject: str, kws: tuple[str, ...]) -> bool:
+    s = " " + (subject or "").lower() + " "
+    return any(k in s for k in kws)
+
+
+def _domain_kind(subject: str) -> str | None:
+    """Return the domain prefix of a daily_lesson catalog when the subject
+    keywords match. Order matters — most specific first."""
+    if _matches(subject, _CHEM_KEYWORDS):
+        return "chem"
+    if _matches(subject, _ML_KEYWORDS):
+        return "ml"
+    if _matches(subject, _CS_KEYWORDS):
+        return "cs"
+    if _matches(subject, _PHIL_KEYWORDS):
+        return "phil"
+    if _matches(subject, _MATH_KEYWORDS):
+        return "math"
+    if _matches(subject, _LIT_KEYWORDS):
+        return "lit"
+    return None
 
 
 def catalog_for(artifact_kind: str, subject: str = "") -> str:
     """Slim catalog appropriate for the given artifact_kind.
 
-    When `subject` is provided and matches chem keywords, daily-lesson
-    catalogs include the chem-specific blocks (molecule-diagram,
-    reaction-equation, etc.).
+    When `subject` matches a domain keyword set (chem / ml / cs / phil /
+    math / lit), daily-lesson catalogs include that domain's components
+    in addition to the generic ones.
     """
-    if artifact_kind == "daily_lesson" and is_chem_subject(subject):
-        only = _CATALOG_BY_ARTIFACT["chem_daily_lesson"]
+    if artifact_kind == "daily_lesson":
+        domain = _domain_kind(subject)
+        key = f"{domain}_daily_lesson" if domain else "daily_lesson"
+        only = _CATALOG_BY_ARTIFACT.get(key) or _CATALOG_BY_ARTIFACT["daily_lesson"]
     else:
         only = _CATALOG_BY_ARTIFACT.get(artifact_kind)
     return render_block_catalog(only=only)

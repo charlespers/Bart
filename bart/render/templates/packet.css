@@ -317,6 +317,32 @@ html, body {
 .content {
   padding: 48px 48px 96px;
   min-width: 0;  /* allow flex/grid children to shrink past intrinsic */
+  max-width: 100%;
+  overflow-x: clip;  /* a stray oversize SVG / table can't push the page */
+}
+
+/* Re-render safety: agent-emitted figures or pasted screenshots can be
+ * wider than the article column. Clamp every direct media child of the
+ * article to the column width and let the figure handle its own
+ * horizontal scroll if its content actually overflows. Without this,
+ * `./run --format` re-renders sometimes pushed material outside the
+ * .content padding (visible as content slipping behind the sidebar or
+ * past the right edge of the page). */
+article > figure,
+article > img,
+article > svg,
+article > table,
+article > .b-pack {
+  max-width: 100%;
+}
+article img, article svg, article video {
+  max-width: 100%;
+  height: auto;
+}
+article table { max-width: 100%; }
+article pre, article .b-code-block {
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 @media (max-width: 700px) {
