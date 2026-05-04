@@ -181,7 +181,11 @@ def _toc_to_html(toc: list[dict]) -> str:
             continue
         cls = f"toc-l{level}"
         slug = html_escape(entry["id"])
-        name = html_escape(entry["name"])
+        # python-markdown's TOC extension already HTML-escapes entry["name"]
+        # (so a heading containing `&` arrives as `&amp;`). Re-escaping here
+        # produces `&amp;amp;` — the double-escaped-entity bug surfaced by
+        # `format --fix` every rerender. Use the name as-is.
+        name = entry["name"]
         parts.append(f'<li class="{cls}"><a href="#{slug}">{name}</a></li>')
     parts.append("</ul></nav>")
     return "".join(parts)

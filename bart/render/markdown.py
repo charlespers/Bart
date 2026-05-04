@@ -96,40 +96,52 @@ def render(md_text: str) -> tuple[str, list[RenderWarning], dict]:
         html = md.convert(md_text)
     except Exception as e:  # noqa: BLE001
         warnings.append(RenderWarning("markdown_exception", f"{type(e).__name__}: {e}"))
-        # Recovery attempt 1: drop the most-fragile arithmatex extension and
-        # try again — the most common cause of a render exception is a
-        # malformed math span that arithmatex's tokenizer chokes on. Without
-        # arithmatex the math won't render via KaTeX (raw `\(…\)` in prose),
-        # but every other markdown structure (headings, lists, library blocks)
-        # still converts properly, which is far better than dumping the raw
-        # source as a mono-spaced wall of text. The format-audit's prose
-        # math-wrap fix can recover the math afterward.
-        try:
-            md_safe = markdown.Markdown(
-                extensions=[ext for ext in _EXTENSIONS
-                            if not (isinstance(ext, str) and "arithmatex" in ext)],
-                extension_configs={
-                    k: v for k, v in _EXTENSION_CONFIGS.items()
-                    if "arithmatex" not in k
-                },
-                output_format="html5",
-                tab_length=4,
-            )
-            html = md_safe.convert(md_text)
-            warnings.append(RenderWarning(
-                "markdown_recovered",
-                "rendered without arithmatex extension after primary failure",
-            ))
-            toc_tokens = getattr(md_safe, "toc_tokens", []) or []
-            toc_flat = _flatten_toc(toc_tokens)
-            headings = [{"title": t["name"], "slug": t["id"], "level": t["level"]}
-                        for t in toc_flat]
-            return html, warnings, {"toc": toc_flat, "headings": headings}
-        except Exception as e2:  # noqa: BLE001
-            warnings.append(RenderWarning(
-                "markdown_recovery_failed",
-                f"{type(e2).__name__}: {e2}",
-            ))
+        # Three escalating recovery passes. Each strips more extensions until
+        # one converts. The arithmatex tokenizer (math spans), smarty
+        # (typography), and tilde/caret/mark (~~/^^/==) are the most common
+        # throw sources on agent-generated content. The bare-bones pass keeps
+        # only headings, lists, code, tables, fenced_code — enough to recover
+        # 99% of pages.
+        recovery_strategies = [
+            ("no-arithmatex",
+             [ext for ext in _EXTENSIONS
+              if not (isinstance(ext, str) and "arithmatex" in ext)]),
+            ("no-pymdownx",
+             [ext for ext in _EXTENSIONS
+              if not (isinstance(ext, str) and ext.startswith("pymdownx"))]),
+            ("bare-bones",
+             ["tables", "fenced_code", "attr_list", "sane_lists",
+              TocExtension(permalink=False, toc_depth="2-4",
+                           slugify=lambda v, sep: _slugify(v, sep))]),
+        ]
+        for label, ext_list in recovery_strategies:
+            try:
+                md_safe = markdown.Markdown(
+                    extensions=ext_list,
+                    extension_configs={
+                        k: v for k, v in _EXTENSION_CONFIGS.items()
+                        if not any(k.startswith(skip) for skip in ("pymdownx",))
+                        or any(isinstance(e, str) and e.startswith(k) for e in ext_list)
+                    },
+                    output_format="html5",
+                    tab_length=4,
+                )
+                html = md_safe.convert(md_text)
+                warnings.append(RenderWarning(
+                    "markdown_recovered",
+                    f"rendered with `{label}` extension set after primary failure",
+                ))
+                toc_tokens = getattr(md_safe, "toc_tokens", []) or []
+                toc_flat = _flatten_toc(toc_tokens)
+                headings = [{"title": t["name"], "slug": t["id"], "level": t["level"]}
+                            for t in toc_flat]
+                return html, warnings, {"toc": toc_flat, "headings": headings}
+            except Exception as e2:  # noqa: BLE001
+                warnings.append(RenderWarning(
+                    "markdown_recovery_attempt_failed",
+                    f"{label}: {type(e2).__name__}: {e2}",
+                ))
+                continue
         # Final fallback: escape the raw markdown so the page at least loads.
         # We surface it as a visible error block (not a quietly-styled <pre>)
         # so the user knows the page didn't render properly.
