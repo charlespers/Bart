@@ -480,6 +480,36 @@ def _render_one(
         sev = "info" if w.kind in _INFO_KINDS else "warn"
         warnings.append(Warning(src.name, w.kind, w.detail, sev))
 
+    # Fold the cheap, idempotent format-audit autofixes INTO the render pipeline.
+    # Without this, every `--rerender` cycle produces HTML with the same
+    # patterns (double-escaped entities from the markdown extension, prose
+    # math tokens like `[A]` / `k_1` that the author didn't wrap, inline
+    # `font-size:` overrides), and `--fix` repeatedly reports the same
+    # "applied N repair(s)" because the next rerender re-creates them.
+    # Running the fixes here means rerendered HTML is already clean.
+    from .format_audit import (
+        _fix_math_html_leak,
+        _fix_double_escaped_math,
+        _fix_double_escaped_latex_commands,
+        _fix_double_superscript,
+        _fix_unbalanced_block_math,
+        _fix_prose_math_wrap,
+        _ensure_katex_loaded,
+        _fix_inline_font_overrides,
+        _fix_displaymath_inside_p,
+        _fix_double_escaped_entities,
+        _fix_lazy_load_images,
+    )
+    body_html, _ = _fix_math_html_leak(body_html)
+    body_html, _ = _fix_double_escaped_math(body_html)
+    body_html, _ = _fix_double_escaped_latex_commands(body_html)
+    body_html, _ = _fix_double_superscript(body_html)
+    body_html, _ = _fix_unbalanced_block_math(body_html)
+    body_html, _ = _fix_prose_math_wrap(body_html)
+    body_html, _ = _fix_inline_font_overrides(body_html)
+    body_html, _ = _fix_displaymath_inside_p(body_html)
+    body_html, _ = _fix_double_escaped_entities(body_html)
+
     # ── Format guardrail (post-render) — inspect rendered HTML for
     # box-internal sloppiness (bare formula-cards, empty worked-examples,
     # etc.) that only becomes apparent after expansion.

@@ -248,28 +248,70 @@ def _check_stray_dollar(rel: str, html: str) -> list[AuditIssue]:
     return []
 
 
-_RENDER_FALLBACK = re.compile(r'<pre class=[\'"]render-fallback[\'"]>')
+_RENDER_FALLBACK = re.compile(
+    r'<pre class=[\'"]render-fallback[\'"]>|<div class=[\'"]render-fallback-error[\'"]'
+)
 
 
 def _check_render_fallback(rel: str, html: str) -> list[AuditIssue]:
+    """Render-fallback means the markdown converter raised AND the recovery
+    pass without `arithmatex` also failed. The page now shows a visible
+    error block + the raw markdown source. Surface as an error so it's
+    obvious — and so the corruption-trigger fires the rebuild path."""
     if _RENDER_FALLBACK.search(html):
-        return [AuditIssue(rel, "render_fallback_present",
-                           "page contains a <pre class='render-fallback'> — markdown failed to render",
-                           "error")]
+        return [AuditIssue(
+            rel, "render_fallback_present",
+            "page contains a render-fallback block — markdown failed to "
+            "render and recovery couldn't repair it. Inspect the source "
+            "for malformed `bart-*` JSON or unbalanced delimiters.",
+            "error",
+        )]
     return []
 
 
 _BART_BLOCK_ERROR = re.compile(r'<div class="bart-block-error"', re.IGNORECASE)
+# Pull the block name + reason text out of the error stub so the audit
+# report tells the user *which* block failed and *why*. The stub format
+# is: `<strong>bart-{name}</strong> failed: {reason}` (see
+# block_expand._inline_warning).
+_BART_BLOCK_ERROR_DETAIL = re.compile(
+    r'<div class="bart-block-error"[^>]*>\s*<strong>([^<]+)</strong>\s*failed:\s*([^<]{0,200})</div>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _check_block_error(rel: str, html: str) -> list[AuditIssue]:
     hits = list(_BART_BLOCK_ERROR.finditer(html))
     if not hits:
         return []
-    return [AuditIssue(rel, "block_error_present",
-                       f"{len(hits)} library block(s) failed to render (visible yellow error stub)",
-                       "error",
-                       line=_line_of(html, hits[0].start()))]
+    detail_hits = list(_BART_BLOCK_ERROR_DETAIL.finditer(html))
+    issues: list[AuditIssue] = []
+    if detail_hits:
+        # Surface up to the first 3 specific failures with block name + reason.
+        for m in detail_hits[:3]:
+            block_name = m.group(1).strip()
+            reason = m.group(2).strip()
+            issues.append(AuditIssue(
+                rel, "block_error_present",
+                f"`{block_name}` failed: {reason} — fix the source markdown's "
+                f"JSON payload, then rerender",
+                "error",
+                line=_line_of(html, m.start()),
+            ))
+        if len(hits) > len(issues):
+            issues.append(AuditIssue(
+                rel, "block_error_present",
+                f"{len(hits) - len(issues)} more library block(s) also failed (see HTML)",
+                "error",
+            ))
+    else:
+        issues.append(AuditIssue(
+            rel, "block_error_present",
+            f"{len(hits)} library block(s) failed to render (visible yellow error stub)",
+            "error",
+            line=_line_of(html, hits[0].start()),
+        ))
+    return issues
 
 
 _RAW_FENCE_LEAK = re.compile(r"```bart-[a-z\-]+", re.IGNORECASE)
@@ -929,6 +971,12 @@ _PROSE_MATH_TOKEN_RE = re.compile(
 )
 
 _DOUBLE_BS_LATEX_CMD = re.compile(r"\\\\([A-Za-z]+)")
+# Spacing/punctuation TeX commands that get double-backslashed by agents
+# emitting JSON-safe LaTeX. KaTeX parses `\\;` as `\\` (linebreak) + `;`
+# (literal), which makes formulas render as a vertical column of stray
+# semicolons / commas / bangs (see formula-card image with `r_i ; = ; e_i`).
+# Collapse `\\;`, `\\,`, `\\:`, `\\!`, `\\ ` to single-backslash form.
+_DOUBLE_BS_SPACING = re.compile(r"\\\\([;,:! ])")
 _MATH_SPAN_RE = re.compile(r"(\\\(.+?\\\)|\\\[.+?\\\])", re.DOTALL)
 
 
@@ -972,20 +1020,23 @@ def _fix_prose_math_wrap(html: str) -> tuple[str, int]:
 
 
 def _fix_double_escaped_latex_commands(html: str) -> tuple[str, int]:
-    """Collapse `\\\\chi`, `\\\\circ`, etc. inside math spans only.
+    """Collapse `\\\\chi`, `\\\\circ`, etc. AND `\\\\;`, `\\\\,`, `\\\\:`,
+    `\\\\!`, `\\\\ ` inside math spans only.
 
     Same reasoning as the markdown-side fix: an over-eager JSON pipeline can
     leave commands at JSON-escape level (literal `\\\\chi`) which KaTeX
-    misreads as "linebreak then chi" — usually surfacing as
-    `Got function '\\\\' with no arguments as superscript`. Restricting the
-    transform to math regions keeps real "\\\\" sequences in prose (Windows
-    paths, hand-drawn linebreaks in `<pre>`) untouched.
+    misreads as "linebreak then chi". The visible failure mode for the
+    spacing variants (`\\\\;`, `\\\\,`) is a vertical column of stray
+    punctuation in formula cards (linebreak then literal `;` / `,`).
+    Restricting the transform to math regions keeps real "\\\\" sequences
+    in prose (Windows paths, hand-drawn linebreaks in `<pre>`) untouched.
     """
     def _on(chunk: str) -> tuple[str, int]:
         n = [0]
         def _scrub_span(m: re.Match) -> str:
             inner = m.group(1)
             new = _DOUBLE_BS_LATEX_CMD.sub(lambda mm: "\\" + mm.group(1), inner)
+            new = _DOUBLE_BS_SPACING.sub(lambda mm: "\\" + mm.group(1), new)
             if new != inner:
                 n[0] += 1
             return new
@@ -1203,7 +1254,7 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
         # is only needed when string fixes can't synthesize structure.
         corruption_hits: list[AuditIssue] = []
         for check in (_check_raw_md_hr_leak, _check_raw_md_heading_leak,
-                      _check_broken_attrs):
+                      _check_broken_attrs, _check_render_fallback):
             try:
                 corruption_hits.extend(check(rel, html))
             except Exception:

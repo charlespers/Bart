@@ -95,7 +95,7 @@ _TOPBAR_TMPL = """\
   </div>
   <div class="topbar-actions">
     <button class="btn btn-icon" id="search-btn" title="Search (⌘K)">⌕</button>
-    <button class="btn btn-icon" id="theme-toggle" title="Theme">auto</button>
+    <button class="btn btn-icon" id="theme-toggle" title="Theme">light</button>
   </div>
 </header>
 """
@@ -125,7 +125,7 @@ _SEARCH_OVERLAY = """\
 
 _BASE_TMPL = """\
 <!doctype html>
-<html lang="en" data-theme="auto" data-rel-root="{rel}">
+<html lang="en" data-theme="light" data-rel-root="{rel}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">

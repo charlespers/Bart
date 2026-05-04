@@ -96,9 +96,59 @@ def render(md_text: str) -> tuple[str, list[RenderWarning], dict]:
         html = md.convert(md_text)
     except Exception as e:  # noqa: BLE001
         warnings.append(RenderWarning("markdown_exception", f"{type(e).__name__}: {e}"))
-        # Fallback: escape the raw markdown so the page at least loads.
+        # Recovery attempt 1: drop the most-fragile arithmatex extension and
+        # try again — the most common cause of a render exception is a
+        # malformed math span that arithmatex's tokenizer chokes on. Without
+        # arithmatex the math won't render via KaTeX (raw `\(…\)` in prose),
+        # but every other markdown structure (headings, lists, library blocks)
+        # still converts properly, which is far better than dumping the raw
+        # source as a mono-spaced wall of text. The format-audit's prose
+        # math-wrap fix can recover the math afterward.
+        try:
+            md_safe = markdown.Markdown(
+                extensions=[ext for ext in _EXTENSIONS
+                            if not (isinstance(ext, str) and "arithmatex" in ext)],
+                extension_configs={
+                    k: v for k, v in _EXTENSION_CONFIGS.items()
+                    if "arithmatex" not in k
+                },
+                output_format="html5",
+                tab_length=4,
+            )
+            html = md_safe.convert(md_text)
+            warnings.append(RenderWarning(
+                "markdown_recovered",
+                "rendered without arithmatex extension after primary failure",
+            ))
+            toc_tokens = getattr(md_safe, "toc_tokens", []) or []
+            toc_flat = _flatten_toc(toc_tokens)
+            headings = [{"title": t["name"], "slug": t["id"], "level": t["level"]}
+                        for t in toc_flat]
+            return html, warnings, {"toc": toc_flat, "headings": headings}
+        except Exception as e2:  # noqa: BLE001
+            warnings.append(RenderWarning(
+                "markdown_recovery_failed",
+                f"{type(e2).__name__}: {e2}",
+            ))
+        # Final fallback: escape the raw markdown so the page at least loads.
+        # We surface it as a visible error block (not a quietly-styled <pre>)
+        # so the user knows the page didn't render properly.
         from html import escape as html_escape
-        html = f"<pre class='render-fallback'>{html_escape(md_text)}</pre>"
+        html = (
+            f'<div class="render-fallback-error" '
+            f'style="border:2px solid var(--accent,#c96442);'
+            f'background:var(--warn-tint,#fdf3e3);padding:18px;border-radius:10px;'
+            f'margin:24px 0;font-family:var(--font-body,system-ui),sans-serif">'
+            f'<strong>This page failed to render.</strong> '
+            f'The markdown source is shown below — likely a malformed library '
+            f'block fence or unbalanced delimiter. Run <code>./run fix-patch '
+            f'&lt;run_id&gt;</code> to attempt automatic recovery.'
+            f'</div>'
+            f'<pre class="render-fallback" '
+            f'style="white-space:pre-wrap;word-break:break-word;background:'
+            f'var(--paper-hi,#fbf9f4);padding:16px;border-radius:8px;'
+            f'font-size:12px">{html_escape(md_text)}</pre>'
+        )
         return html, warnings, {"toc": [], "headings": []}
 
     # TOC lookup — markdown extension stores the parsed TOC tokens
