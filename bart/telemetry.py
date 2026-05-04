@@ -34,6 +34,7 @@ class CallRecord:
 @dataclass
 class Telemetry:
     calls: list[CallRecord] = field(default_factory=list)
+    stages: dict = field(default_factory=dict)  # {stage_name: duration_s}
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record(self, rec: CallRecord) -> None:
@@ -41,6 +42,10 @@ class Telemetry:
         rec.cost_usd = self._cost(rec)
         with self._lock:
             self.calls.append(rec)
+
+    def record_stage(self, name: str, duration_s: float) -> None:
+        with self._lock:
+            self.stages[name] = round(duration_s, 2)
 
     @staticmethod
     def _cost(rec: CallRecord) -> float:
@@ -69,6 +74,7 @@ class Telemetry:
     def write(self, path: Path) -> None:
         data = {
             "summary": self.summary(),
+            "stages": dict(self.stages),
             "calls": [asdict(c) for c in self.calls if not c.label.startswith("_")],
         }
         # Strip the lock from any nested dicts

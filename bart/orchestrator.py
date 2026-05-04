@@ -60,13 +60,23 @@ from rich.table import Table
 from .agents import (
     AuthorAgent,
     CriticAgent,
+    DistillerAgent,
+    NotationExtractorAgent,
     PlannerAgent,
+    ProblemIndexerAgent,
     ResearcherAgent,
     ReviewerAgent,
     ReviserAgent,
+    SolverAgent,
+    TopicDistillerAgent,
+    WhimsyIndexerAgent,
 )
 from .agents.base import AgentContext
 from .agents.heuristics import health_check
+from .agents import block_density
+from .agents import problem_indexer as _problem_indexer
+from .agents import review_queue as _review_queue
+from .agents import whimsy_indexer as _whimsy_indexer
 from .branding import ACCENT, ACCENT_HI, ACCENT_LO, CREAM_LO, INK, RICH_DIM, RICH_OK
 from .config import Config
 from .io.checkpoint import atomic_write_json, atomic_write_text, is_complete
@@ -113,7 +123,8 @@ class Orchestrator:
     def run(self) -> int:
         try:
             self._print_header()
-            kept, skipped = self._extract()
+            with self._stage("extract"):
+                kept, skipped = self._extract()
             corpus = build_corpus(kept, skipped)
             self._print_corpus_summary(corpus, skipped)
 
@@ -141,15 +152,92 @@ class Orchestrator:
                     on_event=self._on_llm_event,
                 )
 
-            corpus_block = self._make_corpus_block(corpus.body)
-            ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=corpus_block)
-            planner = PlannerAgent(ctx)
-            researcher = ResearcherAgent(ctx)
-            author = AuthorAgent(ctx)
+            # Warm-up smoke test — one tiny call to fail-fast on auth/model issues
+            # before launching the big parallel batch. Costs ~5 tokens; saves
+            # potentially minutes of silent waiting if something is wrong.
+            self.console.print(
+                f"  [{ACCENT_HI}]→[/{ACCENT_HI}] warm-up check "
+                f"[dim](single tiny call to confirm model + auth)[/dim]"
+            )
+            try:
+                t0 = time.time()
+                _ = llm.complete(
+                    model=self.cfg.fast_model,
+                    system="You are a test responder. Reply with one word.",
+                    user="Say: ok",
+                    max_tokens=20,
+                    label="warmup",
+                    use_disk_cache=False,
+                )
+                dt = time.time() - t0
+                self.console.print(
+                    f"  [{RICH_OK}]✓[/{RICH_OK}] warm-up succeeded "
+                    f"[dim]({dt:.1f}s · model + auth working)[/dim]"
+                )
+            except Exception as e:  # noqa: BLE001
+                self.console.print(
+                    f"  [red]✗[/red] warm-up failed: {type(e).__name__}: {e}\n"
+                    f"  [dim]aborting before launching the full batch.[/dim]"
+                )
+                raise
+
+            # Build the full-corpus context (used only by Distiller + Researcher).
+            full_corpus_block = self._make_corpus_block(corpus.body)
+            full_ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=full_corpus_block)
+
+            # ── Distill the corpus to a tight brief ONCE, with the fast model.
+            # All downstream agents (Planner, Author, Reviewer) use the brief
+            # in place of the raw corpus — drops input tokens by ~80%.
+            self.console.print(
+                f"\n  [{ACCENT_HI}]→[/{ACCENT_HI}] distilling corpus → brief "
+                f"[dim]({self.cfg.fast_model.split('-')[1] if '-' in self.cfg.fast_model else 'fast'} · "
+                f"replaces 100K+ char corpus everywhere downstream)[/dim]"
+            )
+            brief_path = self.paths.checkpoints_dir / "corpus_brief.md"
+            if brief_path.exists() and brief_path.stat().st_size > 500:
+                corpus_brief = brief_path.read_text()
+                self.console.print(f"  [dim]✓ reused cached corpus brief ({len(corpus_brief):,} chars)[/dim]")
+            else:
+                distiller = DistillerAgent(full_ctx)
+                corpus_brief = distiller.distill()
+                brief_path.write_text(corpus_brief)
+                self.console.print(f"  [{RICH_OK}]✓[/{RICH_OK}] corpus brief written ({len(corpus_brief):,} chars)")
+
+            # The brief block is what most agents see going forward.
+            brief_block = [{
+                "type": "text",
+                "text": (
+                    "CORPUS BRIEF — a structured digest of the user's course materials, "
+                    "use this as the primary source of truth:\n\n" + corpus_brief
+                ),
+                "cache_control": {"type": "ephemeral"},
+            }]
+
+            brief_ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=brief_block)
+            # Planner is now deterministic — no agent instance needed.
+            author = AuthorAgent(brief_ctx)
+
+            # Researcher keeps full corpus access — it's the only agent that needs it.
+            researcher = ResearcherAgent(full_ctx)
+
             # Reviewer fuses critic + reviser into a single corpus-free call.
-            # Saves ~50% input tokens per review and one round trip when revision happens.
             reviewer_ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=[])
             reviewer = ReviewerAgent(reviewer_ctx)
+            # Solver lives in the brief context — it doesn't need the full corpus.
+            solver = SolverAgent(brief_ctx)
+
+            # ── Per-run sidecar primitives (notation card + problem index).
+            # Both are independent corpus reads → run them in parallel for
+            # ~2x faster sidecar extraction.
+            with ThreadPoolExecutor(max_workers=2) as _sidecar_pool:
+                _f_notation = _sidecar_pool.submit(
+                    self._extract_notation_card, corpus_brief, brief_ctx,
+                )
+                _f_problems = _sidecar_pool.submit(
+                    self._extract_problem_index, full_ctx,
+                )
+                notation_card = _f_notation.result()
+                problem_index = _f_problems.result()
 
             today = date.today()
             today_iso = today.isoformat()
@@ -164,42 +252,109 @@ class Orchestrator:
                 master_plan = master_plan_path.read_text()
                 day_entries = json.loads(day_plan_json.read_text())
             else:
+                # Use the deterministic planner — no LLM call, runs in
+                # milliseconds. This single change saves the slowest call
+                # in the entire pipeline (was 4-7 min on subscription).
                 self.console.print("\n[bold #c96442]▸ Planning[/bold #c96442]")
-                with self._spinner("planner"):
-                    master_plan, day_entries = planner.plan(days_until, today_iso, corpus_summary)
+                from .agents.deterministic_planner import deterministic_plan
+                master_plan, day_entries = deterministic_plan(
+                    self.cfg, corpus_brief, days_until, today_iso,
+                )
                 atomic_write_text(master_plan_path, master_plan)
                 atomic_write_json(day_plan_json, day_entries)
+                self.console.print(
+                    f"  [{RICH_OK}]✓[/{RICH_OK}] deterministic plan "
+                    f"[dim]({len(day_entries)} day(s) scheduled · no LLM call)[/dim]"
+                )
+
+            # ── Spaced-review queue: deterministic, no LLM cost.
+            review_queue = _review_queue.build_review_queue(day_entries)
+            atomic_write_json(
+                self.paths.checkpoints_dir / "review_queue.json",
+                {str(k): v for k, v in review_queue.items()},
+            )
 
             # ----- 2. Top-level artifacts in parallel
             self.console.print("\n[bold #c96442]▸ Generating top-level artifacts[/bold #c96442]")
-            # max_tokens kept tight — every extra 1K tokens of generation is
-            # ~20s on Opus subscription. These ceilings are still generous.
+            # Practice exam splits: Author writes Part A (problems only),
+            # Solver fills Part B (answer key) — saves the long combined call.
+            # max_tokens chosen to be the smallest ceiling that comfortably
+            # fits a complete artifact. Sonnet treats max_tokens as a budget
+            # to fill, so smaller is dramatically faster. Empirically:
+            #   schematics ~6K chars (~2K tokens out)
+            #   whimsy ~5K chars
+            #   short guide ~6K chars
+            #   practice exam Part A ~8K chars (Solver fills Part B separately)
             artifacts = [
-                ("schematics", "01_SCHEMATICS.md", _schematics_brief, 8000),
-                ("whimsical_notes", "02_WHIMSICAL_NOTES.md", _whimsy_brief, 8000),
-                ("short_study_guide", "03_SHORT_STUDY_GUIDE.md", _short_guide_brief, 6000),
-                ("practice_exam", "04_PRACTICE_EXAM.md", _practice_exam_brief, 12000),
+                ("schematics", "01_SCHEMATICS.md", _schematics_brief, 5000),
+                ("whimsical_notes", "02_WHIMSICAL_NOTES.md", _whimsy_brief, 5000),
+                ("short_study_guide", "03_SHORT_STUDY_GUIDE.md", _short_guide_brief, 4000),
+                ("practice_exam", "04_PRACTICE_EXAM.md", _practice_exam_brief, 5000),
             ]
-            self._run_artifacts_parallel(artifacts, author, reviewer, master_plan)
+            with self._stage("top_level_artifacts"):
+                self._run_artifacts_parallel(
+                    artifacts, author, reviewer, master_plan,
+                    solver=solver, notation_card=notation_card,
+                )
 
-            # ----- 3. Daily lessons
-            # Pre-fetch all per-day research briefs in parallel using the FAST
-            # model. Researchers are cheap and have no dependency on each other,
-            # so doing them all up-front lets the slow Author calls run without
-            # waiting on Researcher serially.
-            self.console.print("\n[bold #c96442]▸ Pre-research (fast model)[/bold #c96442]")
-            research_by_day = self._prefetch_research(day_entries, researcher)
+            # ── Whimsy index: parse generated whimsy artifact into per-topic hooks.
+            whimsy_index = self._extract_whimsy_index(brief_ctx)
+
+            # ----- 3. Daily study cards (one batched Haiku call)
+            # Replaces the old per-day Researcher pattern (36 corpus-reads)
+            # with a single batched call that emits all per-day study cards.
+            # Net: ~40% time reduction on subscription mode.
+            self.console.print("\n[bold #c96442]▸ Building per-day study cards (batched)[/bold #c96442]")
+            cards_path = self.paths.checkpoints_dir / "study_cards.json"
+            if cards_path.exists() and cards_path.stat().st_size > 200:
+                research_by_day = {int(k): v for k, v in json.loads(cards_path.read_text()).items()}
+                self.console.print(
+                    f"  [dim]✓ reused cached study cards ({len(research_by_day)} days)[/dim]"
+                )
+            else:
+                topic_distiller = TopicDistillerAgent(brief_ctx)
+                self.console.print(
+                    f"  [{ACCENT_HI}]→[/{ACCENT_HI}] one batched call for all {len(day_entries)} days "
+                    f"[dim](haiku · replaces 36 separate researcher calls)[/dim]"
+                )
+                research_by_day = topic_distiller.distill_per_day(day_entries)
+                # Persist for resumes
+                cards_path.write_text(json.dumps({str(k): v for k, v in research_by_day.items()}))
+                self.console.print(
+                    f"  [{RICH_OK}]✓[/{RICH_OK}] {len(research_by_day)} study card(s) generated"
+                )
+                # If the batched call missed any days, fall back to per-day Researchers
+                missing = [d for d in day_entries if d["day"] not in research_by_day]
+                if missing:
+                    self.console.print(
+                        f"  [yellow]⚠[/yellow] {len(missing)} day(s) missing from batch — "
+                        f"falling back to per-day researcher"
+                    )
+                    fallback = self._prefetch_research(missing, researcher)
+                    research_by_day.update(fallback)
 
             # Then generate daily lessons (Author + optional Reviewer).
             self.console.print("\n[bold #c96442]▸ Generating daily lessons[/bold #c96442]")
-            self._run_daily_lessons(day_entries, author, reviewer, master_plan, research_by_day)
+            with self._stage("daily_lessons"):
+                self._run_daily_lessons(
+                    day_entries, author, reviewer, master_plan, research_by_day,
+                    notation_card=notation_card,
+                    problem_index=problem_index,
+                    review_queue=review_queue,
+                    whimsy_index=whimsy_index,
+                )
 
             # ----- 4. Manifest + telemetry + summary
             self._write_manifest(corpus, day_entries, master_plan_path)
             self.telemetry.write(self.paths.root / "telemetry.json")
 
             # ----- 5. Render HTML packet
-            self._build_html_packet()
+            with self._stage("html_render"):
+                self._build_html_packet()
+
+            # ----- 6. Custom study tools (Anki, Mermaid, etc.)
+            with self._stage("tools"):
+                self._run_tools()
 
             self._print_summary()
             return 0
@@ -314,7 +469,64 @@ class Orchestrator:
             return True
         return Confirm.ask("\nproceed?", default=True)
 
+    # ── Sidecar primitives — cached to disk so resumes skip them.
+    def _extract_notation_card(self, corpus_brief: str, brief_ctx: AgentContext) -> str:
+        path = self.paths.checkpoints_dir / "notation_card.md"
+        if path.exists() and path.stat().st_size > 50:
+            self.console.print(f"  [dim]✓ reused notation card ({path.stat().st_size} chars)[/dim]")
+            return path.read_text()
+        self.console.print(
+            f"  [{ACCENT_HI}]→[/{ACCENT_HI}] extracting notation card "
+            f"[dim](haiku · cached for the rest of the run)[/dim]"
+        )
+        agent = NotationExtractorAgent(brief_ctx)
+        text = agent.extract(corpus_brief)
+        path.write_text(text)
+        return text
+
+    def _extract_problem_index(self, full_ctx: AgentContext) -> list[dict[str, Any]]:
+        path = self.paths.checkpoints_dir / "problem_index.json"
+        if path.exists() and path.stat().st_size > 10:
+            try:
+                data = json.loads(path.read_text())
+                self.console.print(f"  [dim]✓ reused problem index ({len(data)} entries)[/dim]")
+                return data
+            except json.JSONDecodeError:
+                pass
+        self.console.print(
+            f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing corpus problems "
+            f"[dim](haiku · cached for the rest of the run)[/dim]"
+        )
+        agent = ProblemIndexerAgent(full_ctx)
+        index = agent.index()
+        atomic_write_json(path, index)
+        return index
+
+    def _extract_whimsy_index(self, brief_ctx: AgentContext) -> dict[str, str]:
+        path = self.paths.checkpoints_dir / "whimsy_index.json"
+        if path.exists() and path.stat().st_size > 10:
+            try:
+                data = json.loads(path.read_text())
+                self.console.print(f"  [dim]✓ reused whimsy index ({len(data)} topics)[/dim]")
+                return data
+            except json.JSONDecodeError:
+                pass
+        whimsy_path = self.paths.root / "02_WHIMSICAL_NOTES.md"
+        if not whimsy_path.exists():
+            return {}
+        self.console.print(
+            f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing whimsy by topic "
+            f"[dim](haiku · cached for the rest of the run)[/dim]"
+        )
+        agent = WhimsyIndexerAgent(brief_ctx)
+        index = agent.index(whimsy_path.read_text())
+        atomic_write_json(path, index)
+        return index
+
     def _make_corpus_block(self, corpus: str) -> list[dict]:
+        # Cache breakpoint on the corpus block. Anthropic's prompt caching
+        # gives a ~90% input-token discount on cache hits within 5 min, so
+        # this dramatically helps API-mode users on subsequent calls.
         return [{
             "type": "text",
             "text": "USER'S COURSE MATERIALS — primary source of truth for all generations:\n\n" + corpus,
@@ -322,7 +534,11 @@ class Orchestrator:
         }]
 
     # ------------------------------------------------------------------
-    def _run_artifacts_parallel(self, artifacts, author, reviewer, master_plan):
+    def _run_artifacts_parallel(
+        self, artifacts, author, reviewer, master_plan,
+        solver: SolverAgent | None = None,
+        notation_card: str = "",
+    ):
         results: dict[str, str] = {}
 
         def _gen_one(kind, filename, brief_fn, max_tokens):
@@ -330,23 +546,59 @@ class Orchestrator:
             if is_complete(target):
                 self.logger.info("artifact %s already complete — skipping", filename)
                 return kind, target.read_text()
-            self.console.print(f"  [{ACCENT_HI}]→[/{ACCENT_HI}] starting [white]{filename}[/white] [dim](opus, 1–3 min)[/dim]")
+            model_short = self._model_short(self.cfg.primary_model)
+            self.console.print(
+                f"  [{ACCENT_HI}]→[/{ACCENT_HI}] starting [white]{filename}[/white] "
+                f"[dim]({model_short})[/dim]"
+            )
             brief = brief_fn(self.cfg, master_plan)
-            text = author.write(kind, brief, max_tokens=max_tokens, label_suffix="initial")
+            def _on_density(report):
+                self.logger.info(
+                    "%s density: total=%d score=%.0f missing=%s",
+                    kind, report.total_blocks, report.score, report.missing,
+                )
+                if not report.healthy:
+                    self.console.print(
+                        f"  [yellow]⚠[/yellow] {kind} block density "
+                        f"[dim]{report.score:.0f}/100 — missing {dict(report.missing)} — applying block-fix[/dim]"
+                    )
+            # Practice exam splits: Author writes Part A only (problems),
+            # Solver fills Part B (answer key). Each call is shorter than the
+            # combined call would be, and Solver is corpus-free.
+            if kind == "practice_exam" and solver is not None:
+                part_a = author.write(
+                    "practice_exam_part_a", brief, max_tokens=max_tokens,
+                    label_suffix="part_a", on_density=_on_density,
+                )
+                part_b = solver.solve(part_a, notation_card, max_tokens=max_tokens)
+                text = part_a.rstrip() + "\n\n---\n\n" + part_b.lstrip()
+                # Skip the heuristic+reviewer pass for the split exam — each
+                # half was already written within scope.
+                atomic_write_text(target, text)
+                return kind, text
+            text = author.write(kind, brief, max_tokens=max_tokens, label_suffix="initial", on_density=_on_density)
 
             if self.use_critic:
-                # Cheap heuristic — skip the paid review if output looks healthy.
                 hc = health_check(kind, text)
-                if hc.healthy:
-                    self.logger.info("heuristic skip review for %s (score=%d)", kind, hc.score)
+                density_after = block_density.evaluate(kind, text)
+                if hc.healthy and density_after.healthy:
+                    self.logger.info(
+                        "skipped review for %s (heuristic=%d density=%.0f)",
+                        kind, hc.score, density_after.score,
+                    )
                     self.console.print(
                         f"  [{ACCENT_HI}]→[/{ACCENT_HI}] [white]{filename}[/white] "
-                        f"[dim]passed heuristics ({hc.score}); skipping reviewer[/dim]"
+                        f"[dim]passed gates (heuristic={hc.score}, density={density_after.score:.0f}); skipping reviewer[/dim]"
                     )
                 else:
+                    reason_bits = []
+                    if not hc.healthy:
+                        reason_bits.append(f"heuristic: {', '.join(hc.reasons[:2])}")
+                    if not density_after.healthy:
+                        reason_bits.append(f"density missing {dict(density_after.missing)}")
                     self.console.print(
                         f"  [{ACCENT_HI}]→[/{ACCENT_HI}] reviewing [white]{filename}[/white] "
-                        f"[dim](heuristic flagged: {', '.join(hc.reasons[:2])})[/dim]"
+                        f"[dim]({'; '.join(reason_bits)})[/dim]"
                     )
                     rev = reviewer.review(kind, text, brief, max_tokens=max_tokens)
                     self.logger.info("reviewer %s: score=%d, passed=%s", kind, rev.score, rev.passed)
@@ -401,10 +653,15 @@ class Orchestrator:
             return day_num, text
 
         # Researcher is haiku; bump parallelism — these are I/O bound and cheap.
-        with ThreadPoolExecutor(max_workers=max(self.max_parallel, 6)) as pool:
+        researcher_parallel = max(self.max_parallel, 6)
+        total = len(day_entries)
+        self.console.print(
+            f"  [dim]running {total} researcher(s) in parallel "
+            f"({researcher_parallel} concurrent, haiku — fast)[/dim]"
+        )
+        with ThreadPoolExecutor(max_workers=researcher_parallel) as pool:
             futs = [pool.submit(_do_one, e) for e in day_entries]
             done = 0
-            total = len(day_entries)
             for fut in as_completed(futs):
                 done += 1
                 try:
@@ -416,36 +673,92 @@ class Orchestrator:
                         )
                 except Exception as e:  # noqa: BLE001
                     self.logger.error("researcher failed: %s", e)
+                    self.console.print(
+                        f"  [red]✗[/red] researcher failed: {type(e).__name__}: {e}"
+                    )
         return out
 
-    def _run_daily_lessons(self, day_entries, author, reviewer, master_plan, research_by_day):
+    def _run_daily_lessons(
+        self, day_entries, author, reviewer, master_plan, research_by_day,
+        notation_card: str = "",
+        problem_index: list[dict[str, Any]] | None = None,
+        review_queue: dict[int, list[dict[str, Any]]] | None = None,
+        whimsy_index: dict[str, str] | None = None,
+    ):
         if not day_entries:
             self.console.print("[yellow]  ⚠ Planner produced no day entries — skipping daily lessons.[/yellow]")
             return
+        problem_index = problem_index or []
+        review_queue = review_queue or {}
+        whimsy_index = whimsy_index or {}
 
         def _gen_day(entry):
             day_num = entry["day"]
             day_date = entry.get("date", "")
+            topic = entry.get("topic", "")
             filename = f"Day_{day_num:02d}_{day_date}.md"
             target = self.paths.daily_dir / filename
-            if is_complete(target, min_chars=2000):
+            if is_complete(target, min_chars=800):
                 self.logger.info("day %s already complete — skipping", day_num)
                 return day_num, filename, "cached"
 
+            self.console.print(
+                f"  [{ACCENT_HI}]→[/{ACCENT_HI}] starting Day {day_num:02d}"
+                f"{f' — {topic[:48]}' if topic else ''}"
+                f" [dim]({self._model_short(self.cfg.primary_model)})[/dim]"
+            )
             research = research_by_day.get(day_num, "")
-            brief = _daily_lesson_brief(self.cfg, day_num, day_date, entry, master_plan, research)
-            text = author.write("daily_lesson", brief, max_tokens=12000, label_suffix=f"day{day_num}")
+            # Filter the problem index for problems touching today's topic/chapters.
+            day_topics = [topic] + entry.get("chapters", [])
+            todays_problems = _problem_indexer.filter_for_topics(problem_index, day_topics)
+            brief = _daily_lesson_brief(
+                self.cfg, day_num, day_date, entry, master_plan, research,
+                notation_card=notation_card,
+                todays_problems=todays_problems,
+                review_block=_review_queue.format_review_block(review_queue.get(day_num, [])),
+                whimsy_hook=_whimsy_indexer.lookup(whimsy_index, topic),
+            )
+            def _on_density(report):
+                self.logger.info(
+                    "day %d density: total=%d score=%.0f missing=%s",
+                    day_num, report.total_blocks, report.score, report.missing,
+                )
+                if not report.healthy:
+                    self.console.print(
+                        f"  [yellow]⚠[/yellow] Day {day_num:02d} block density "
+                        f"[dim]{report.score:.0f}/100 — missing {dict(report.missing)} — applying block-fix[/dim]"
+                    )
+            # max_tokens=6000 is plenty for a fully-instrumented daily lesson
+            # (~18K chars). The previous 12000 ceiling let Sonnet pad to 35K
+            # chars, which is the dominant wall-time cost on subscription mode.
+            text = author.write(
+                "daily_lesson", brief,
+                max_tokens=6000, label_suffix=f"day{day_num}",
+                on_density=_on_density,
+            )
 
             if self.use_critic:
                 hc = health_check("daily_lesson", text)
-                if not hc.healthy:
-                    self.logger.info("day %d heuristic flagged: %s", day_num, hc.reasons)
-                    rev = reviewer.review("daily_lesson", text, brief, max_tokens=12000)
+                # Density is the primary quality signal in the new pipeline.
+                # If both heuristic and density agree the lesson is healthy,
+                # we skip the reviewer entirely (saves ~50% of reviewer calls).
+                density_after = block_density.evaluate("daily_lesson", text)
+                if hc.healthy and density_after.healthy:
+                    self.logger.info(
+                        "day %d skipped review (heuristic=%d density=%.0f)",
+                        day_num, hc.score, density_after.score,
+                    )
+                else:
+                    reasons = []
+                    if not hc.healthy:
+                        reasons.append(f"heuristic={hc.reasons[:2]}")
+                    if not density_after.healthy:
+                        reasons.append(f"density-missing={dict(density_after.missing)}")
+                    self.logger.info("day %d reviewing because: %s", day_num, reasons)
+                    rev = reviewer.review("daily_lesson", text, brief, max_tokens=6000)
                     self.logger.info("day %d reviewer: score=%d, passed=%s", day_num, rev.score, rev.passed)
                     if not rev.passed and rev.revised_text:
                         text = rev.revised_text
-                else:
-                    self.logger.info("day %d skipped review (heuristic score=%d)", day_num, hc.score)
 
             atomic_write_text(target, text)
             return day_num, filename, "written"
@@ -602,6 +915,36 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _run_tools(self) -> None:
+        """Run each registered custom study tool."""
+        try:
+            from .tools import TOOLS
+        except Exception as e:  # noqa: BLE001
+            self.logger.error("tools import failed: %s", e)
+            return
+
+        if not TOOLS:
+            return
+
+        self.console.print("\n[bold #c96442]▸ Running study tools[/bold #c96442]")
+        manifest = json.loads(self.paths.manifest_path.read_text())
+        for tool in TOOLS:
+            try:
+                result = tool.run(self.paths.root, manifest)
+                if result.success:
+                    self.console.print(
+                        f"  [{RICH_OK}]✓[/{RICH_OK}] {tool.name} — {result.detail}"
+                    )
+                    for p in result.output_paths:
+                        self.console.print(f"     [dim]→ {p.relative_to(self.paths.root.parent.parent)}[/dim]")
+                else:
+                    self.console.print(
+                        f"  [yellow]⊘[/yellow] {tool.name} — {result.detail}"
+                    )
+            except Exception as e:  # noqa: BLE001
+                self.logger.error("tool %s failed: %s", tool.name, e)
+                self.console.print(f"  [red]✗[/red] {tool.name} — {type(e).__name__}: {e}")
+
     def _build_html_packet(self) -> None:
         """Render markdown artifacts to a polished HTML packet."""
         self.console.print("\n[bold #c96442]▸ Building HTML packet[/bold #c96442]")
@@ -629,20 +972,57 @@ class Orchestrator:
             self.console.print(f"  [{RICH_OK}]✓[/{RICH_OK}] HTML packet built cleanly{extra}")
         self.console.print(f"  [dim]open[/dim] [white]{self.paths.root / 'index.html'}[/white]")
 
+    @staticmethod
+    def _model_short(model: str) -> str:
+        """Cosmetic short label for a model id (e.g. 'sonnet', 'opus', 'haiku')."""
+        m = model.lower()
+        if "haiku" in m:
+            return "haiku"
+        if "sonnet" in m:
+            return "sonnet"
+        if "opus" in m:
+            return "opus"
+        return model.split("-", 1)[0] if "-" in model else model
+
+    def _stage(self, name: str):
+        """Context manager that records the duration of a pipeline stage."""
+        orchestrator = self
+        class _StageCtx:
+            def __enter__(self):
+                self.t0 = time.time()
+                return self
+            def __exit__(self, *exc):
+                orchestrator.telemetry.record_stage(name, time.time() - self.t0)
+                return False
+        return _StageCtx()
+
     def _on_llm_event(self, event: str, payload: dict):
         self.logger.debug("llm.%s %s", event, payload)
-        if event == "heartbeat":
+        if event == "stream_progress":
+            label = payload.get("label", "?")
+            chars = payload.get("chars", 0)
+            short = label[:42] + "…" if len(label) > 42 else label
+            self.console.print(
+                f"  [dim]· streaming: [/dim][{ACCENT_HI}]{short}[/{ACCENT_HI}]"
+                f"[dim] ({chars:,} chars received)[/dim]"
+            )
+        elif event == "heartbeat":
             elapsed = payload.get("elapsed_s", 0)
             label = payload.get("label", "?")
+            # Skip heartbeat if streaming progress is firing — they overlap noisily.
+            short = label[:48] + "…" if len(label) > 48 else label
             self.console.print(
-                f"  [dim]…still working on [/dim][{ACCENT_HI}]{label}[/{ACCENT_HI}]"
-                f"[dim] ({elapsed}s elapsed — opus generation can take 4–6 min)[/dim]"
+                f"  [dim]· still working: [/dim][{ACCENT_HI}]{short}[/{ACCENT_HI}]"
+                f"[dim] ({elapsed}s)[/dim]"
             )
         elif event == "slow_warning":
-            self.console.print(
-                f"  [dim]tip: kill with Ctrl-C and rerun with[/dim] [white]./run --fast[/white] "
-                f"[dim]for a 5x speedup if you don't need full opus quality.[/dim]"
-            )
+            label = payload.get("label", "")
+            if "fast" not in label.lower() and "haiku" not in label.lower():
+                self.console.print(
+                    f"  [dim]tip: subscription mode + opus is the slowest combo. "
+                    f"Ctrl-C and rerun with[/dim] [white]./run --turbo[/white] "
+                    f"[dim]for a ~5x speedup.[/dim]"
+                )
 
     def _spinner(self, label: str):
         return self.console.status(f"[cyan]{label}…[/cyan]", spinner="dots")
@@ -663,62 +1043,100 @@ class Orchestrator:
 # Brief builders — pure functions producing the brief string for each artifact
 # ─────────────────────────────────────────────────────────────────────
 
+# Master-plan excerpt size. Was 2500 — most of that was unused context the
+# Author already gets from research_brief + topic. 800 chars is the
+# orientation summary; cuts ~10K characters across a daily-lesson run.
+_PLAN_EXCERPT_CHARS = 800
+
+
+def _block_catalog(artifact_kind: str = "") -> str:
+    """Slim block catalog scoped to the artifact's needs.
+
+    Sending all 31 schemas to every Author call is ~5K wasted tokens per
+    call. The slim catalogs cover the 8-12 blocks each artifact actually
+    uses (defined in `block_expand._CATALOG_BY_ARTIFACT`).
+    """
+    from .render.block_expand import catalog_for, render_block_catalog
+    body = catalog_for(artifact_kind) if artifact_kind else render_block_catalog()
+    return (
+        "BLOCK CATALOG (use these — vanilla markdown is the wrong choice for "
+        "every box, callout, formula, quick-check, drill, mnemonic, table, "
+        "or diagram). Emit each as a fenced ```bart-<name> with JSON body:\n\n"
+        + body
+    )
+
+
+def _quality_gate(artifact_kind: str) -> str:
+    """One-line summary of the block-density floor, fed into briefs."""
+    from .agents.block_density import thresholds_summary
+    s = thresholds_summary(artifact_kind)
+    return (s + "\n\n") if s else ""
+
+
 def _schematics_brief(cfg: Config, master_plan: str) -> str:
+    _kind = "schematics"
     return (
         f"ARTIFACT: SCHEMATICS — visual / structural reference for {cfg.subject}.\n\n"
-        f"MASTER PLAN EXCERPT:\n{master_plan[:3000]}\n\n"
-        "Required content:\n"
-        "1. **Concept map** — ASCII diagram showing how the major topics connect.\n"
-        "2. **Per-topic schematics** — for each major topic, ASCII diagrams capturing the structure "
-        "of that topic (whatever form fits the subject — flowcharts, hierarchies, comparison "
-        "matrices, decision trees, sequence diagrams, etc.).\n"
-        "3. **Formula tables** — every key formula, organized by topic, with a one-line meaning.\n"
-        "4. **Property tables** — symmetries, identities, when-to-use guides.\n"
-        "5. **Common traps** — numbered list of 'if you see X, watch out for Y' items grounded in the materials.\n\n"
-        "Format: dense, scannable, exam-day useful. Aim for 600-1000 lines."
+        f"MASTER PLAN EXCERPT:\n{master_plan[:_PLAN_EXCERPT_CHARS]}\n\n"
+        + _quality_gate(_kind) +
+        "Required content (each section uses bart blocks, not raw markdown):\n"
+        "1. ONE `bart-concept-map` showing how major topics connect.\n"
+        "2. For each major topic: ONE `bart-formula-card` per key formula "
+        "(with `legend` and one-line `note`).\n"
+        "3. ONE or more `bart-comparison-matrix` for property tables / "
+        "when-to-use guides.\n"
+        "4. `bart-trap-callout` (kind=trap) for every 'if you see X, watch "
+        "for Y' item — at least 5 across the artifact.\n"
+        "5. Where the topic has a clear sequence (mechanism, derivation), "
+        "use `bart-process-ribbon` or `bart-flowchart`.\n\n"
+        "Dense, scannable, exam-day useful.\n\n"
     )
 
 
 def _whimsy_brief(cfg: Config, master_plan: str) -> str:
+    _kind = "whimsical_notes"
     return (
-        f"ARTIFACT: WHIMSICAL NOTES — memorable companion to the serious lessons for {cfg.subject}.\n\n"
-        f"MASTER PLAN EXCERPT:\n{master_plan[:2000]}\n\n"
-        "For each major topic in the materials, include:\n"
-        "1. A silly analogy that makes the concept stick.\n"
-        "2. A mnemonic for any list/sequence to memorize.\n"
-        "3. A two-line poem or jingle when it fits naturally.\n"
-        "4. A memorable visual (ASCII art, even absurd).\n\n"
-        "Whimsy must AID the math, not replace it. Each topic gets ~150-250 words. Aim for 1200-2000 lines total."
+        f"ARTIFACT: WHIMSICAL NOTES — memorable companion for {cfg.subject}.\n\n"
+        f"MASTER PLAN EXCERPT:\n{master_plan[:_PLAN_EXCERPT_CHARS]}\n\n"
+        + _quality_gate("whimsical_notes") +
+        "Per major topic: ONE `bart-mnemonic-card` (acronym + per-letter "
+        "expansion + optional story). Whimsy must aid the math, not replace "
+        "it. End each topic with a short serif paragraph tying the analogy "
+        "back to the corpus.\n\n"
     )
 
 
 def _short_guide_brief(cfg: Config, master_plan: str) -> str:
+    _kind = "short_study_guide"
     return (
-        f"ARTIFACT: SHORT STUDY GUIDE — the document to read when there are 60 minutes left for {cfg.subject}.\n\n"
-        "Required:\n"
-        "1. The 20 facts that matter most — numbered, one line each.\n"
-        "2. The 5 concepts most likely tested — 2 paragraphs each.\n"
-        "3. The 5 most common traps with avoidance tips.\n"
-        "4. A 10-question rapid-fire quiz with answers.\n\n"
-        "Brutal selectivity. Length: 3-5 dense markdown pages."
+        f"ARTIFACT: SHORT STUDY GUIDE — the document to read in the final hour for {cfg.subject}.\n\n"
+        + _quality_gate("short_study_guide") +
+        "Sections:\n"
+        "1. The 20 facts that matter most — numbered markdown list, one line each.\n"
+        "2. The 5 most-likely-tested concepts — two paragraphs each, each "
+        "concept ends with ONE `bart-quick-check` to confirm understanding.\n"
+        "3. The 5 most common traps — one `bart-trap-callout` (kind=trap) each.\n"
+        "4. A 10-question rapid-fire quiz — ONE `bart-checkpoint` block "
+        "with all 10 cards.\n\n"
+        "Brutal selectivity.\n\n"
     )
 
 
 def _practice_exam_brief(cfg: Config, master_plan: str) -> str:
+    # Part A only — Solver agent generates Part B (answer key) separately.
+    _kind = "practice_exam_part_a"
+    from .prompts import load_prompt
+    skeleton = load_prompt("skeletons/practice_exam_part_a.md")
     return (
-        f"ARTIFACT: PRACTICE EXAM + ANSWER KEY for {cfg.subject}.\n\n"
-        f"MASTER PLAN EXCERPT:\n{master_plan[:3000]}\n\n"
-        "Two documents in one markdown file, separated by a horizontal rule:\n\n"
-        "# Part A: Practice Exam (clean version)\n"
-        "- Match the structure of the user's actual exam if visible (e.g., 3 parts, point distribution).\n"
-        "- If unclear, default: Part I (20 short × 1pt), Part II (15 medium × 2pt), Part III (8 long × var).\n"
-        "- Every problem is NEW, inspired by — not copied from — the materials.\n"
-        "- Cover topics in proportion to estimated weight from the master plan.\n\n"
-        "---\n\n"
-        "# Part B: Answer Key\n"
-        "- Full solutions with work shown for Part III.\n"
-        "- Mark common traps and partial-credit opportunities.\n\n"
-        "Length: this should be a serious 3-hour exam with a complete answer key. ~2000-3000 lines."
+        f"ARTIFACT: PRACTICE EXAM (Part A — problems only, no solutions) for {cfg.subject}.\n\n"
+        f"MASTER PLAN EXCERPT:\n{master_plan[:_PLAN_EXCERPT_CHARS]}\n\n"
+        "- Match the structure of the user's actual exam if visible in the corpus; otherwise "
+        "infer a sensible structure from the materials.\n"
+        "- Every problem is NEW — inspired by, not copied from, the materials.\n"
+        "- Cover topics in proportion to weight from the master plan.\n"
+        "- Number problems with stable IDs (P1, P2, ...) — the answer key references them.\n"
+        "- Do NOT emit solutions. The answer key is a separate stage.\n\n"
+        f"SKELETON\n---\n{skeleton}\n---\n\n"
     )
 
 
@@ -729,35 +1147,63 @@ def _daily_lesson_brief(
     entry: dict[str, Any],
     master_plan: str,
     research: str,
+    notation_card: str = "",
+    todays_problems: list[dict[str, Any]] | None = None,
+    review_block: str = "",
+    whimsy_hook: str = "",
 ) -> str:
+    _kind = "daily_lesson"
+    from .prompts import load_prompt
     objectives = "\n".join(f"- {o}" for o in entry.get("learning_objectives", []))
     chapters = ", ".join(entry.get("chapters", []))
-    key_problems = ", ".join(entry.get("key_problems", []))
     focus = entry.get("focus", "learn")
     hours = entry.get("hours", cfg.daily_hours)
+    skeleton = load_prompt("skeletons/daily_lesson.md")
+    # Interleaved-review subtopics — moved here from the prior day by the
+    # deterministic planner. The brief asks the Author to lead the lesson
+    # with quick-checks on these BEFORE introducing new content (Roediger's
+    # testing effect; Bjork's interleaving).
+    interleaved = entry.get("interleaved_review", [])
+    interleave_section = (
+        "INTERLEAVED REVIEW (cover these in a `bart-quick-check` block "
+        "BEFORE the new content — testing-effect priming):\n"
+        + "\n".join(f"- {x}" for x in interleaved)
+        + "\n\n"
+    ) if interleaved else ""
+    problems_block = _problem_indexer.format_problem_block(todays_problems or [])
+    notation_section = (
+        f"NOTATION CARD (use these symbols verbatim)\n{notation_card}\n\n"
+        if notation_card else ""
+    )
+    whimsy_section = (
+        f"WHIMSY HOOK (drop into the Whimsical hook section)\n{whimsy_hook}\n\n"
+        if whimsy_hook else ""
+    )
+    teaching_contract = (
+        "TEACHING CONTRACT — this is a lesson, not an extraction. Before "
+        "writing, identify (a) the 1–3 THRESHOLD concepts where understanding "
+        "qualitatively shifts and (b) the wrong-but-natural MISCONCEPTION "
+        "students bring in for each. Use `bart-concept-build` for every "
+        "load-bearing concept (motivate → name → ground → connect → contrast "
+        "→ apply). Use `bart-trap-callout` (kind=trap) titled \"What students "
+        "usually think\" for each misconception. Voice: first-person present, "
+        "active-recall cues woven in (\"pause — what do you predict?\"), "
+        "concrete-to-abstract, never the reverse.\n\n"
+    )
     return (
-        f"ARTIFACT: DAILY LESSON — Day {day_num} of the {cfg.subject} study plan.\n"
-        f"Date: {day_date}.   Focus: {focus}.   Hours: {hours}.\n"
-        f"Topic: {entry.get('topic', '')}.\n"
-        f"Chapters: {chapters}.\n"
-        f"Key problems to drill: {key_problems}.\n\n"
-        f"LEARNING OBJECTIVES:\n{objectives}\n\n"
-        f"RESEARCH BRIEF (corpus-grounded):\n---\n{research}\n---\n\n"
-        f"MASTER PLAN EXCERPT (for orientation):\n{master_plan[:2500]}\n\n"
-        "Required structure:\n"
-        "1. **Why today matters** — 1 paragraph motivation.\n"
-        "2. **Recap** — 60-sec flashback to prior days, especially anything load-bearing for today.\n"
-        "3. **By the end of today you can** — 5-8 specific objectives.\n"
-        "4. **Core content** — explain each subtopic with definitions, derivations, intuition. ASCII diagrams "
-        "where they aid understanding.\n"
-        "5. **Embedded Quick Check boxes** after each subsection — 2-3 questions with `<details>` collapsibles.\n"
-        "6. **Worked examples** — 5-8 fully solved.\n"
-        "7. **Mock / past-exam problems** — every problem from the corpus that touches today's topic, "
-        "VERBATIM, followed by a fully worked solution in a `<details>` block.\n"
-        "8. **Whimsical hook** — 2-3 short analogies / mnemonics for sticky recall.\n"
-        "9. **Practice problems** — 8-10 drills with `<details>` solutions.\n"
-        "10. **Cheat-sheet candidates** — what to add to the A4 sheet today.\n"
-        "11. **End-of-day flashcards** — 10-15 quick-recall items with answers.\n"
-        "12. **Tomorrow preview** — 1 short paragraph.\n\n"
-        "Length: 800-1500 lines of dense, useful content. Honor the corpus; do not invent past exam problems."
+        f"ARTIFACT: DAILY LESSON — Day {day_num} of {cfg.subject}.\n"
+        f"Date: {day_date} · Focus: {focus} · Hours: {hours}\n"
+        f"Topic: {entry.get('topic', '')} · Chapters: {chapters}\n\n"
+        + teaching_contract +
+        f"OBJECTIVES\n{objectives}\n\n"
+        f"{interleave_section}"
+        f"SPACED REVIEW (cover briefly in the Recap section)\n{review_block}\n\n"
+        f"TODAYS PROBLEMS (corpus-indexed; cover all of them in Past-exam problems)\n{problems_block}\n\n"
+        f"{notation_section}"
+        f"{whimsy_section}"
+        f"RESEARCH BRIEF\n---\n{research}\n---\n\n"
+        f"MASTER PLAN EXCERPT\n{master_plan[:_PLAN_EXCERPT_CHARS]}\n\n"
+        + _quality_gate("daily_lesson") +
+        f"SKELETON (follow this section ordering exactly; expand each section to its full depth)\n"
+        f"---\n{skeleton}\n---\n\n"
     )

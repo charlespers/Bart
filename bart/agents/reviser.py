@@ -18,20 +18,16 @@ class ReviserAgent(Agent):
         max_tokens: int = 16000,
     ) -> str:
         cfg = self.ctx.cfg
+        must_fix = "\n- ".join(critique.must_fix)
+        issues = "\n- ".join(critique.issues)
         user = self.ctx.corpus_block + [{
             "type": "text",
             "text": (
-                f"ARTIFACT KIND: {artifact_kind}\n"
-                f"Subject: {cfg.subject}.\n\n"
-                f"ORIGINAL BRIEF:\n{brief}\n\n"
-                f"CRITIC SCORE: {critique.score}/100\n"
-                f"MUST-FIX ITEMS:\n- " + "\n- ".join(critique.must_fix) + "\n\n"
-                f"OTHER ISSUES:\n- " + "\n- ".join(critique.issues) + "\n\n"
-                f"ORIGINAL ARTIFACT:\n---\n{original[:80000]}\n---\n\n"
-                f"TASK\n"
-                f"Produce a REVISED version of the artifact. Address EVERY must-fix item explicitly. "
-                f"Preserve the strengths of the original. Do not regress on passages that were already good. "
-                f"Output the full revised artifact in markdown, no preamble, no commentary about your changes."
+                f"Subject: {cfg.subject} · Artifact: {artifact_kind} · Critic score: {critique.score}/100\n\n"
+                f"BRIEF\n{brief}\n\n"
+                f"MUST-FIX\n- {must_fix}\n\n"
+                f"OTHER ISSUES\n- {issues}\n\n"
+                f"ORIGINAL\n---\n{original[:80000]}\n---"
             ),
         }]
         return self.ctx.llm.complete(

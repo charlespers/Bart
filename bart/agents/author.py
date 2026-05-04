@@ -1,14 +1,20 @@
 """AuthorAgent — generates a long-form artifact from a brief."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from .base import Agent
+from . import block_density
 
 
 class AuthorAgent(Agent):
     name = "author"
     prompt_file = "author.md"
+
+    # Truncation floor — only catches genuinely truncated output. The
+    # quality floor (bart-block density) is checked separately.
+    _MIN_LENGTH = 800
 
     def write(
         self,
@@ -17,30 +23,116 @@ class AuthorAgent(Agent):
         max_tokens: int = 16000,
         temperature: float = 0.7,
         label_suffix: str = "",
+        on_density: callable = None,  # type: ignore[valid-type]
     ) -> str:
         cfg = self.ctx.cfg
+
+        # Build a kind-augmented system prompt: base author.md + the slim
+        # per-artifact catalog. This goes in the SYSTEM payload so prompt
+        # caching gives ~90% input-token discount on subsequent calls of
+        # the same artifact kind. Block catalog + skeleton no longer live
+        # in the user-message brief (which changes per call).
+        try:
+            from ..render.block_expand import catalog_for as _catalog_for
+            kind_catalog = _catalog_for(artifact_kind, subject=cfg.subject)
+        except Exception:  # noqa: BLE001
+            kind_catalog = ""
+        if kind_catalog:
+            system_for_kind = (
+                self.system_prompt
+                + f"\n\n# Block catalog for `{artifact_kind}` (use these)\n\n"
+                + kind_catalog
+            )
+        else:
+            system_for_kind = self.system_prompt
+
         user = self.ctx.corpus_block + [{
             "type": "text",
             "text": (
-                f"ARTIFACT KIND: {artifact_kind}\n"
-                f"Subject: {cfg.subject}. Level: {cfg.student_level}. Style: {cfg.style}.\n"
-                f"Daily hours available to the student: {cfg.daily_hours}.\n"
-                f"User guidance:\n{cfg.guidance}\n\n"
-                f"BRIEF\n{brief}\n\n"
-                f"OUTPUT\n"
-                f"Produce the artifact as a single, long-form markdown document. "
-                f"Adhere strictly to the structural requirements in the brief. "
-                f"Use LaTeX for math ($...$ inline, $$...$$ display). "
-                f"When you cite the corpus, use exact phrasing from the materials. "
-                f"Do not invent past exam problems and present them as the user's actual exams — "
-                f"label generated practice problems as 'Practice' or 'Drill'."
+                f"ARTIFACT: {artifact_kind}\n"
+                f"Subject: {cfg.subject} · Level: {cfg.student_level} · Style: {cfg.style} · "
+                f"Daily hours: {cfg.daily_hours}\n"
+                f"User guidance: {cfg.guidance}\n\n"
+                f"BRIEF\n{brief}"
             ),
         }]
-        return self.ctx.llm.complete(
-            model=cfg.primary_model,
-            system=self.system_prompt,
+        # Top-level artifacts (schematics, whimsy, short guide, practice exam)
+        # tolerate the fast model. --turbo sets the override env var.
+        is_daily = artifact_kind == "daily_lesson"
+        override = os.environ.get("BART_TOP_LEVEL_MODEL_OVERRIDE", "")
+        model = override if (override and not is_daily) else cfg.primary_model
+        label = f"author:{artifact_kind}{':' + label_suffix if label_suffix else ''}"
+
+        text = self.ctx.llm.complete(
+            model=model,
+            system=system_for_kind,
             user=user,
             max_tokens=max_tokens,
-            label=f"author:{artifact_kind}{':' + label_suffix if label_suffix else ''}",
+            label=label,
             temperature=temperature,
         )
+
+        # ── Truncation continuation ──────────────────────────────────
+        # If the output is suspiciously short, the model probably stopped
+        # mid-stream. One cheap continuation usually recovers it.
+        if len(text) < self._MIN_LENGTH:
+            try:
+                continuation = self.ctx.llm.complete(
+                    model=model,
+                    system=system_for_kind,
+                    user=user + [
+                        {"type": "text", "text":
+                            f"PREVIOUS PARTIAL OUTPUT (truncated):\n\n{text}\n\n"
+                            f"Continue from where this left off. Output ONLY the continuation."
+                        },
+                    ],
+                    max_tokens=max_tokens,
+                    label=label + ":truncation_fix",
+                    temperature=temperature,
+                )
+                if continuation and len(continuation) > 200:
+                    text = text.rstrip() + "\n\n" + continuation.lstrip()
+            except Exception:  # noqa: BLE001
+                pass  # Best-effort.
+
+        # ── Quality-floor (block-density) continuation ───────────────
+        # If the output is missing required design blocks, fire ONE
+        # focused correction call asking only for the missing blocks.
+        # The continuation prompt does NOT re-send the original brief or
+        # the corpus — those are already established context. We send
+        # just the artifact summary + the correction prompt.
+        report = block_density.evaluate(artifact_kind, text)
+        if on_density is not None:
+            try:
+                on_density(report)
+            except Exception:  # noqa: BLE001
+                pass
+        # `BART_SKIP_BLOCK_FIX=1` disables this entirely (used by --turbo).
+        if (
+            not report.healthy
+            and report.missing
+            and os.environ.get("BART_SKIP_BLOCK_FIX") != "1"
+        ):
+            correction = report.correction_prompt()
+            try:
+                add = self.ctx.llm.complete(
+                    model=cfg.fast_model,  # Haiku is plenty for emitting blocks
+                    system=self.system_prompt,
+                    user=[{
+                        "type": "text",
+                        "text": (
+                            f"Artifact: {artifact_kind} (subject {cfg.subject})\n\n"
+                            f"{correction}"
+                        ),
+                    }],
+                    max_tokens=1500,  # tight: only the missing blocks
+                    label=label + ":block_fix",
+                    temperature=0.4,
+                )
+                # Only graft on if the addition contains actual fences
+                if add and "```bart-" in add:
+                    text = text.rstrip() + "\n\n" + add.lstrip()
+            except Exception:  # noqa: BLE001
+                pass  # Best-effort.
+
+        return text

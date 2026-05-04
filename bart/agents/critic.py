@@ -23,36 +23,19 @@ class CriticAgent(Agent):
 
     def critique(self, artifact_kind: str, artifact_text: str, brief: str) -> CritiqueResult:
         cfg = self.ctx.cfg
-        # Critic does NOT need full corpus — just the artifact + brief + lightweight context
+        # Critic does NOT need full corpus — just the artifact + brief.
         user = [{
             "type": "text",
             "text": (
-                f"Subject: {cfg.subject}. Level: {cfg.student_level}.\n"
-                f"Artifact kind: {artifact_kind}\n\n"
-                f"ORIGINAL BRIEF:\n{brief}\n\n"
-                f"ARTIFACT TO REVIEW:\n---\n{artifact_text[:60000]}\n---\n\n"
-                f"TASK\n"
-                f"Critique against an Ivy-undergraduate exam-prep rubric. Output JSON, fenced as ```json … ```:\n"
+                f"Subject: {cfg.subject} · Level: {cfg.student_level} · Artifact: {artifact_kind}\n\n"
+                f"BRIEF\n{brief}\n\n"
+                f"ARTIFACT\n---\n{artifact_text[:60000]}\n---\n\n"
+                f"RUBRIC (sum to 100): correctness 25 · source-grounding 20 · pedagogical depth 20 · "
+                f"practice density 15 · interactivity 10 · polish 10\n\n"
+                f"OUTPUT JSON only:\n"
                 f"```json\n"
-                f"{{\n"
-                f"  \"score\": <0-100>,\n"
-                f"  \"strengths\": [\"…\"],\n"
-                f"  \"issues\": [\"…\"],\n"
-                f"  \"must_fix\": [\"specific, actionable revision instructions\"]\n"
-                f"}}\n"
-                f"```\n"
-                f"RUBRIC (out of 100):\n"
-                f"- Mathematical correctness (25): formulas, derivations, units\n"
-                f"- Source-grounding (20): cites the actual corpus, no fabrication\n"
-                f"- Pedagogical depth (20): goes beyond stating facts; explains WHY\n"
-                f"- Practice density (15): worked examples + drill problems are concrete and useful\n"
-                f"- Interactivity (10): Quick-Check boxes / collapsibles are present and useful\n"
-                f"- Polish (10): clean markdown, consistent notation, well-organized\n\n"
-                f"Threshold: artifacts scoring < 80 SHOULD be revised. Be strict but specific — "
-                f"vague feedback ('add more examples') is useless; demand exact additions naming the topic, "
-                f"the specific concept, and the form of the missing piece (e.g. 'Add a worked example "
-                f"of <topic mechanic from the corpus> showing each step', 'Replace the loose definition "
-                f"of <term> on §X with the verbatim definition from the materials.')."
+                f"{{\"score\": <0-100>, \"strengths\": [\"…\"], \"issues\": [\"…\"], \"must_fix\": [\"…\"]}}\n"
+                f"```"
             ),
         }]
         text = self.ctx.llm.complete(

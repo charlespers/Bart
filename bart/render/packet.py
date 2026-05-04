@@ -27,9 +27,20 @@ from pathlib import Path
 from typing import List
 
 from .assets import install_all
+from .blocks import (
+    ArtifactCardBlock,
+    ArtifactGridBlock,
+    DayCardBlock,
+    DayGridBlock,
+    HeroBlock,
+    KpiGridBlock,
+    PagerBlock,
+)
+from .compose import Page
+from .block_expand import expand_blocks
 from .markdown import RenderWarning, render
 from .optimize import has_math, minify_html
-from .page import assemble_page, assemble_pager
+from .page import assemble_page
 from .sanitize import SanitizeWarning, normalize_md
 
 
@@ -131,47 +142,56 @@ def _validate_html(html: str, file_label: str) -> list[Warning]:
 # Helpers — landing page composition
 # ─────────────────────────────────────────────────────────────────
 
-def _hero_block(subject: str, generated_at: str, exam_date: str) -> str:
-    return (
-        '<div class="hero">'
-        '<img class="loaf" src="assets/bart-loaf.svg" alt="bart" />'
-        f'<h1>{html_escape(subject)}<span class="dot">.</span></h1>'
-        f'<div class="meta">generated {html_escape(generated_at)} · exam {html_escape(exam_date)}</div>'
-        '<p class="tagline">A study packet built from your own course materials. '
-        'Open the master plan first; come back here to navigate between days.</p>'
-        '</div>'
-    )
+def _build_index_page(
+    subject: str,
+    generated_at: str,
+    exam_date: str,
+    present_top: list[dict],
+    days: list[dict],
+    topics_by_day: dict[int, str],
+    days_focuses: dict[int, str],
+) -> str:
+    """Compose the landing page from structural blocks."""
+    page = Page()
+    page.add(HeroBlock(
+        subject=subject,
+        generated_at=generated_at,
+        exam_date=exam_date,
+    ))
 
+    # KPI strip — quick glance at the packet shape.
+    kpis = []
+    if days:
+        kpis.append({"label": "Daily lessons", "value": str(len(days))})
+    if present_top:
+        kpis.append({"label": "Top-level artifacts", "value": str(len(present_top))})
+    kpis.append({"label": "Exam date", "value": exam_date or "—"})
+    if kpis:
+        page.add(KpiGridBlock(kpis=kpis))
 
-def _artifact_cards(present: list[dict]) -> str:
-    if not present:
-        return ""
-    cards = ['<h2>Top-level artifacts</h2><div class="artifact-grid">']
-    for a in present:
-        cards.append(
-            f'<a class="artifact-card" href="{html_escape(a["html"])}">'
-            f'<h3>{html_escape(a["label"])}</h3>'
-            f'<p>{html_escape(a["blurb"])}</p></a>'
-        )
-    cards.append("</div>")
-    return "".join(cards)
+    # Top-level artifact cards
+    if present_top:
+        artifact_cards = [
+            ArtifactCardBlock(title=a["label"], blurb=a["blurb"], href=a["html"])
+            for a in present_top
+        ]
+        page.add(ArtifactGridBlock(cards=artifact_cards))
 
+    # Day grid
+    if days:
+        day_cards = [
+            DayCardBlock(
+                day_num=d["day_num"],
+                topic=topics_by_day.get(d["day_num"], ""),
+                date=d["date"],
+                focus=days_focuses.get(d["day_num"], "learn"),
+                href=f"lessons/{d['html_name']}",
+            )
+            for d in days
+        ]
+        page.add(DayGridBlock(cards=day_cards))
 
-def _day_grid(days: list[dict], topics_by_day: dict[int, str]) -> str:
-    if not days:
-        return ""
-    parts = ['<h2>Daily lessons</h2><div class="day-grid">']
-    for d in days:
-        topic = topics_by_day.get(d["day_num"], "")
-        parts.append(
-            f'<a class="day-card" href="lessons/{html_escape(d["html_name"])}">'
-            f'<div class="day-num">Day {d["day_num"]:02d}</div>'
-            f'<div class="day-topic">{html_escape(topic) or "—"}</div>'
-            f'<div class="day-date">{html_escape(d["date"])}</div>'
-            '</a>'
-        )
-    parts.append("</div>")
-    return "".join(parts)
+    return page.render()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -266,7 +286,10 @@ def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
             f"Day {nxt['day_num']:02d} · {topics_by_day.get(nxt['day_num'], '')}".strip(" ·")
             if nxt else None
         )
-        pager = assemble_pager(prev_url, prev_label, next_url, next_label)
+        pager = PagerBlock(
+            prev_url=prev_url, prev_label=prev_label,
+            next_url=next_url, next_label=next_label,
+        ).render()
 
         topic = topics_by_day.get(d["day_num"], "")
         title_short = f"Day {d['day_num']:02d}" + (f" · {topic}" if topic else "")
@@ -286,16 +309,17 @@ def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
             pager_html=pager,
         ))
 
-    # ── Build index.html
-    body_parts = [_hero_block(subject, generated_at, exam_date)]
-    body_parts.append(_artifact_cards(present_top))
-    body_parts.append(_day_grid(days, topics_by_day))
-    body_parts.append(
-        '<aside class="render-warning">'
-        f'Tip: press <span class="kbd">⌘K</span> (or <span class="kbd">Ctrl-K</span>) to search the packet.'
-        '</aside>'
+    # ── Build index.html using composable blocks
+    days_focuses = {d.get("day"): d.get("focus", "learn") for d in manifest.get("daily_lessons", [])}
+    body = _build_index_page(
+        subject=subject,
+        generated_at=generated_at,
+        exam_date=exam_date,
+        present_top=present_top,
+        days=days,
+        topics_by_day=topics_by_day,
+        days_focuses=days_focuses,
     )
-    body = "\n".join(body_parts)
     index_html = assemble_page(
         body=body,
         title=f"{subject} · bart packet",
@@ -364,6 +388,14 @@ def _render_one(
     for w in sanitize_warns:
         sev = "info" if w.kind in _INFO_KINDS else "warn"
         warnings.append(Warning(src.name, w.kind, w.detail, sev))
+
+    # Expand bart-* fences into design-library HTML BEFORE markdown render.
+    # This is what turns the agent's structured output (formula cards,
+    # quick-checks, timelines, etc.) into the polished components.
+    expanded = expand_blocks(sanitized)
+    sanitized = expanded.text
+    for w in expanded.warnings:
+        warnings.append(Warning(src.name, w.kind, w.detail, "warn"))
 
     body_html, render_warns, meta = render(sanitized)
     for w in render_warns:

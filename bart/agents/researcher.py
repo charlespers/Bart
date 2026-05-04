@@ -13,22 +13,13 @@ class ResearcherAgent(Agent):
 
     def research(self, topic: str, learning_objectives: list[str]) -> str:
         cfg = self.ctx.cfg
+        objectives = "\n- ".join(learning_objectives)
         user = self.ctx.corpus_block + [{
             "type": "text",
             "text": (
-                f"Subject: {cfg.subject}.\n\n"
-                f"Topic to research: {topic}\n"
-                f"Learning objectives:\n- " + "\n- ".join(learning_objectives) + "\n\n"
-                f"TASK\n"
-                f"Produce a CONDENSED research brief (~600-1200 words) covering this topic, drawn STRICTLY from the corpus. "
-                f"Include:\n"
-                f"1. Verbatim definitions / theorems from the materials (in quote blocks).\n"
-                f"2. Worked examples mentioned in the materials, if present.\n"
-                f"3. References to specific exam problems or homework problems in the corpus that drill this topic — "
-                f"cite them using whatever naming convention the corpus uses (problem numbers, sections, slide references, etc.).\n"
-                f"4. A short list of textbook-specific terminology / notation conventions to preserve.\n"
-                f"5. Gaps: anything an exam-prep author would need that the corpus does NOT cover.\n\n"
-                f"Be precise. Do NOT invent material that isn't in the corpus."
+                f"Subject: {cfg.subject}\n"
+                f"Topic: {topic}\n"
+                f"Objectives:\n- {objectives}"
             ),
         }]
         return self.ctx.llm.complete(

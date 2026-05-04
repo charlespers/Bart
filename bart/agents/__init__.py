@@ -13,12 +13,21 @@ Orchestration logic lives in `bart.orchestrator`; agents themselves are stateles
 
 from .author import AuthorAgent
 from .critic import CriticAgent
+from .distiller import DistillerAgent
+from .notation_extractor import NotationExtractorAgent
 from .planner import PlannerAgent
+from .problem_indexer import ProblemIndexerAgent
 from .researcher import ResearcherAgent
 from .reviewer import ReviewerAgent, ReviewResult
 from .reviser import ReviserAgent
+from .solver import SolverAgent
+from .topic_distiller import TopicDistillerAgent
+from .whimsy_indexer import WhimsyIndexerAgent
 
 __all__ = [
-    "PlannerAgent", "AuthorAgent", "CriticAgent", "ReviserAgent",
-    "ResearcherAgent", "ReviewerAgent", "ReviewResult",
+    "DistillerAgent", "TopicDistillerAgent", "PlannerAgent", "AuthorAgent",
+    "CriticAgent", "ReviserAgent", "ResearcherAgent",
+    "ReviewerAgent", "ReviewResult",
+    "NotationExtractorAgent", "ProblemIndexerAgent",
+    "SolverAgent", "WhimsyIndexerAgent",
 ]

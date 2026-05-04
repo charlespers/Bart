@@ -34,10 +34,23 @@ htmlcov/
 
 # ─────────── internal / dev only (do not ship) ───────────
 tests/
+benchmarks/
 .design_pkg/
 .scratch/
 TODO.md
 NOTES.md
+future.md
+# pytest discovery & coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+conftest.py
+pytest.ini
+pyproject.toml.test
+# nothing under tests should ever be packaged
+**/test_*.py
+**/*_test.py
 
 # ─────────── editor / OS ───────────
 .vscode/

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -38,7 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--fast",
         action="store_true",
-        help="Speed preset: Sonnet primary model, no critic loop, --max-parallel 8. ~5x faster, slightly lower quality.",
+        help="Speed preset: Sonnet primary model, no critic loop. ~3-5x faster than default.",
+    )
+    run.add_argument(
+        "--turbo",
+        action="store_true",
+        help="Maximum-speed preset: Haiku for top-level artifacts, Sonnet for daily lessons, no critic. "
+             "Best when subscription rate-limited.",
     )
     run.add_argument(
         "--model",
@@ -97,15 +104,30 @@ def main(argv: list[str] | None = None) -> int:
         max_parallel = getattr(args, "max_parallel", 4)
         days_override = getattr(args, "days", None)
         fast_mode = getattr(args, "fast", False)
+        turbo_mode = getattr(args, "turbo", False)
         model_override = getattr(args, "model", None)
 
-        # --fast preset: sonnet + no critic + parallel 8
-        if fast_mode:
+        # --fast:  Sonnet primary, no critic, parallel=4.
+        # --turbo: Haiku everywhere, no critic, no block-fix, parallel=3.
+        #          Daily lessons that previously took 10-20 min on Sonnet
+        #          finish in ~90s on Haiku with comparable structural quality
+        #          (skeleton + density gate carry the load).
+        if turbo_mode or fast_mode:
             no_critic = True
-            if max_parallel == 4:  # only bump if user didn't explicitly set it
-                max_parallel = 8
             if not model_override:
                 model_override = "claude-sonnet-4-6"
+        if turbo_mode:
+            # Haiku for the daily-lesson Author too. Massive wall-time win.
+            if not getattr(args, "model", None):
+                model_override = "claude-haiku-4-5-20251001"
+            os.environ["BART_TOP_LEVEL_MODEL_OVERRIDE"] = "claude-haiku-4-5-20251001"
+            # Block-fix continuation stays ENABLED in turbo — Haiku occasionally
+            # under-uses bart blocks, and the fix is a cheap (≤1500 tok) Haiku
+            # call that guarantees structural density. Speed dominates output
+            # length; this retry costs ~5-10s and keeps block usage high.
+            os.environ.pop("BART_SKIP_BLOCK_FIX", None)
+            # Haiku tolerates higher concurrency than Sonnet on subscription.
+            max_parallel = 3
 
         cfg = load_config()
         if cfg is None or reconfigure:
@@ -126,6 +148,17 @@ def main(argv: list[str] | None = None) -> int:
         # Apply per-run model override without persisting it.
         if model_override:
             cfg = cfg.model_copy(update={"primary_model": model_override})
+
+        # Subscription mode + parallel=4 silently queues calls at the API edge.
+        # If the user is on subscription auth and didn't manually set --max-parallel,
+        # cap at 2 — empirically this is faster wall-clock than 4.
+        if cfg.auth_mode == "claude-code" and max_parallel == 4 and not turbo_mode:
+            console.print(
+                "[dim]subscription mode detected: capping parallel calls at 2 "
+                "(rate-limit aware). use[/dim] [white]--max-parallel N[/white] "
+                "[dim]to override.[/dim]"
+            )
+            max_parallel = 2
 
         paths = RunPaths.create(resume=resume)
         orch = Orchestrator(

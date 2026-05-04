@@ -2,43 +2,63 @@
    ~600 lines, dense. Reading-optimized typography. */
 
 :root {
-  /* brand palette */
-  --cream:     #f4f1ea;
-  --cream-hi:  #fbf9f4;
-  --cream-lo:  #d9d3c4;
-  --ink:       #221f1b;
-  --ink-soft:  #3a342d;
-  --ink-mute:  #6d655a;
-  --accent:    #c96442;
-  --accent-hi: #e88a6a;
-  --accent-lo: #9a4628;
+  /* brand palette — synced with design library tokens.jsx */
+  --paper:        #f4f1ea;
+  --paper-hi:     #fbf9f4;
+  --paper-lo:     #ebe6d8;
+  --rule:         #d9d3c4;
+  --ink:          #221f1b;
+  --ink-soft:     #3a342d;
+  --ink-mute:     rgba(34,30,25,0.55);
+  --ink-faint:    rgba(34,30,25,0.35);
+  --accent:       #c96442;
+  --accent-hi:    #e88a6a;
+  --accent-lo:    #9a4628;
+  --accent-tint:  rgba(201,100,66,0.10);
+  --highlighter:  rgba(232,138,106,0.28);
+  --warn:         #b8893a;
+  --warn-tint:    rgba(184,137,58,0.12);
+  --ok:           #5e7a4a;
+  --ok-tint:      rgba(94,122,74,0.12);
+  --info:         #4a6a7a;
+  --info-tint:    rgba(74,106,122,0.10);
+
+  /* legacy aliases — retained so old class names keep working */
+  --cream:     var(--paper);
+  --cream-hi:  var(--paper-hi);
+  --cream-lo:  var(--rule);
+  --code-bg:   #f0ebde;
   --term-bg:   #1a1815;
   --term-fg:   #e6e1d6;
-  --code-bg:   #f0ebde;
 
   /* semantic */
-  --bg:         var(--cream);
+  --bg:         var(--paper);
   --fg:         var(--ink);
   --fg-soft:    var(--ink-soft);
   --fg-mute:    var(--ink-mute);
-  --border:    var(--cream-lo);
+  --border:     var(--rule);
   --link:       var(--accent-lo);
   --link-hover: var(--accent);
 
-  /* typography */
-  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --font-serif: "Charter", "Source Serif Pro", "Iowan Old Style", Georgia, serif;
+  /* typography — Source Serif 4 for body (textbook feel), Caveat for hand. */
+  --font-body:  "Inter", system-ui, sans-serif;
+  --font-mono:  "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-serif: "Source Serif 4", "Iowan Old Style", "Source Serif Pro", Georgia, serif;
+  --font-hand:  "Caveat", "Bradley Hand", cursive;
 
-  --text-base: 17px;
+  --text-base: 17px;     /* widened for screen readability */
   --text-sm:   14px;
   --text-xs:   12px;
-  --leading:   1.65;
+  --leading:   1.7;
   --tracking-mono: 0.005em;
 
   /* spacing */
-  --gutter-y: 1.4rem;
-  --max-prose: 720px;
+  --gutter-y:    1.4rem;
+  --max-prose:   880px;  /* widened from 720 — gives long-form content room
+                            without overshooting comfortable line length */
+  --r-sm:        4px;
+  --r-md:        8px;
+  --r-lg:        12px;
   --shadow-soft: 0 1px 3px rgba(34,30,25,0.05), 0 4px 12px rgba(34,30,25,0.04);
 }
 
@@ -155,14 +175,21 @@ html, body {
 }
 
 .sidebar nav a {
-  display: block;
-  padding: 5px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
   margin: 1px 0;
   color: var(--fg-soft);
   text-decoration: none;
   border-radius: 6px;
   transition: background .12s, color .12s;
   border-left: 2px solid transparent;
+  line-height: 1.35;
+}
+.sidebar nav a > span {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 .sidebar nav a:hover {
@@ -182,9 +209,30 @@ html, body {
   font-weight: 500;
 }
 
-/* TOC nesting (level 3 and 4) */
-.sidebar nav .toc-l3 { padding-left: 20px; font-size: 13px; }
-.sidebar nav .toc-l4 { padding-left: 36px; font-size: 12.5px; color: var(--fg-mute); }
+.sidebar .nav-ico {
+  flex-shrink: 0;
+  width: 16px; height: 16px;
+  color: var(--fg-mute);
+  transition: color .12s;
+}
+.sidebar nav a:hover .nav-ico,
+.sidebar nav a.active .nav-ico { color: var(--accent); }
+
+/* TOC nesting (level 3 and 4) — left rule traces depth visually. */
+.sidebar nav.toc-nav { margin-top: 22px; }
+.sidebar nav.toc-nav .toc-list {
+  list-style: none; padding: 0; margin: 0;
+  border-left: 1px solid var(--border);
+  padding-left: 0;
+}
+.sidebar nav.toc-nav li a {
+  border-left: 2px solid transparent;
+  margin-left: -1px;
+  padding-left: 12px;
+}
+.sidebar nav.toc-nav .toc-l2 a { font-size: 13.5px; }
+.sidebar nav.toc-nav .toc-l3 a { padding-left: 28px; font-size: 13px; color: var(--fg-soft); }
+.sidebar nav.toc-nav .toc-l4 a { padding-left: 44px; font-size: 12.5px; color: var(--fg-mute); }
 
 /* ─── Topbar ─── */
 
@@ -277,6 +325,23 @@ html, body {
 article {
   max-width: var(--max-prose);
   margin: 0 auto;
+  font-family: var(--font-serif);
+  font-size: var(--text-base);
+  line-height: var(--leading);
+}
+article p {
+  margin: 0 0 1.3em;
+  /* Slightly wider letter-spacing on body serif aids small-text legibility. */
+  letter-spacing: 0.005em;
+}
+article ul, article ol { margin: 0 0 1.3em 1.4em; padding: 0; }
+article li { margin: 0 0 0.4em; }
+article blockquote {
+  margin: 1.2em 0;
+  padding: 0.4em 1.2em;
+  border-left: 3px solid var(--rule);
+  color: var(--fg-soft);
+  font-style: italic;
 }
 
 article > h1:first-child,
@@ -815,3 +880,157 @@ mjx-container[display="true"] {
 
 [data-theme="dark"] .kbd,
 [data-theme="auto"] .kbd { background: rgba(255, 255, 255, 0.05); }
+
+/* ─── Polish: callouts, formula cards, table refinement, math display ─── */
+
+/* Generic callout block. Usage:
+     <div class="callout callout-key">…</div>
+     variants: -key (concept), -trap (warning), -tip (advice), -formula (boxed math) */
+article .callout {
+  margin: 22px 0;
+  padding: 14px 18px 14px 16px;
+  border-left: 4px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--cream-hi);
+  font-size: 16px;
+  line-height: 1.55;
+}
+article .callout > :first-child { margin-top: 0; }
+article .callout > :last-child  { margin-bottom: 0; }
+article .callout-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-lo);
+  margin: 0 0 6px;
+}
+article .callout-key   { border-left-color: var(--accent);      background: rgba(201,100,66,0.06); }
+article .callout-trap  { border-left-color: #b48a3c;            background: rgba(180,138,60,0.08); }
+article .callout-trap  .callout-title { color: #6e4f10; }
+article .callout-tip   { border-left-color: #5a8d6f;            background: rgba(90,141,111,0.07); }
+article .callout-tip   .callout-title { color: #2f5e44; }
+article .callout-formula {
+  border-left-color: var(--ink-soft);
+  background: var(--cream);
+  font-family: var(--font-serif);
+}
+[data-theme="dark"] article .callout,
+[data-theme="auto"] article .callout { background: rgba(255,255,255,0.03); }
+[data-theme="dark"] article .callout-trap .callout-title,
+[data-theme="auto"] article .callout-trap .callout-title { color: #e2cb8e; }
+[data-theme="dark"] article .callout-tip  .callout-title,
+[data-theme="auto"] article .callout-tip  .callout-title { color: #9bc6ad; }
+
+/* Formula card — display math wrapper for emphasized equations. */
+article .formula-card {
+  margin: 24px 0;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--cream-hi);
+  text-align: center;
+  position: relative;
+}
+article .formula-card .formula-label {
+  position: absolute; top: -10px; left: 16px;
+  background: var(--bg);
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-lo);
+}
+[data-theme="dark"] article .formula-card,
+[data-theme="auto"] article .formula-card { background: rgba(255,255,255,0.03); }
+
+/* Reference card — used by domain tools (chem/cs/ece) for static fact tables. */
+article .ref-card {
+  margin: 28px 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--cream-hi);
+}
+article .ref-card-header {
+  padding: 12px 18px;
+  background: var(--cream);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+article .ref-card-header h3 { margin: 0; font-size: 17px; }
+article .ref-card-header .ref-card-tag {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--accent-lo);
+}
+article .ref-card-body { padding: 14px 18px; }
+[data-theme="dark"] article .ref-card,
+[data-theme="auto"] article .ref-card { background: rgba(255,255,255,0.025); }
+[data-theme="dark"] article .ref-card-header,
+[data-theme="auto"] article .ref-card-header { background: rgba(255,255,255,0.02); }
+
+/* Table polish — tighter spacing, banded rows, sticky header inside ref-card. */
+article table {
+  font-size: 14.5px;
+  border-collapse: collapse;
+  margin: 18px 0;
+  width: 100%;
+}
+article th {
+  text-align: left;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--border);
+  background: var(--cream);
+  position: sticky; top: 0; z-index: 1;
+}
+article td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+article tr:nth-child(even) td { background: rgba(0,0,0,0.015); }
+[data-theme="dark"] article tr:nth-child(even) td,
+[data-theme="auto"] article tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+article td code, article th code {
+  font-size: 13px;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* Quick Check refinement — keep the existing details styling, but make the
+   summary feel less like a "click me" and more like a labeled prompt. */
+article details.qc-collapsible > summary {
+  background: rgba(201,100,66,0.04);
+  border-bottom: 1px dashed rgba(201,100,66,0.25);
+}
+article details.qc-collapsible[open] > summary {
+  border-bottom-style: solid;
+}
+
+/* Block math — give it some visual breathing room without competing with prose. */
+article mjx-container[display="true"] {
+  margin: 26px 0 !important;
+  font-size: 1.05em !important;
+  border-left: 2px solid var(--cream-lo);
+  padding-left: 14px;
+}
+[data-theme="dark"] article mjx-container[display="true"],
+[data-theme="auto"] article mjx-container[display="true"] {
+  border-left-color: rgba(255,255,255,0.08);
+}
+
+/* When MathJax hasn't loaded yet, show the raw delimiters as faint placeholder
+   instead of jarring full-strength text. Avoids flash-of-unrendered-math. */
+.arithmatex { color: var(--fg-mute); }
+mjx-container .arithmatex,
+mjx-container ~ .arithmatex { color: inherit; }
+
+/* Definition list polish — used for term/explanation pairs. */
+article dl { margin: 18px 0; }
+article dl dt { font-weight: 600; color: var(--accent-lo); margin-top: 10px; }
+article dl dd { margin: 2px 0 8px 18px; color: var(--fg-soft); }

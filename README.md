@@ -149,18 +149,77 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
 
 ## Commands
 
+### Top-level subcommands
+
 ```bash
-./run                              # generate a packet
-./run setup                        # change API key, exam date, etc.
-./run list                         # show every packet you've ever generated
-./run doctor                       # health check
-./run run --resume <id>            # resume a crashed run
-./run run --dry-run                # extract + plan, no API calls
-./run run --fast                   # speed preset: sonnet + no critic + parallel 8 (~5x faster)
-./run run --no-critic              # skip the grading loop (faster)
-./run run --max-parallel 8         # generate more lessons at once
-./run run --days 14                # override how many daily lessons to write
-./run run --model claude-sonnet-4-6 # one-off model override
+./run                       # generate a packet (alias for `./run run`)
+./run setup                 # re-run the configuration wizard
+./run list                  # show every packet you've ever generated, with cost
+./run doctor                # health check: Python, deps, auth, materials folder
+./run render [run_id]       # rebuild HTML packet from existing markdown — no API calls.
+                            # Defaults to the most recent run; pass an id to target a specific one.
+```
+
+### Speed presets
+
+```bash
+./run                       # default — full quality (Opus + heuristic-gated review)
+./run --fast                # Sonnet + no review. ~3-5x faster than default.
+./run --turbo               # Maximum-speed — Haiku for top-level artifacts,
+                            # Sonnet for daily lessons, no review, parallel=2.
+                            # Best with subscription auth.
+```
+
+### Common flags
+
+```bash
+./run --resume <run_id>             # resume a crashed/interrupted run
+./run --dry-run                     # extract + plan, stop before any API calls
+./run --reconfigure                 # re-run setup wizard before this run
+./run --no-critic                   # skip the review/revision loop
+./run --max-parallel 8              # bump concurrent calls (default: 4 API, 2 subscription)
+./run --days 14                     # override number of daily lessons (default: days-until-exam)
+./run --model claude-sonnet-4-6     # one-off primary-model override
+```
+
+### Useful combinations
+
+```bash
+# Smoke test the install (no tokens burned):
+cp examples/sample_notes.md materials/
+./run --dry-run
+
+# Fastest possible build (subscription mode):
+./run --turbo
+
+# Resume a crashed run (use `./run list` to find the run_id):
+./run --resume run_2026-05-03_141503
+
+# Limit to a 7-day plan, Sonnet quality, no review:
+./run --fast --days 7
+
+# Re-render the most recent packet after editing markdown:
+./run render
+
+# Re-render a specific past packet:
+./run render run_2026-05-03_141503
+```
+
+### Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `ANTHROPIC_API_KEY` | Used by API auth mode (also savable via `./run setup`) |
+| `BART_DISABLE_STREAMING=1` | Disable stream-json output (use plain `--print` mode) |
+
+### Running directly via Python
+
+`./run` is a bash launcher that bootstraps the venv. If your venv exists you can also invoke the package directly:
+
+```bash
+.venv/bin/python -m bart                       # same as ./run
+.venv/bin/python -m bart --turbo               # same as ./run --turbo
+.venv/bin/python -m bart render run_xxxxx      # same as ./run render run_xxxxx
 ```
 
 ---

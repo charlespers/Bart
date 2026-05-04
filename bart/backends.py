@@ -94,6 +94,17 @@ class AnthropicAPIBackend:
         self._max_retries = max_retries
         self._on_event = on_event or (lambda evt, payload: None)
 
+    @staticmethod
+    def _cacheable_system(s: str) -> list[dict[str, Any]]:
+        """Wrap a system prompt as a single cacheable block.
+
+        System prompts are stable across many calls (one per agent role), so
+        caching them gets us cheap reads on every call after the first.
+        Anthropic supports up to 4 cache breakpoints per request — this is one
+        of them. Corpus block (in user message) is the second.
+        """
+        return [{"type": "text", "text": s, "cache_control": {"type": "ephemeral"}}]
+
     def complete(
         self,
         *,
@@ -105,7 +116,7 @@ class AnthropicAPIBackend:
         use_disk_cache: bool = True,
         temperature: float = 1.0,
     ) -> str:
-        sys_blocks = [{"type": "text", "text": system}] if isinstance(system, str) else list(system)
+        sys_blocks = self._cacheable_system(system) if isinstance(system, str) else list(system)
         usr_blocks = [{"type": "text", "text": user}] if isinstance(user, str) else list(user)
 
         key = _cache_key(model, sys_blocks, [{"role": "user", "content": usr_blocks}], max_tokens)
@@ -202,6 +213,90 @@ class ClaudeCodeBackend:
     def is_available() -> bool:
         return shutil.which("claude") is not None
 
+    def _run_streaming(
+        self, cmd: list[str], combined: str, label: str, env: dict[str, str]
+    ) -> tuple[str, str, int]:
+        """Run the CLI in stream-json mode, parsing events for live progress.
+
+        Returns (stdout_text, stderr, returncode) where stdout_text is the
+        concatenated assistant text from the stream events.
+        """
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env, bufsize=1,
+        )
+        # Send the input and close stdin so the CLI starts streaming.
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(combined)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+        accumulated_text: list[str] = []
+        last_emit_chars = 0
+        last_emit_time = time.time()
+
+        # Read stdout line-by-line, parse stream-json events, accumulate text.
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    # Some CLI versions print preamble lines that aren't JSON;
+                    # treat as plain text and append.
+                    accumulated_text.append(line)
+                    continue
+                # stream-json event shapes (Anthropic Messages API style):
+                #   {"type": "assistant", "message": {"content": [{"type":"text","text":"..."}]}}
+                #   {"type": "result", "subtype": "success", "result": "<full text>", ...}
+                etype = event.get("type", "")
+                if etype == "assistant":
+                    msg = event.get("message", {}) or {}
+                    for block in (msg.get("content") or []):
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            txt = block.get("text", "")
+                            if txt:
+                                accumulated_text.append(txt)
+                elif etype == "result":
+                    # Final event — `result` field contains the complete text.
+                    if event.get("subtype") == "success":
+                        full = event.get("result", "")
+                        if full:
+                            # Replace accumulated text with the canonical result.
+                            accumulated_text = [full]
+                # Periodic progress event so the orchestrator can show
+                # live char counts.
+                now = time.time()
+                cur_chars = sum(len(t) for t in accumulated_text)
+                if (cur_chars - last_emit_chars) >= 500 or (now - last_emit_time) >= 5:
+                    self._on_event("stream_progress", {
+                        "label": label, "chars": cur_chars,
+                    })
+                    last_emit_chars = cur_chars
+                    last_emit_time = now
+        except Exception as e:  # noqa: BLE001
+            self._on_event("stream_error", {"label": label, "error": str(e)})
+
+        try:
+            proc.wait(timeout=self._timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise
+
+        stderr = ""
+        try:
+            if proc.stderr is not None:
+                stderr = proc.stderr.read() or ""
+        except Exception:  # noqa: BLE001
+            pass
+
+        return "".join(accumulated_text), stderr, proc.returncode
+
     @staticmethod
     def _flatten(blocks: str | list[dict[str, Any]]) -> str:
         if isinstance(blocks, str):
@@ -223,6 +318,7 @@ class ClaudeCodeBackend:
         use_disk_cache: bool = True,
         temperature: float = 1.0,  # unused — CLI doesn't expose
     ) -> str:
+        # The CLI doesn't expose cache_control, but flatten() reads either form.
         sys_text = self._flatten(system)
         usr_text = self._flatten(user)
 
@@ -240,12 +336,14 @@ class ClaudeCodeBackend:
         combined = f"<system_instructions>\n{sys_text}\n</system_instructions>\n\n{usr_text}"
 
         # Build the command. We pass `--model` only if the caller specified one;
-        # otherwise let the CLI use the user's default. We do NOT pass
-        # `--output-format text` because some CLI versions reject it; the default
-        # output is plain text already.
+        # otherwise let the CLI use the user's default. Try stream-json mode for
+        # live progress; fall back to plain text if the CLI rejects it.
+        use_streaming = os.environ.get("BART_DISABLE_STREAMING", "") != "1"
         cmd = [self._cli, "--print"]
         if model:
             cmd.extend(["--model", model])
+        if use_streaming:
+            cmd.extend(["--output-format", "stream-json", "--verbose"])
 
         # CRITICAL: strip auth env vars that would force the CLI into API-key mode
         # instead of using the user's claude.ai subscription. If ANTHROPIC_API_KEY
@@ -267,33 +365,36 @@ class ClaudeCodeBackend:
         t0 = time.time()
         self._on_event("call_start", {"label": label, "model": model, "backend": "claude-code"})
 
-        # Heartbeat thread: fires every 30s while the subprocess is alive so the
+        # Heartbeat thread: fires every 15s while the subprocess is alive so the
         # orchestrator can show the user that the call is still progressing.
         # CLAUDE CLI doesn't stream; without this, the user sees nothing for 4-6 min
         # and assumes a hang.
         done = threading.Event()
+        HEARTBEAT_INTERVAL = 15
 
         def _heartbeat():
             elapsed = 0
-            while not done.wait(30):
-                elapsed += 30
+            while not done.wait(HEARTBEAT_INTERVAL):
+                elapsed += HEARTBEAT_INTERVAL
                 self._on_event("heartbeat", {"label": label, "elapsed_s": elapsed})
-                # After 90s, suggest --fast as a workaround
-                if elapsed == 90:
+                # After 60s, suggest knobs
+                if elapsed == 60:
                     self._on_event("slow_warning", {"label": label, "elapsed_s": elapsed})
 
         hb = threading.Thread(target=_heartbeat, daemon=True)
         hb.start()
+        # Streaming mode (stream-json): we read one JSON event per line from
+        # stdout, surface a per-call progress event, and accumulate text.
+        # Plain mode falls back to subprocess.run.
         try:
-            proc = subprocess.run(
-                cmd,
-                input=combined,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout_s,
-                check=False,
-                env=scrubbed_env,
-            )
+            if use_streaming:
+                stdout, stderr, returncode = self._run_streaming(cmd, combined, label, scrubbed_env)
+            else:
+                proc = subprocess.run(
+                    cmd, input=combined, capture_output=True, text=True,
+                    timeout=self._timeout_s, check=False, env=scrubbed_env,
+                )
+                stdout, stderr, returncode = proc.stdout or "", proc.stderr or "", proc.returncode
         except subprocess.TimeoutExpired as e:
             done.set()
             raise LLMError(f"`claude` CLI timed out after {self._timeout_s}s on '{label}'.") from e
@@ -301,10 +402,10 @@ class ClaudeCodeBackend:
             done.set()
 
         dt = time.time() - t0
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
+        stdout = (stdout or "").strip()
+        stderr = (stderr or "").strip()
 
-        if proc.returncode != 0:
+        if returncode != 0:
             cmd_str = " ".join(cmd)
             combined_err = (stderr + " " + stdout).lower()
 
@@ -343,7 +444,7 @@ class ClaudeCodeBackend:
 
             details = [
                 f"  command:   {cmd_str}",
-                f"  exit code: {proc.returncode}",
+                f"  exit code: {returncode}",
                 f"  model:     {model or '(default)'}",
             ]
             if stderr:

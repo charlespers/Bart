@@ -11,28 +11,29 @@ from pathlib import Path
 from typing import Iterable
 
 
-# MathJax 3 configuration. Crucial: only \(...\) and \[...\] are recognized,
-# never $...$ or $$...$$. This eliminates the entire class of "MathJax ate
-# my dollar sign" bugs.
+# Math is rendered with KaTeX (per design spec: "real LaTeX rendering").
+# KaTeX is significantly faster than MathJax and renders without a layout
+# shift. We bundle it locally and CDN-fall-back at load time, identical
+# to the MathJax pattern that came before.
+_KATEX_AUTORENDER_CONFIG = """
+document.addEventListener('DOMContentLoaded', function () {
+  if (!window.renderMathInElement) return;
+  window.renderMathInElement(document.body, {
+    delimiters: [
+      {left: '\\\\(', right: '\\\\)', display: false},
+      {left: '\\\\[', right: '\\\\]', display: true}
+    ],
+    throwOnError: false,
+    output: 'html'
+  });
+});
+"""
+
+# Legacy MathJax constant kept for backward-compat in case external callers
+# imported it; new pages use KaTeX.
 _MATHJAX_CONFIG = """
 window.MathJax = {
-  tex: {
-    inlineMath: [['\\\\(', '\\\\)']],
-    displayMath: [['\\\\[', '\\\\]']],
-    processEscapes: true,
-    processEnvironments: true,
-    packages: {'[+]': ['ams', 'noerrors', 'noundefined']}
-  },
-  options: {
-    skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
-    ignoreHtmlClass: 'no-mathjax'
-  },
-  startup: {
-    typeset: true
-  },
-  loader: {
-    load: ['[tex]/ams', '[tex]/noerrors', '[tex]/noundefined']
-  }
+  tex: { inlineMath: [['\\\\(', '\\\\)']], displayMath: [['\\\\[', '\\\\]']] }
 };
 """
 
@@ -84,9 +85,15 @@ _BASE_TMPL = """\
   <title>{title}</title>
   <meta name="generator" content="bart packet renderer">
   <link rel="icon" href="{rel}/assets/bart-loaf.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;600&family=Caveat:wght@500;600&display=swap" rel="stylesheet">
   <style>{critical_css}</style>
   {lazy_stylesheet}
-  {mathjax_block}
+  <link rel="preload" href="{rel}/blocks.css" as="style">
+  <link rel="stylesheet" href="{rel}/blocks.css" media="print" onload="this.media='all'">
+  <noscript><link rel="stylesheet" href="{rel}/blocks.css"></noscript>
+  {math_block}
   <link rel="prefetch" href="{rel}/search-index.json" as="fetch" crossorigin>
 </head>
 <body>
@@ -104,16 +111,22 @@ _BASE_TMPL = """\
   </div>
   {search_overlay}
   <script src="{rel}/packet.js" defer></script>
+  <script src="{rel}/lib_blocks.js" defer></script>
 </body>
 </html>
 """
 
 
 def _toc_to_html(toc: list[dict]) -> str:
-    """Build the sidebar TOC from a flat list of {level, name, id}."""
+    """Build the sidebar TOC from a flat list of {level, name, id}.
+
+    Visualizes depth (h2 vs h3 vs h4) with progressive indentation + a
+    left-rule that highlights the active section. Renders an `aria-current`
+    attribute the JS can flip without disturbing the markup.
+    """
     if not toc:
         return ""
-    parts: list[str] = ['<nav><h3>on this page</h3><ul>']
+    parts: list[str] = ['<nav class="toc-nav"><h3>on this page</h3><ul class="toc-list">']
     for entry in toc:
         level = entry.get("level", 2)
         # Only show levels 2-4 in the sidebar; deeper headings clutter
@@ -127,27 +140,79 @@ def _toc_to_html(toc: list[dict]) -> str:
     return "".join(parts)
 
 
+# Sidebar nav icons — small inline SVGs picked by label keyword. Each is a
+# 16×16 stroke-based icon so they inherit `currentColor` and stay legible
+# in dark mode. Keep the set tiny and recognizable — the goal is wayfinding
+# at a glance, not decoration.
+_NAV_ICONS: dict[str, str] = {
+    "index":          '<svg viewBox="0 0 16 16" class="nav-ico"><path d="M2 3h12M2 8h12M2 13h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    "master_plan":    '<svg viewBox="0 0 16 16" class="nav-ico"><path d="M3 2h7l3 3v9H3V2zM10 2v3h3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/></svg>',
+    "schematics":     '<svg viewBox="0 0 16 16" class="nav-ico"><circle cx="4" cy="4" r="1.6" stroke="currentColor" fill="none" stroke-width="1.3"/><circle cx="12" cy="4" r="1.6" stroke="currentColor" fill="none" stroke-width="1.3"/><circle cx="8" cy="12" r="1.6" stroke="currentColor" fill="none" stroke-width="1.3"/><path d="M5 5l3 5M11 5l-3 5" stroke="currentColor" stroke-width="1.2"/></svg>',
+    "whimsical":      '<svg viewBox="0 0 16 16" class="nav-ico"><path d="M3 6c1-3 4-3 5-1s4 2 5-1M3 10c1 3 4 3 5 1s4-2 5 1" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg>',
+    "short_guide":    '<svg viewBox="0 0 16 16" class="nav-ico"><path d="M3 3h10v10H3zM5 6h6M5 9h6M5 12h4" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    "practice_exam":  '<svg viewBox="0 0 16 16" class="nav-ico"><path d="M3 2h8l2 2v10H3V2z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/><path d="M5 7l2 2 4-4" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    "day":            '<svg viewBox="0 0 16 16" class="nav-ico"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.5 1.5M11 11l1.5 1.5M3.5 12.5L5 11M11 5l1.5-1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+    "review":         '<svg viewBox="0 0 16 16" class="nav-ico"><path d="M2 8a6 6 0 1011-3.5M13 2v4h-4" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    "mock":           '<svg viewBox="0 0 16 16" class="nav-ico"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M8 4v4l2.5 2.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg>',
+}
+
+
+def _icon_for(entry: dict) -> str:
+    """Pick an icon based on URL keyword. Returns empty string when none fits."""
+    url = entry.get("url", "").lower()
+    label = entry.get("label", "").lower()
+    kind = entry.get("kind", "")
+    if "index" in url or label in ("home", "start"):
+        return _NAV_ICONS["index"]
+    if "master_plan" in url:
+        return _NAV_ICONS["master_plan"]
+    if "schematic" in url:
+        return _NAV_ICONS["schematics"]
+    if "whim" in url:
+        return _NAV_ICONS["whimsical"]
+    if "short_study" in url or "short_guide" in url:
+        return _NAV_ICONS["short_guide"]
+    if "practice_exam" in url:
+        return _NAV_ICONS["practice_exam"]
+    if kind == "day":
+        if "review" in label or "review" in url:
+            return _NAV_ICONS["review"]
+        if "mock" in label or "mock" in url:
+            return _NAV_ICONS["mock"]
+        return _NAV_ICONS["day"]
+    return ""
+
+
 def _packet_nav_html(packet_nav: list[dict], current_url: str) -> str:
     """Build the packet-level nav (visible on every page) from a list of
-    {url, label, kind: 'top'|'day', day_num?}."""
+    {url, label, kind: 'top'|'day', day_num?}.
+
+    Each entry gets an inline SVG icon picked by URL/label so users can
+    tell artifact types apart at a glance.
+    """
     if not packet_nav:
         return ""
     top = [n for n in packet_nav if n.get("kind") == "top"]
     days = [n for n in packet_nav if n.get("kind") == "day"]
     parts: list[str] = []
     if top:
-        parts.append('<nav><h3>packet</h3><ul>')
+        parts.append('<nav class="packet-nav"><h3>packet</h3><ul>')
         for n in top:
             active = " active" if n["url"] == current_url else ""
-            parts.append(f'<li><a class="{active}" href="{html_escape(n["url"])}">{html_escape(n["label"])}</a></li>')
-        parts.append("</ul></nav>")
-    if days:
-        parts.append('<nav><h3>daily lessons</h3><ul>')
-        for n in days:
-            active = " active" if n["url"] == current_url else ""
+            icon = _icon_for(n)
             parts.append(
                 f'<li><a class="{active}" href="{html_escape(n["url"])}">'
-                f'{html_escape(n["label"])}</a></li>'
+                f'{icon}<span>{html_escape(n["label"])}</span></a></li>'
+            )
+        parts.append("</ul></nav>")
+    if days:
+        parts.append('<nav class="packet-nav"><h3>daily lessons</h3><ul>')
+        for n in days:
+            active = " active" if n["url"] == current_url else ""
+            icon = _icon_for(n)
+            parts.append(
+                f'<li><a class="{active}" href="{html_escape(n["url"])}">'
+                f'{icon}<span>{html_escape(n["label"])}</span></a></li>'
             )
         parts.append("</ul></nav>")
     return "".join(parts)
@@ -184,19 +249,32 @@ def assemble_page(
     )
 
     if needs_math:
-        mathjax_block = (
-            f"<script>{_MATHJAX_CONFIG}</script>"
-            f'<script src="{rel_root}/lib/mathjax/tex-chtml.js" defer></script>'
+        from .assets import (
+            KATEX_CSS_CDN, KATEX_JS_CDN, KATEX_AUTORENDER_CDN,
+        )
+        # KaTeX: stylesheet + main JS + auto-render extension. Each <script>
+        # has an onerror that swaps to the CDN if the local bundle is missing
+        # or was a fetch-failure stub.
+        math_block = (
+            f'<link rel="stylesheet" href="{rel_root}/lib/katex/katex.min.css" '
+            f'onerror="this.onerror=null;this.href=\'{KATEX_CSS_CDN}\';">'
+            f'<script defer src="{rel_root}/lib/katex/katex.min.js" '
+            f'onerror="(function(){{var s=document.createElement(\'script\');'
+            f's.src=\'{KATEX_JS_CDN}\';s.defer=true;document.head.appendChild(s);}})();"></script>'
+            f'<script defer src="{rel_root}/lib/katex/auto-render.min.js" '
+            f'onerror="(function(){{var s=document.createElement(\'script\');'
+            f's.src=\'{KATEX_AUTORENDER_CDN}\';s.defer=true;document.head.appendChild(s);}})();"></script>'
+            f'<script>{_KATEX_AUTORENDER_CONFIG}</script>'
         )
     else:
-        mathjax_block = "<!-- no math on this page; MathJax skipped -->"
+        math_block = "<!-- no math on this page; KaTeX skipped -->"
 
     return _BASE_TMPL.format(
         title=html_escape(title),
         rel=rel_root,
         critical_css=CRITICAL_CSS,
         lazy_stylesheet=LAZY_STYLESHEET.format(href=f"{rel_root}/packet.css"),
-        mathjax_block=mathjax_block,
+        math_block=math_block,
         sidebar=sidebar,
         topbar=topbar,
         body=body,

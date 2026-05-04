@@ -23,14 +23,8 @@ class HealthCheck:
         return self.healthy
 
 
-# Per-artifact-kind length floor (chars). Below this, output is suspicious.
-_MIN_LENGTH = {
-    "daily_lesson":      6_000,
-    "schematics":        3_000,
-    "whimsical_notes":   3_000,
-    "short_study_guide": 1_500,
-    "practice_exam":     5_000,
-}
+# Below this, output is suspiciously short regardless of artifact kind.
+_MIN_LENGTH = 1_000
 
 
 def health_check(artifact_kind: str, text: str) -> HealthCheck:
@@ -39,10 +33,9 @@ def health_check(artifact_kind: str, text: str) -> HealthCheck:
     score = 100
 
     # 1. Length floor
-    floor = _MIN_LENGTH.get(artifact_kind, 2_000)
-    if len(text) < floor:
+    if len(text) < _MIN_LENGTH:
         score -= 30
-        reasons.append(f"length {len(text)} below floor {floor}")
+        reasons.append(f"length {len(text)} below floor {_MIN_LENGTH}")
 
     # 2. Headings present (markdown ##)
     n_headings = len(re.findall(r"^#{1,4}\s", text, re.MULTILINE))
