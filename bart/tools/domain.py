@@ -50,11 +50,16 @@ def subject_matches(subject: str, keywords: Iterable[str]) -> bool:
 def render_ref_page(subject: str, domain: str, sections: list[RefSection]) -> str:
     """Render a self-contained reference HTML page using the packet stylesheet.
 
-    The page links to ../packet.css so it inherits the polished styles. It
-    needs MathJax for formula rendering — the script tag follows the same
-    local-bundle-with-CDN-fallback pattern as packet pages.
+    The page links to ../packet.css so it inherits the polished styles, and
+    loads KaTeX (with the mhchem extension for chemistry references) so
+    `\\(…\\)` / `\\[…\\]` / `\\ce{…}` all render. The audit's
+    `katex_not_loaded` / `mhchem_not_loaded` checks key off these script
+    tags being present, so this template is what keeps `./run format`
+    green for domain pages.
     """
-    from ..render.assets import MATHJAX_CDN_URL
+    from ..render.assets import (
+        KATEX_CSS_CDN, KATEX_JS_CDN, KATEX_AUTORENDER_CDN, KATEX_MHCHEM_CDN,
+    )
 
     body_parts: list[str] = [
         f'<h1>{escape(domain.upper())} reference card</h1>',
@@ -72,6 +77,21 @@ def render_ref_page(subject: str, domain: str, sections: list[RefSection]) -> st
     for sec in sections:
         body_parts.append(_render_section(sec))
 
+    autorender = (
+        "(function(){"
+        "function go(){"
+        "if(!window.renderMathInElement)return;"
+        "window.renderMathInElement(document.body,{"
+        "delimiters:[{left:'\\\\(',right:'\\\\)',display:false},"
+        "{left:'\\\\[',right:'\\\\]',display:true},{left:'$$',right:'$$',display:true}],"
+        "throwOnError:false,strict:'ignore',output:'htmlAndMathml'});"
+        "document.documentElement.classList.add('katex-rendered');"
+        "}"
+        "function tick(){if(window.katex&&window.renderMathInElement){go();return;}setTimeout(tick,25);}"
+        "if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',tick);else tick();"
+        "})();"
+    )
+
     return f"""<!doctype html>
 <html lang="en" data-theme="auto">
 <head>
@@ -80,14 +100,15 @@ def render_ref_page(subject: str, domain: str, sections: list[RefSection]) -> st
   <title>{escape(subject)} — {escape(domain)} reference</title>
   <link rel="stylesheet" href="../packet.css">
   <link rel="stylesheet" href="../blocks.css">
-  <script>
-    window.MathJax = {{
-      tex: {{ inlineMath: [['\\\\(','\\\\)']], displayMath: [['\\\\[','\\\\]']] }}
-    }};
-  </script>
-  <script src="../lib/mathjax/tex-chtml.js" defer
-    onerror="(function(){{var s=document.createElement('script');s.src='{MATHJAX_CDN_URL}';s.defer=true;document.head.appendChild(s);}})();"
-  ></script>
+  <link rel="stylesheet" href="../lib/katex/katex.min.css"
+    onerror="this.onerror=null;this.href='{KATEX_CSS_CDN}';">
+  <script defer src="../lib/katex/katex.min.js"
+    onerror="(function(){{var s=document.createElement('script');s.src='{KATEX_JS_CDN}';s.defer=true;document.head.appendChild(s);}})();"></script>
+  <script defer src="../lib/katex/mhchem.min.js"
+    onerror="(function(){{var s=document.createElement('script');s.src='{KATEX_MHCHEM_CDN}';s.defer=true;document.head.appendChild(s);}})();"></script>
+  <script defer src="../lib/katex/auto-render.min.js"
+    onerror="(function(){{var s=document.createElement('script');s.src='{KATEX_AUTORENDER_CDN}';s.defer=true;document.head.appendChild(s);}})();"></script>
+  <script defer>{autorender}</script>
 </head>
 <body>
   <div class="layout">

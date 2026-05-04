@@ -369,14 +369,83 @@ def _check_orphan_html_tags(text: str) -> List[FormatWarning]:
 
 def _autofix_double_escaped_math(text: str) -> tuple[str, int]:
     """Sometimes agents emit `\\\\(` instead of `\\(` (double-escaped). KaTeX
-    treats the literal backslash as a character and won't render. Normalize."""
+    treats the literal backslash as a character and won't render. Normalize.
+
+    Covers:
+      - all four delimiter forms `\\\\(`, `\\\\)`, `\\\\[`, `\\\\]`;
+      - double-escaped LaTeX command names *inside* a math span — `\\\\chi`,
+        `\\\\circ`, `\\\\frac`, etc. (agents writing JSON sometimes preserve
+        the JSON-escape level into the markdown source, which propagates
+        into the HTML and breaks KaTeX with "Got function `\\\\` with no
+        arguments as superscript" parse errors).
+
+    Earlier this fix only covered the bracket forms, which is why
+    `01_SCHEMATICS.md` kept showing `double_escaped_math:157` after each
+    render — and why day-03 / day-05 lessons surfaced parse errors after
+    the renderer ran cleanly.
+    """
     n = 0
-    for pat in (r"\\\\\(", r"\\\\\)"):
+
+    # 1. Collapse `\\<delim>` first.
+    for pat in (r"\\\\\(", r"\\\\\)", r"\\\\\[", r"\\\\\]"):
         new = re.sub(pat, lambda m: m.group(0).replace("\\\\", "\\"), text)
         if new != text:
-            n += 1
+            n += new.count("\\") - text.count("\\")
+            n = abs(n) or 1
             text = new
+
+    # 2. Collapse `\\<command>` inside math spans only. We deliberately
+    # restrict this to the math regions (between `\(`/`\)` and `\[`/`\]`)
+    # so a double-backslash in regular prose ("my path: C:\\Users\\…") is
+    # left alone.
+    fixed = [0]
+
+    def _strip_inside(span: str) -> str:
+        # Collapse \\<letters> → \<letters>. The trailing letter requirement
+        # ensures we don't touch a literal "\\" that the author meant as a
+        # KaTeX line-break — that one's followed by a non-letter (`[`, ` `,
+        # `\n`, `]`).
+        new_span = re.sub(r"\\\\([A-Za-z]+)", lambda m: "\\" + m.group(1), span)
+        if new_span != span:
+            fixed[0] += 1
+        return new_span
+
+    text = re.sub(
+        r"\\\((.+?)\\\)",
+        lambda m: "\\(" + _strip_inside(m.group(1)) + "\\)",
+        text, flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\\\[(.+?)\\\]",
+        lambda m: "\\[" + _strip_inside(m.group(1)) + "\\]",
+        text, flags=re.DOTALL,
+    )
+    n += fixed[0]
     return text, n
+
+
+_DOUBLE_SUPER_RE = re.compile(
+    r"(\\[A-Za-z]+(?:_\{[^}]*\})?)\^\*_\{([^}]+)\}\^(\d+|\{[^}]+\})"
+)
+
+
+def _autofix_double_superscript(text: str) -> tuple[str, int]:
+    """Rewrite `\\sigma^*_{2s}^2` to `{\\sigma^*_{2s}}^2`.
+
+    KaTeX (and TeX itself) reject two superscripts in a row without explicit
+    grouping. The agent's intent is "the antibonding orbital, squared", so
+    bracketing the molecular-orbital symbol fixes the parse without changing
+    meaning.
+    """
+    fixed = [0]
+
+    def _wrap(m: re.Match) -> str:
+        fixed[0] += 1
+        base, sub, sup = m.group(1), m.group(2), m.group(3)
+        return f"{{{base}^*_{{{sub}}}}}^{sup}"
+
+    new = _DOUBLE_SUPER_RE.sub(_wrap, text)
+    return new, fixed[0]
 
 
 def _autofix_naked_dollar_math(text: str) -> tuple[str, int]:
@@ -484,13 +553,15 @@ def check(text: str, html: str = "") -> tuple[str, List[FormatWarning]]:
     text, n2 = _autofix_naked_dollar_math(text)
     text, n3 = _autofix_blank_lines_around_block_math(text)
     text, n4 = _autofix_unbalanced_block_math(text)
-    total_fixes = n1 + n2 + n3 + n4
+    text, n5 = _autofix_double_superscript(text)
+    total_fixes = n1 + n2 + n3 + n4 + n5
     if total_fixes:
         warnings.append(FormatWarning(
             "auto_repaired",
             f"applied {total_fixes} auto-repair(s): "
             f"{n1} double-escaped delim(s), {n2} dollar-math conversion(s), "
-            f"{n3} blank-line padding(s), {n4} stray-`\\[` close(s)",
+            f"{n3} blank-line padding(s), {n4} stray-`\\[` close(s), "
+            f"{n5} double-superscript bracketing(s)",
             severity="info",
         ))
 

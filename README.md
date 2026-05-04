@@ -158,6 +158,12 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
 ./run doctor                # health check: Python, deps, auth, materials folder
 ./run render [run_id]       # rebuild HTML packet from existing markdown — no API calls.
                             # Defaults to the most recent run; pass an id to target a specific one.
+./run format [run_id]       # audit every HTML page in a packet (KaTeX wired? math balanced?
+                            # broken anchors? alt= on images? deprecated tags? mojibake?
+                            # markdown leaks? library blocks intact?). Read-only by default.
+                            #   --fix       apply safe in-place repairs
+                            #   --rerender  rebuild from markdown first (picks up CSS/template changes)
+                            #   --strict    exit non-zero on any warning (CI mode)
 ```
 
 ### Speed presets
@@ -242,6 +248,35 @@ If the index page shows fewer day cards than the master plan listed (or the new 
 ```
 
 `--resume` skips every day file already on disk and only regenerates the missing ones. To find the run id, use `./run list` (or read it off the banner).
+
+---
+
+---
+
+## Auditing a packet for formatting issues
+
+`./run format` walks every HTML page under `output/<run_id>/` and runs ~20 structural / typographic / accessibility checks: KaTeX (and mhchem) actually wired when math markers are present, math delimiters balanced (no stray `\[`), no double-escaped LaTeX, no `<pre>` holding raw `\(…\)`, no markdown `[link](url)` syntax leaking through, every `href="#…"` resolves to an element id, every `<img>` has alt text, no deprecated `<font>`/`<center>`, no encoding mojibake, no inline `font-size:` overrides fighting the global type scale, no zero-block lesson pages, no leftover ` ```bart-* ` fences, and so on.
+
+```bash
+# Read-only audit — see what's wrong:
+./run format
+
+# Auto-repair what's safe to repair (double-escaped math, unbalanced \[ blocks,
+# inline font-size overrides, display math wrapped in <p>, lazy-load offscreen
+# images), then audit again:
+./run format --fix
+
+# Rebuild HTML from markdown first, then audit:
+./run format --rerender
+
+# Combine for a one-shot "make it clean":
+./run format --rerender --fix
+
+# CI mode — exits non-zero on any warning:
+./run format --strict
+```
+
+A full JSON report lands at `output/<run_id>/format_audit.json` with file path, line number, severity, and one-line summary for every issue. The console prints a tree grouped by file. A clean run prints `every page passes every check`.
 
 ---
 

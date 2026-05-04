@@ -1,4 +1,4 @@
-"""Auxiliary CLI commands: list, doctor, render."""
+"""Auxiliary CLI commands: list, doctor, render, format."""
 from __future__ import annotations
 
 import json
@@ -220,6 +220,23 @@ def render_packet(run_id: str | None) -> int:
     console.print(f"[bold #c96442]▸ Rendering[/bold #c96442]")
     warnings = build_packet(target, manifest)
 
+    # Re-emit domain-tool pages too (chem/cs/ece reference cards). Their
+    # template lives outside packet.py so a plain build_packet() leaves
+    # them on whatever version the *original* run produced — including
+    # the old MathJax-loader template. Without this re-run, `./run render`
+    # silently leaves stale auxiliary pages, and `./run format` flags them
+    # as `katex_not_loaded`.
+    try:
+        from .tools import TOOLS
+        for tool in TOOLS:
+            try:
+                tool.run(target, manifest)
+            except Exception:  # noqa: BLE001
+                # Tool failures here aren't fatal — the packet itself is fine.
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
     problems = [w for w in warnings if w.severity != "info"]
     infos = [w for w in warnings if w.severity == "info"]
     if problems:
@@ -232,5 +249,98 @@ def render_packet(run_id: str | None) -> int:
     else:
         extra = f" [dim]({len(infos)} normalizations applied)[/dim]" if infos else ""
         console.print(f"  [green]✓[/green] HTML packet built cleanly{extra}")
+
+    # Auto-run the format audit + safe autofixes on every render. The audit is
+    # cheap (string-only, no API calls) and idempotent on a clean packet, so
+    # there's no reason not to. This is what guarantees that the file on disk
+    # is in a state the user can open and read — not just that the renderer
+    # produced bytes. A regression that sneaks through the renderer (e.g. the
+    # collapsed-`'\\('` KaTeX delimiter bug) gets surfaced here instead of
+    # silently shipping to the browser.
+    from .render.format_audit import audit, render_report
+    result = audit(target, apply_fixes=True)
+    if result.fixes_applied or result.errors or result.warnings:
+        render_report(console, result, target)
+    else:
+        console.print(f"  [green]✓[/green] format audit clean ({result.files_scanned} pages)")
     console.print(f"  [dim]open[/dim] [white]{target}/index.html[/white]")
+    return 0
+
+
+# ── format ────────────────────────────────────────────────────────
+
+
+def _resolve_run_dir(run_id: str | None) -> Path | None:
+    """Locate the target run dir by id, or fall back to the most recent.
+    Returns None and prints to console if nothing matches; the caller
+    should treat that as a fatal CLI error."""
+    console = Console()
+    if not OUTPUT.exists():
+        console.print("[red]✗[/red] output/ does not exist yet — generate a run first.")
+        return None
+    runs = sorted(d for d in OUTPUT.iterdir() if d.is_dir() and d.name.startswith("run_"))
+    if not runs:
+        console.print("[red]✗[/red] no runs in output/.")
+        return None
+    if run_id:
+        target = OUTPUT / run_id
+        if not target.exists():
+            console.print(f"[red]✗[/red] run '{run_id}' not found.")
+            console.print("[dim]available:[/dim]")
+            for r in runs:
+                console.print(f"  - {r.name}")
+            return None
+        return target
+    return runs[-1]
+
+
+def format_packet(
+    run_id: str | None,
+    *,
+    apply_fixes: bool = False,
+    strict: bool = False,
+    rerender: bool = False,
+) -> int:
+    """Audit + optionally repair every HTML page under output/<run_id>/.
+
+    Read-only by default. Pass `--fix` to apply safe in-place repairs;
+    pass `--rerender` to rebuild HTML from markdown first (picks up CSS /
+    template changes). `--strict` returns non-zero on any non-info issue
+    so CI / automation can gate on a clean packet.
+    """
+    console = Console()
+    target = _resolve_run_dir(run_id)
+    if target is None:
+        return 1
+    if not run_id:
+        console.print(f"[dim]auditing most recent run:[/dim] [cyan]{target.name}[/cyan]")
+
+    if rerender:
+        console.print(f"[bold #c96442]▸ Rendering[/bold #c96442]  [dim](pre-format)[/dim]")
+        manifest_path = target / "manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except json.JSONDecodeError as e:
+                console.print(f"[red]✗[/red] manifest.json invalid: {e}")
+                return 1
+            from .render.packet import build_packet
+            build_packet(target, manifest)
+        else:
+            console.print(f"[yellow]⚠[/yellow] manifest.json missing; skipping rerender")
+
+    from .render.format_audit import audit, render_report
+    result = audit(target, apply_fixes=apply_fixes)
+    render_report(console, result, target)
+
+    if apply_fixes and result.fixes_applied:
+        console.print(
+            f"\n  [dim]tip:[/dim] re-run with [cyan]--rerender[/cyan] to also pick up any "
+            "CSS / template changes."
+        )
+
+    if strict and (result.errors or result.warnings):
+        return 2
+    if result.errors:
+        return 1
     return 0

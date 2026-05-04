@@ -1009,6 +1009,26 @@ class Orchestrator:
         else:
             extra = f" [dim]({len(infos)} normalizations applied)[/dim]" if infos else ""
             self.console.print(f"  [{RICH_OK}]✓[/{RICH_OK}] HTML packet built cleanly{extra}")
+
+        # Audit + autofix every page before declaring the packet "done". Cheap
+        # post-render check that catches regressions the renderer itself can't
+        # see — broken KaTeX delim config, double-escaped math, raw `\\[…\\]`
+        # left in `<pre>`, dangling `<font>` tags, etc. Idempotent on a clean
+        # packet so re-running costs nothing.
+        try:
+            from .render.format_audit import audit, render_report
+            result = audit(self.paths.root, apply_fixes=True)
+            if result.errors or result.warnings or result.fixes_applied:
+                render_report(self.console, result, self.paths.root)
+            else:
+                self.console.print(
+                    f"  [{RICH_OK}]✓[/{RICH_OK}] format audit clean ({result.files_scanned} pages)"
+                )
+        except Exception as e:  # noqa: BLE001
+            # Audit failures are not packet failures — log and continue.
+            self.logger.warning("format audit failed: %s", e)
+            self.console.print(f"  [yellow]⚠[/yellow] format audit failed: {type(e).__name__}: {e}")
+
         self.console.print(f"  [dim]open[/dim] [white]{self.paths.root / 'index.html'}[/white]")
 
     @staticmethod

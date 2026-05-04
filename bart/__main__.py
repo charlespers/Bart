@@ -61,6 +61,20 @@ def build_parser() -> argparse.ArgumentParser:
     rndr = sub.add_parser("render", help="Re-render an existing run's HTML packet (no API calls).")
     rndr.add_argument("run_id", nargs="?", help="Run id (folder name in output/). Defaults to most recent.")
 
+    fmt = sub.add_parser(
+        "format",
+        help="Audit and auto-fix formatting/layout issues across every HTML page in a run "
+             "(no API calls). Verifies KaTeX wiring, math balance, asset paths, font/spacing "
+             "rules, accessibility basics, and library-block structural invariants.",
+    )
+    fmt.add_argument("run_id", nargs="?", help="Run id. Defaults to most recent.")
+    fmt.add_argument("--fix", action="store_true",
+                     help="Apply safe auto-repairs in place (otherwise read-only).")
+    fmt.add_argument("--strict", action="store_true",
+                     help="Exit non-zero if any warning is found (CI mode).")
+    fmt.add_argument("--rerender", action="store_true",
+                     help="Re-render the packet from markdown after fixing — picks up CSS/template changes.")
+
     return p
 
 
@@ -70,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     # If the user typed bare `./run` (or any flags but no subcommand), default
     # the subcommand to `run`. This makes the run-subcommand's flags available
     # on the namespace even when the user didn't type the word "run".
-    known_cmds = {"run", "setup", "list", "doctor", "render"}
+    known_cmds = {"run", "setup", "list", "doctor", "render", "format"}
     if not argv or argv[0] not in known_cmds:
         argv = ["run", *argv]
     args = build_parser().parse_args(argv)
@@ -95,6 +109,15 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "render":
         from .commands import render_packet
         return render_packet(getattr(args, "run_id", None))
+
+    if cmd == "format":
+        from .commands import format_packet
+        return format_packet(
+            run_id=getattr(args, "run_id", None),
+            apply_fixes=getattr(args, "fix", False),
+            strict=getattr(args, "strict", False),
+            rerender=getattr(args, "rerender", False),
+        )
 
     if cmd == "run":
         reconfigure = getattr(args, "reconfigure", False)
