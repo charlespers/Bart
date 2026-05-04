@@ -32,13 +32,51 @@ def _attr(name: str, value: Any) -> str:
     return f' {name}="{_esc(str(value), quote=True)}"'
 
 
+_ENT_RE = _re.compile(
+    r"&(?:#\d+|#x[0-9a-fA-F]+|amp|lt|gt|quot|apos|nbsp);"
+) if False else None
+import re as _re_local
+_ENT_RE = _re_local.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|amp|lt|gt|quot|apos|nbsp);")
+
+
+def _esc_math_inner(tex: str) -> str:
+    """HTML-escape `<`, `>`, `&` inside a math TeX string.
+
+    KaTeX decodes `&lt;` / `&gt;` / `&amp;` at render time, so escaping
+    here is safe and `\\(T_1<T_2\\)` still displays as the inequality.
+    The HTML parser, however, treats a bare `<T_2` as the start of a tag
+    and consumes characters until the next `>` (often inside a
+    `</div>` somewhere downstream), eating closing tags and pushing the
+    rest of the page into bogus nested layout. Escaping at the source —
+    every place `_inline_math` / `_block_math` is used — closes that
+    class of bug. Already-encoded entities (`&lt;`, numeric refs) pass
+    through untouched.
+    """
+    sentinels: list[str] = []
+
+    def _stash(m):
+        sentinels.append(m.group(0))
+        return f"\x00E{len(sentinels) - 1}\x00"
+
+    masked = _ENT_RE.sub(_stash, tex)
+    masked = masked.replace("&", "&amp;")
+    masked = masked.replace("<", "&lt;").replace(">", "&gt;")
+    return _re_local.sub(
+        r"\x00E(\d+)\x00",
+        lambda m: sentinels[int(m.group(1))],
+        masked,
+    )
+
+
 def _inline_math(tex: str) -> str:
-    """Wrap a LaTeX string for KaTeX inline rendering."""
-    return f"\\({tex}\\)"
+    """Wrap a LaTeX string for KaTeX inline rendering. HTML-escapes
+    `<`/`>`/`&` inside the TeX so a bare `<T_2` can't be parsed as a
+    bogus tag."""
+    return f"\\({_esc_math_inner(tex)}\\)"
 
 
 def _block_math(tex: str) -> str:
-    return f"\\[{tex}\\]"
+    return f"\\[{_esc_math_inner(tex)}\\]"
 
 
 import re as _re

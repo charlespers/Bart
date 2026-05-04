@@ -1235,11 +1235,27 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
             ))
 
     # ── Stage 3: regular check pass over (possibly rebuilt) HTML ──
+    # If rebuild ran in stage 2, the post-rebuild HTML may still have
+    # patterns that the cheap string fixes can repair (e.g. a `\(t<0\)`
+    # that the lib_blocks helpers emitted before our post-expansion
+    # escape pass landed). Apply the fix list one more time on top of
+    # the rebuilt HTML so the on-disk file is fully repaired.
     for path in file_paths:
         if path not in file_html:
             continue
         rel = str(path.relative_to(run_dir))
         html = file_html[path]
+
+        if apply_fixes and needs_rerender:
+            for kind, fix in _FIXES:
+                html, n = fix(html)
+                if n:
+                    result.fixes_applied += n
+                    result.issues.append(AuditIssue(
+                        rel, f"fixed:{kind}", f"applied {n} repair(s) (post-rebuild)",
+                        "info", fix_applied=True,
+                    ))
+
         for check in _CHECKS:
             try:
                 result.issues.extend(check(rel, html))

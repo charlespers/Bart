@@ -450,9 +450,22 @@ def _render_one(
     # — exactly the fingerprint that makes python-markdown bundle them as a
     # single raw-HTML region and never convert the heading. This second pass
     # inserts the blank line that breaks that adjacency.
-    from .sanitize import _pad_blocks_around_headings_and_rules
+    from .sanitize import (
+        _pad_blocks_around_headings_and_rules,
+        _escape_html_in_math,
+    )
     sanitized, pad_warns = _pad_blocks_around_headings_and_rules(sanitized)
     for w in pad_warns:
+        warnings.append(Warning(src.name, w.kind, w.detail, "info"))
+
+    # Same reasoning for the math-HTML-escape: when the author writes
+    # `\(T_1<T_2\)` inside a `bart-trap-callout` JSON `body`, the pre-
+    # expansion sanitize pass treats the fence as code and skips it. Once
+    # expand_blocks() has unwrapped the JSON and inlined the body into raw
+    # HTML, the literal `<T_2\)` is in prose and the HTML parser will eat
+    # the next closing tag. Re-running the escape here catches those.
+    sanitized, esc_warns = _escape_html_in_math(sanitized)
+    for w in esc_warns:
         warnings.append(Warning(src.name, w.kind, w.detail, "info"))
 
     # ── Format guardrail (pre-render) — auto-repair common issues that
