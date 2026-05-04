@@ -39,7 +39,7 @@ from .blocks import (
 from .compose import Page
 from .block_expand import expand_blocks
 from .markdown import RenderWarning, render
-from .optimize import has_math, minify_html
+from .optimize import has_chem, has_math, minify_html
 from .page import assemble_page
 from .sanitize import SanitizeWarning, normalize_md
 
@@ -441,6 +441,7 @@ def _render_one(
     })
 
     needs_math = has_math(body_html)
+    needs_chem = has_chem(body_html)
     full_html = assemble_page(
         body=body_html,
         title=title,
@@ -452,6 +453,7 @@ def _render_one(
         extra_crumb=extra_crumb,
         pager_html=pager_html,
         needs_math=needs_math,
+        needs_chem=needs_chem,
     )
 
     warnings.extend([Warning(src.name, w.kind, w.detail) for w in _validate_html(full_html, src.name)])

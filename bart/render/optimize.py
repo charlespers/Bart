@@ -22,68 +22,76 @@ import re
 # correctly without flash-of-unstyled. Kept tight — full styles load after.
 CRITICAL_CSS = """
 :root {
-  --cream: #f4f1ea; --cream-hi: #fbf9f4; --cream-lo: #d9d3c4;
+  --paper: #f4f1ea; --paper-hi: #fbf9f4; --paper-lo: #ebe6d8;
+  --rule: #d9d3c4;
   --ink: #221f1b; --ink-soft: #3a342d; --ink-mute: #6d655a;
   --accent: #c96442; --accent-hi: #e88a6a; --accent-lo: #9a4628;
-  --border: var(--cream-lo); --bg: var(--cream); --fg: var(--ink);
+  --cream: var(--paper); --cream-hi: var(--paper-hi); --cream-lo: var(--rule);
+  --border: var(--rule); --bg: var(--paper); --fg: var(--ink);
   --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Source Serif 4", "Iowan Old Style", "Source Serif Pro", Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-hand: "Caveat", "Bradley Hand", cursive;
 }
 @media (prefers-color-scheme: dark) {
   [data-theme="auto"] {
     --bg: #1a1815; --fg: #e6e1d6; --border: #322e29;
-    --ink: #e6e1d6; --ink-soft: #c8c1b3; --cream-hi: rgba(255,255,255,0.025);
+    --ink: #e6e1d6; --ink-soft: #c8c1b3; --paper-hi: rgba(255,255,255,0.025);
+    --cream-hi: var(--paper-hi);
   }
 }
 [data-theme="dark"] {
   --bg: #1a1815; --fg: #e6e1d6; --border: #322e29;
-  --ink: #e6e1d6; --ink-soft: #c8c1b3; --cream-hi: rgba(255,255,255,0.025);
+  --ink: #e6e1d6; --ink-soft: #c8c1b3; --paper-hi: rgba(255,255,255,0.025);
+  --cream-hi: var(--paper-hi);
 }
 * { box-sizing: border-box; }
 html, body {
   margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   font-family: var(--font-body); font-size: 17px; line-height: 1.7;
-  -webkit-font-smoothing: antialiased;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
 }
-.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100vh; }
+.layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
 .sidebar {
-  padding: 24px 18px;
-  border-right: 1px solid var(--border);
+  padding: 28px 22px 40px;
+  border-right: 1px solid var(--border); background: var(--bg);
   position: sticky; top: 0; max-height: 100vh; overflow-y: auto;
 }
-.content { padding: 40px clamp(24px, 4vw, 64px) 96px; }
+.content { padding: 48px clamp(24px, 4vw, 64px) 96px; min-width: 0; }
 .topbar {
   display: flex; justify-content: space-between; align-items: center;
   padding: 12px 32px; border-bottom: 1px solid var(--border);
 }
+/* Body prose is set in serif so equations + prose share a typographic family,
+   matching the design library's Source Serif 4 default. Headings stay sans
+   for the editorial contrast pictured in library.html's PageHeader. */
 article {
-  max-width: 920px;
+  max-width: 880px;
   margin: 0 auto;
   font-family: var(--font-serif);
-  font-size: 17.5px;
-  line-height: 1.72;
+  font-size: 17px;
+  line-height: 1.7;
 }
-article h1 {
-  font-family: var(--font-body);
-  font-size: 40px; font-weight: 700; letter-spacing: -0.025em;
-  margin: 0 0 14px;
+article p { margin: 0 0 1.4rem; text-wrap: pretty; }
+article h1, article h2, article h3, article h4 {
+  font-family: var(--font-body); font-weight: 700;
+  letter-spacing: -0.015em; line-height: 1.25; color: var(--fg);
+  scroll-margin-top: 80px;
 }
+article h1 { font-size: 38px; margin: 0 0 8px; letter-spacing: -0.025em; }
 article h2 {
-  font-family: var(--font-body);
-  font-size: 26px; font-weight: 700; margin: 56px 0 14px;
-  padding-top: 28px; border-top: 1px solid var(--border);
-  letter-spacing: -0.015em;
+  font-size: 26px; margin: 56px 0 12px; padding-top: 28px;
+  border-top: 1px solid var(--border);
 }
-article h2:first-of-type { border-top: 0; padding-top: 0; }
-article h3 {
-  font-family: var(--font-body);
-  font-size: 19px; font-weight: 600; margin: 36px 0 8px;
-  letter-spacing: -0.01em;
-}
-article p { margin: 0 0 1.3em; }
+article h2:first-of-type { border-top: 0; padding-top: 0; margin-top: 36px; }
+article h3 { font-size: 20px; margin: 36px 0 10px; }
+article h4 { font-size: 17px; margin: 24px 0 8px; color: var(--ink-soft); }
 .hero { padding: 64px 0 48px; border-bottom: 1px solid var(--border); margin-bottom: 56px; }
-.hero h1 { font-size: 56px; }
+.hero h1 { font-size: 56px; letter-spacing: -0.035em; }
 .hero h1 .dot { color: var(--accent); }
+/* Pre-load reservation for KaTeX-rendered display math: prevents the row
+   collapsing to zero before the script runs, which would jump the page. */
+.katex-display { margin: 1.4em 0 !important; min-height: 1.6em; }
 @media (max-width: 1100px) {
   article { max-width: 760px; }
 }
@@ -106,9 +114,32 @@ LAZY_STYLESHEET = (
 
 
 def has_math(html: str) -> bool:
-    """Cheap detection of math content in rendered HTML."""
-    # arithmatex emits <span class="arithmatex"> for inline and <div class="arithmatex"> for block.
-    return 'class="arithmatex"' in html
+    """Cheap detection of math content in rendered HTML.
+
+    Two emission paths produce math: (1) python-markdown's arithmatex extension
+    wraps `$…$` / `$$…$$` in <span class="arithmatex">, and (2) the design-library
+    blocks (formula_card, worked_example, etc.) emit raw `\\(…\\)` / `\\[…\\]`
+    LaTeX directly. We must load KaTeX whenever EITHER appears, otherwise the
+    custom-block equations ship as unrendered source. `\\ce{` catches mhchem
+    chemistry equations so they trigger the same loader.
+    """
+    if 'class="arithmatex"' in html:
+        return True
+    if "\\(" in html or "\\[" in html:
+        return True
+    if "\\ce{" in html or "\\pu{" in html:
+        return True
+    return False
+
+
+def has_chem(html: str) -> bool:
+    """True if the HTML contains mhchem-style chemistry expressions.
+
+    Triggers loading the mhchem KaTeX plugin alongside the base bundle.
+    `\\ce{…}` is chemical-equation notation; `\\pu{…}` is physical-unit
+    notation — both are mhchem macros and will throw if the plugin is absent.
+    """
+    return "\\ce{" in html or "\\pu{" in html
 
 
 _HTML_COMMENT_RE = re.compile(r"<!--(?!\[).*?-->", re.DOTALL)

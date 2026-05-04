@@ -34,10 +34,12 @@ _KATEX_BASE_URL = f"https://cdn.jsdelivr.net/npm/katex@{KATEX_VERSION}/dist"
 KATEX_CSS_CDN = f"{_KATEX_BASE_URL}/katex.min.css"
 KATEX_JS_CDN = f"{_KATEX_BASE_URL}/katex.min.js"
 KATEX_AUTORENDER_CDN = f"{_KATEX_BASE_URL}/contrib/auto-render.min.js"
+KATEX_MHCHEM_CDN = f"{_KATEX_BASE_URL}/contrib/mhchem.min.js"
 _KATEX_FILES = [
     ("katex.min.css", f"{_KATEX_BASE_URL}/katex.min.css"),
     ("katex.min.js",  f"{_KATEX_BASE_URL}/katex.min.js"),
     ("auto-render.min.js", f"{_KATEX_BASE_URL}/contrib/auto-render.min.js"),
+    ("mhchem.min.js", f"{_KATEX_BASE_URL}/contrib/mhchem.min.js"),
 ]
 # Anything below this size is the failure stub or a partial download.
 _STUB_THRESHOLD_BYTES = 50_000

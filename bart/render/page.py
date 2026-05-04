@@ -16,17 +16,29 @@ from typing import Iterable
 # shift. We bundle it locally and CDN-fall-back at load time, identical
 # to the MathJax pattern that came before.
 _KATEX_AUTORENDER_CONFIG = """
-document.addEventListener('DOMContentLoaded', function () {
-  if (!window.renderMathInElement) return;
-  window.renderMathInElement(document.body, {
-    delimiters: [
-      {left: '\\\\(', right: '\\\\)', display: false},
-      {left: '\\\\[', right: '\\\\]', display: true}
-    ],
-    throwOnError: false,
-    output: 'html'
-  });
-});
+(function () {
+  function run() {
+    if (!window.renderMathInElement) return;
+    window.renderMathInElement(document.body, {
+      delimiters: [
+        {left: '\\\\(', right: '\\\\)', display: false},
+        {left: '\\\\[', right: '\\\\]', display: true},
+        {left: '$$', right: '$$', display: true}
+      ],
+      ignoredTags: ['script','noscript','style','textarea','pre','code'],
+      ignoredClasses: ['no-katex'],
+      throwOnError: false,
+      strict: 'ignore',
+      trust: function (ctx) { return ['\\\\htmlId','\\\\href'].includes(ctx.command); },
+      output: 'html'
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', run);
+  } else {
+    run();
+  }
+})();
 """
 
 # Legacy MathJax constant kept for backward-compat in case external callers
@@ -230,12 +242,18 @@ def assemble_page(
     extra_crumb: str = "",
     pager_html: str = "",
     needs_math: bool = False,
+    needs_chem: bool = False,
 ) -> str:
     """Wrap the rendered body in the full template.
 
-    `needs_math`: if False, skip injecting the MathJax loader script. Saves
-    ~1.2 MB of blocking-ish JS on math-free pages (notably the index, the
-    short study guide, and many whimsy pages).
+    `needs_math`: if False, skip injecting the KaTeX loader script. Saves
+    ~280 KB of CSS+JS on math-free pages (notably the index and many whimsy
+    pages).
+
+    `needs_chem`: if True, additionally load the KaTeX mhchem extension so
+    `\\ce{H2SO4}` and `\\pu{1.5 J}` render as proper chemical-equation /
+    physical-unit notation. Needed only when the body actually uses these
+    macros — adds ~30 KB.
     """
     from .optimize import CRITICAL_CSS, LAZY_STYLESHEET
 
@@ -251,20 +269,30 @@ def assemble_page(
     if needs_math:
         from .assets import (
             KATEX_CSS_CDN, KATEX_JS_CDN, KATEX_AUTORENDER_CDN,
+            KATEX_MHCHEM_CDN,
         )
-        # KaTeX: stylesheet + main JS + auto-render extension. Each <script>
-        # has an onerror that swaps to the CDN if the local bundle is missing
-        # or was a fetch-failure stub.
+        # KaTeX: stylesheet + main JS + (optional mhchem) + auto-render extension.
+        # Order is load-bearing: mhchem must register itself on `window.katex`
+        # AFTER katex.min.js but BEFORE auto-render parses the document, or
+        # `\ce{}` macros will fall through and stay as raw source.
+        # Each <script> has an onerror that swaps to the CDN if the local
+        # bundle is missing or was a fetch-failure stub.
+        chem_script = (
+            f'<script defer src="{rel_root}/lib/katex/mhchem.min.js" '
+            f'onerror="(function(){{var s=document.createElement(\'script\');'
+            f's.src=\'{KATEX_MHCHEM_CDN}\';s.defer=true;document.head.appendChild(s);}})();"></script>'
+        ) if needs_chem else ""
         math_block = (
             f'<link rel="stylesheet" href="{rel_root}/lib/katex/katex.min.css" '
             f'onerror="this.onerror=null;this.href=\'{KATEX_CSS_CDN}\';">'
             f'<script defer src="{rel_root}/lib/katex/katex.min.js" '
             f'onerror="(function(){{var s=document.createElement(\'script\');'
             f's.src=\'{KATEX_JS_CDN}\';s.defer=true;document.head.appendChild(s);}})();"></script>'
+            f'{chem_script}'
             f'<script defer src="{rel_root}/lib/katex/auto-render.min.js" '
             f'onerror="(function(){{var s=document.createElement(\'script\');'
             f's.src=\'{KATEX_AUTORENDER_CDN}\';s.defer=true;document.head.appendChild(s);}})();"></script>'
-            f'<script>{_KATEX_AUTORENDER_CONFIG}</script>'
+            f'<script defer>{_KATEX_AUTORENDER_CONFIG}</script>'
         )
     else:
         math_block = "<!-- no math on this page; KaTeX skipped -->"
