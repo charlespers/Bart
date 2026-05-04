@@ -264,14 +264,33 @@ def _check_worked_example_quality(html: str) -> List[FormatWarning]:
 
 
 def _check_concept_build_arc(html: str) -> List[FormatWarning]:
+    """Flag concept-build blocks whose teaching arc is too thin.
+
+    The previous regex `<div class="b-concept-build">(.*?)</div>\\s*</div>`
+    stopped at the FIRST `</div></div>` pair, which is the header — never
+    capturing any rungs. We now match the whole block by walking depth
+    from each opening `<div class="b-concept-build">` until balanced, then
+    count rungs inside.
+    """
     warns: List[FormatWarning] = []
-    builds = re.findall(
-        r'<div class="b-concept-build">(.*?)</div>\s*</div>',
-        html, re.DOTALL,
-    )
     thin = 0
-    for b in builds:
-        rungs = len(re.findall(r'class="b-concept-build-rung', b))
+    for m in re.finditer(r'<div class="b-concept-build">', html):
+        start = m.end()
+        depth = 1
+        i = start
+        while depth > 0 and i < len(html):
+            o = html.find("<div", i)
+            c = html.find("</div>", i)
+            if c < 0:
+                break
+            if 0 <= o < c:
+                depth += 1
+                i = o + 4
+            else:
+                depth -= 1
+                i = c + 6
+        body = html[start:i]
+        rungs = len(re.findall(r'class="b-concept-build-rung\b', body))
         if rungs <= 1:
             thin += 1
     if thin:
