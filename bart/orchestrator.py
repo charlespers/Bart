@@ -226,18 +226,22 @@ class Orchestrator:
             # Solver lives in the brief context — it doesn't need the full corpus.
             solver = SolverAgent(brief_ctx)
 
-            # ── Per-run sidecar primitives (notation card + problem index).
-            # Both are independent corpus reads → run them in parallel for
-            # ~2x faster sidecar extraction.
-            with ThreadPoolExecutor(max_workers=2) as _sidecar_pool:
+            # ── Per-run sidecar primitives (notation card, problem index,
+            # exam patterns). Three independent corpus reads → run them in
+            # parallel for ~3x faster sidecar extraction.
+            with ThreadPoolExecutor(max_workers=3) as _sidecar_pool:
                 _f_notation = _sidecar_pool.submit(
                     self._extract_notation_card, corpus_brief, brief_ctx,
                 )
                 _f_problems = _sidecar_pool.submit(
                     self._extract_problem_index, full_ctx,
                 )
+                _f_exam = _sidecar_pool.submit(
+                    self._extract_exam_patterns, full_ctx,
+                )
                 notation_card = _f_notation.result()
                 problem_index = _f_problems.result()
+                exam_patterns = _f_exam.result()
 
             today = date.today()
             today_iso = today.isoformat()
@@ -501,6 +505,36 @@ class Orchestrator:
         index = agent.index()
         atomic_write_json(path, index)
         return index
+
+    def _extract_exam_patterns(self, full_ctx: AgentContext) -> dict[str, Any]:
+        import os
+        path = self.paths.checkpoints_dir / "exam_patterns.json"
+        if path.exists() and path.stat().st_size > 10:
+            try:
+                data = json.loads(path.read_text())
+                self.console.print(
+                    f"  [dim]✓ reused exam patterns "
+                    f"({len(data.get('problems', []))} problems)[/dim]"
+                )
+                return data
+            except json.JSONDecodeError:
+                pass
+        if os.environ.get("BART_SKIP_EXAM_PATTERN") == "1":
+            from .agents.exam_pattern import EMPTY_PATTERNS
+            return dict(EMPTY_PATTERNS)
+        self.console.print(
+            f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing past-exam patterns "
+            f"[dim](haiku · cached for the rest of the run)[/dim]"
+        )
+        from .agents.exam_pattern import ExamPatternAgent, EMPTY_PATTERNS
+        try:
+            agent = ExamPatternAgent(full_ctx)
+            patterns = agent.extract()
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("exam_pattern extraction failed: %s", e)
+            patterns = dict(EMPTY_PATTERNS)
+        atomic_write_json(path, patterns)
+        return patterns
 
     def _extract_whimsy_index(self, brief_ctx: AgentContext) -> dict[str, str]:
         path = self.paths.checkpoints_dir / "whimsy_index.json"
