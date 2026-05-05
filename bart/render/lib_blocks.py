@@ -1099,14 +1099,33 @@ def annotated_quote(
 def drag_order(
     *,
     prompt: str,
-    items: list[dict[str, Any]],
-    correct_order: list[Any],
+    items: list[Any],
+    correct_order: list[Any] | None = None,
+    **_extra: Any,
 ) -> str:
     """<DragOrder> — draggable list; lib_blocks.js grades against `correct_order`.
 
-    `items`: [{id, label}]. `correct_order`: list of item ids in canonical sequence.
+    `items` accepts either `[{id, label}]` or `[label_str, ...]`. When items are
+    plain strings, ids are auto-assigned by index and the supplied order is
+    treated as the canonical sequence (so authors can omit `correct_order`).
+    `correct_order`: list of item ids in canonical sequence — optional when
+    items are strings.
+    `**_extra` swallows author-friendly extras like `explanation` / `label`
+    that other quiz blocks accept; they're rendered no-op here rather than
+    crashing the page.
     """
     import json as _json
+    norm_items: list[dict[str, Any]] = []
+    for i, it in enumerate(items):
+        if isinstance(it, dict):
+            norm_items.append({
+                "id": str(it.get("id", str(i))),
+                "label": str(it.get("label", "")),
+            })
+        else:
+            norm_items.append({"id": str(i), "label": str(it)})
+    if correct_order is None or not correct_order:
+        correct_order = [d["id"] for d in norm_items]
     correct_json = _json.dumps([str(x) for x in correct_order])
     parts: list[str] = [
         f'<div class="b-drag-order" data-drag-order data-correct=\'{_esc(correct_json, quote=True)}\'>'
@@ -1115,13 +1134,13 @@ def drag_order(
         f'{_esc(prompt)}</div>'
         '<ol class="b-drag-list">'
     ]
-    for i, it in enumerate(items):
-        item_id = _esc(str(it.get("id", "")), quote=True)
+    for i, it in enumerate(norm_items):
+        item_id = _esc(it["id"], quote=True)
         parts.append(
             f'<li class="b-drag-item" draggable="true" data-id="{item_id}">'
             f'<span class="b-drag-idx">{i+1}.</span>'
             f'<span class="b-drag-handle" aria-hidden="true">≡≡</span>'
-            f'<span class="b-drag-label">{_esc(it.get("label", ""))}</span>'
+            f'<span class="b-drag-label">{_esc(it["label"])}</span>'
             f'<span class="b-drag-state" data-state></span>'
             f'</li>'
         )
@@ -1302,24 +1321,46 @@ def parameter_slider(
 def build_equation(
     *,
     prompt: str,
-    tokens: list[dict[str, Any]],
-    correct: list[Any],
+    tokens: list[Any],
+    correct: list[Any] | None = None,
+    answer: Any = None,
+    **_extra: Any,
 ) -> str:
     """<BuildEquation> — drag/click chips to assemble an expression.
 
-    `tokens`: [{id, label, math?}]. If `math` is set, the chip renders that
-    LaTeX inline (instead of `label`). `correct`: list of token ids in order.
+    `tokens` accepts either `[{id, label, math?}]` or `[label_str, ...]`. If
+    `math` is set on a dict token, the chip renders that LaTeX inline.
+    `correct`: list of token ids in order — optional when tokens are strings
+    (defaults to the supplied order).
+    `answer`: alternate spelling some authors use; if `correct` is omitted but
+    `answer` is provided as a list of token ids, it's used as the answer.
+    `**_extra` swallows author-friendly extras (`explanation`, `label`, …)
+    rather than crashing the page.
     """
     import json as _json
+    norm_tokens: list[dict[str, Any]] = []
+    for i, tk in enumerate(tokens):
+        if isinstance(tk, dict):
+            norm_tokens.append({
+                "id": str(tk.get("id", str(i))),
+                "label": str(tk.get("label", "")),
+                "math": tk.get("math"),
+            })
+        else:
+            norm_tokens.append({"id": str(i), "label": str(tk), "math": None})
+    if (correct is None or not correct) and isinstance(answer, list):
+        correct = answer
+    if correct is None or not correct:
+        correct = [t["id"] for t in norm_tokens]
     correct_json = _json.dumps([str(x) for x in correct])
 
     chips: list[str] = []
-    for tk in tokens:
-        token_id = _esc(str(tk.get("id", "")), quote=True)
+    for tk in norm_tokens:
+        token_id = _esc(tk["id"], quote=True)
         if tk.get("math"):
             content = _inline_math(tk["math"])
         else:
-            content = _esc(tk.get("label", ""))
+            content = _esc(tk["label"])
         chips.append(
             f'<button class="b-chip" data-token="{token_id}">{content}</button>'
         )
