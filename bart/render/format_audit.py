@@ -218,6 +218,12 @@ def _check_math_balance(rel: str, html: str) -> list[AuditIssue]:
 _DOUBLE_ESCAPED = re.compile(
     r"\\\\(\(|\)|\[(?!\d+\s*(?:pt|em|in|mm|cm|ex|sp|pc|bp|dd|cc)\b)|\])"
 )
+# Multi-escaped delimiter: any even count of backslashes (≥ 2) followed by
+# a math delimiter. Catches `\\\\(`, `\\\\\\(`, etc. emitted by pipelines
+# that JSON-escaped twice or more before reaching the renderer.
+_MULTI_ESCAPED = re.compile(
+    r"(?:\\\\){2,}(\(|\)|\[(?!\d+\s*(?:pt|em|in|mm|cm|ex|sp|pc|bp|dd|cc)\b)|\])"
+)
 
 
 def _check_double_escaped_math(rel: str, html: str) -> list[AuditIssue]:
@@ -230,6 +236,77 @@ def _check_double_escaped_math(rel: str, html: str) -> list[AuditIssue]:
         f"{len(hits)} double-escaped delimiter(s) (`\\\\(`, `\\\\[`, …) — KaTeX won't render these",
         "error",
         line=_line_of(html, hits[0].start()),
+    )]
+
+
+def _check_dollar_math(rel: str, html: str) -> list[AuditIssue]:
+    """Flag `$x$` / `$$x$$` math that KaTeX won't render under our config."""
+    body = _strip_protected(html)
+    body_no_spans = _MATH_SPAN_RE.sub("", body)
+    body_no_tags = re.sub(r"<[^>]+>", "", body_no_spans)
+    hits = 0
+    for m in _INLINE_DOLLAR_RE.finditer(body_no_tags):
+        if _MATH_CONTENT_HINT.search(m.group(1)):
+            hits += 1
+    for m in _DISPLAY_DOLLAR_RE.finditer(body_no_tags):
+        if _MATH_CONTENT_HINT.search(m.group(1)):
+            hits += 1
+    if not hits:
+        return []
+    return [AuditIssue(
+        rel, "dollar_math",
+        f"{hits} `$…$` / `$$…$$` math span(s) — KaTeX is configured for "
+        f"`\\(…\\)` and `\\[…\\]` delimiters",
+        "error",
+    )]
+
+
+def _check_empty_math_span(rel: str, html: str) -> list[AuditIssue]:
+    body = _strip_protected(html)
+    hits = list(_EMPTY_MATH_RE.finditer(body))
+    if not hits:
+        return []
+    return [AuditIssue(
+        rel, "empty_math_span",
+        f"{len(hits)} empty math span(s) — KaTeX prints a parse error in red",
+        "error",
+        line=_line_of(html, hits[0].start()),
+    )]
+
+
+def _check_html_entity_in_math(rel: str, html: str) -> list[AuditIssue]:
+    body = _strip_protected(html)
+    hits = 0
+    for m in _MATH_SPAN_RE.finditer(body):
+        s = m.group(0)
+        if _HTML_ENT_BACKSLASH.search(s) or _HTML_ENT_AMP.search(s) \
+                or _HTML_ENT_LT.search(s) or _HTML_ENT_GT.search(s):
+            hits += 1
+    if not hits:
+        return []
+    return [AuditIssue(
+        rel, "html_entity_in_math",
+        f"{hits} math span(s) contain HTML entities (`&amp;`, `&#x5C;`, …) — "
+        f"KaTeX won't decode these",
+        "error",
+    )]
+
+
+def _check_mismatched_math_delim(rel: str, html: str) -> list[AuditIssue]:
+    body = _strip_protected(html)
+    hits = 0
+    for m in _MISMATCHED_OPEN_PAREN.finditer(body):
+        if len(m.group(1)) <= 200 and "\\(" not in m.group(1) and "\\[" not in m.group(1):
+            hits += 1
+    for m in _MISMATCHED_OPEN_BRACKET.finditer(body):
+        if len(m.group(1)) <= 400 and "\\[" not in m.group(1) and "\\(" not in m.group(1):
+            hits += 1
+    if not hits:
+        return []
+    return [AuditIssue(
+        rel, "mismatched_math_delim",
+        f"{hits} math span(s) with mismatched delimiters (`\\(…\\]` or `\\[…\\)`)",
+        "error",
     )]
 
 
@@ -860,14 +937,19 @@ def _check_displaymath_inside_p(rel: str, html: str) -> list[AuditIssue]:
 
 
 def _fix_double_escaped_math(html: str) -> tuple[str, int]:
-    """Collapse `\\\\(`, `\\\\[`, etc. emitted by an over-eager JSON pipeline
-    back to the single-backslash form KaTeX expects.
+    """Collapse `\\\\(`, `\\\\[`, etc. — including triple/quadruple-escaped
+    forms emitted by an over-eager JSON pipeline — back to the single-
+    backslash form KaTeX expects.
 
     Skips `<script>`, `<style>`, `<pre>`, `<code>` regions: the JS auto-render
     config legitimately contains `'\\\\('` so JS string evaluation produces the
     literal `\\(` delimiter — collapsing that here would silently downgrade
     the delimiters to plain `(`/`)`/`[`/`]` and KaTeX would start eating
     parenthetical prose as inline math.
+
+    Two passes per chunk: first the multi-escape regex (`\\\\\\\\(` etc.),
+    then the standard double-escape regex. Both produce a single-backslash
+    delimiter so a downstream second invocation is unnecessary.
     """
     def _on(chunk: str) -> tuple[str, int]:
         n = 0
@@ -875,7 +957,9 @@ def _fix_double_escaped_math(html: str) -> tuple[str, int]:
             nonlocal n
             n += 1
             return "\\" + m.group(1)
-        return _DOUBLE_ESCAPED.sub(_repl, chunk), n
+        chunk = _MULTI_ESCAPED.sub(_repl, chunk)
+        chunk = _DOUBLE_ESCAPED.sub(_repl, chunk)
+        return chunk, n
     return _apply_outside_protected(html, _on)
 
 
@@ -1072,22 +1156,77 @@ def _fix_double_escaped_latex_commands(html: str) -> tuple[str, int]:
 
 # Conservative list of TeX commands that almost never appear in legitimate
 # English prose — when one shows up in unwrapped text, it's a math leak.
+# Order: longer command names first so the alternation matches greedily and
+# `\longrightarrow` doesn't get truncated to `\long`.
 _TEX_MATH_INDICATOR_CMDS = (
-    r"int|sum|prod|frac|sqrt|infty|partial|nabla|cdot|times|div|pm|mp|"
-    r"leq|geq|neq|approx|equiv|sim|propto|implies|iff|"
-    r"to|rightarrow|leftarrow|Rightarrow|Leftarrow|mapsto|"
+    # Operators / arithmetic
+    r"int|iint|iiint|oint|sum|prod|coprod|frac|dfrac|tfrac|binom|dbinom|tbinom|"
+    r"sqrt|cbrt|infty|partial|nabla|cdot|cdots|ldots|vdots|ddots|dots|"
+    r"times|div|pm|mp|ast|star|circ|bullet|"
+    r"oplus|otimes|odot|ominus|oslash|wedge|vee|cap|cup|"
+    # Relations / comparison
+    r"leq|geq|le|ge|ll|gg|neq|ne|approx|equiv|sim|simeq|cong|asymp|propto|"
+    r"implies|impliedby|iff|leftrightarrow|"
+    r"prec|succ|preceq|succeq|"
+    # Arrows
+    r"to|gets|rightarrow|leftarrow|Rightarrow|Leftarrow|Leftrightarrow|"
+    r"longrightarrow|longleftarrow|longleftrightarrow|"
+    r"Longrightarrow|Longleftarrow|Longleftrightarrow|"
+    r"xrightarrow|xleftarrow|xleftrightarrow|mapsto|hookrightarrow|hookleftarrow|"
+    # Greek lowercase
     r"alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|"
-    r"iota|kappa|lambda|mu|nu|xi|omicron|pi|varpi|rho|varrho|sigma|"
-    r"varsigma|tau|upsilon|phi|varphi|chi|psi|omega|"
+    r"iota|kappa|varkappa|lambda|mu|nu|xi|omicron|pi|varpi|rho|varrho|sigma|"
+    r"varsigma|tau|upsilon|phi|varphi|chi|psi|omega|digamma|"
+    # Greek uppercase
     r"Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|"
-    r"vec|hat|bar|tilde|dot|ddot|overline|underline|widehat|widetilde|"
-    r"sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|sinh|cosh|tanh|"
-    r"log|ln|exp|lim|sup|inf|max|min|arg|det|gcd|lcm|"
-    r"mathbb|mathbf|mathcal|mathrm|mathit|mathsf|mathtt|"
-    r"left|right|big|Big|bigg|Bigg|"
+    # Accents / decorations
+    r"vec|overrightarrow|overleftarrow|hat|widehat|bar|overline|underline|"
+    r"tilde|widetilde|dot|ddot|dddot|breve|grave|acute|check|mathring|"
+    r"overbrace|underbrace|overset|underset|stackrel|"
+    # Functions
+    r"sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|arccot|sinh|cosh|tanh|coth|"
+    r"log|ln|lg|exp|lim|liminf|limsup|sup|inf|max|min|arg|det|deg|gcd|lcm|"
+    r"ker|dim|hom|Pr|"
+    # Math fonts / styles
+    r"mathbb|mathbf|mathcal|mathfrak|mathrm|mathit|mathsf|mathtt|mathnormal|"
+    r"boldsymbol|bm|"
+    r"text|textit|textbf|textrm|textsf|texttt|textnormal|"
+    r"displaystyle|textstyle|scriptstyle|scriptscriptstyle|"
+    # Sizing / framing
+    r"left|right|big|Big|bigg|Bigg|biggl|biggr|bigl|bigr|"
+    r"boxed|framebox|fbox|underbrace|overbrace|"
+    # Environments
     r"begin|end|"
-    r"forall|exists|nexists|in|notin|subset|supset|cup|cap|emptyset|"
-    r"langle|rangle|lceil|rceil|lfloor|rfloor"
+    # Logic / sets
+    r"forall|exists|nexists|in|notin|ni|subset|supset|subseteq|supseteq|"
+    r"setminus|emptyset|varnothing|complement|"
+    # Delimiters
+    r"langle|rangle|lceil|rceil|lfloor|rfloor|lvert|rvert|lVert|rVert|"
+    r"vert|Vert|backslash|"
+    # Special symbols
+    r"aleph|beth|hbar|ell|Re|Im|imath|jmath|wp|"
+    r"prime|dagger|ddagger|S|P|copyright|pounds|"
+    r"square|blacksquare|triangle|triangleleft|triangleright|"
+    r"diamond|lozenge|spadesuit|heartsuit|diamondsuit|clubsuit|"
+    r"angle|measuredangle|sphericalangle|degree|"
+    # Modular / number theory
+    r"mod|bmod|pmod|gcd|lcm|"
+    # Spaces (worded)
+    r"quad|qquad|space|thinspace|medspace|thickspace|negthinspace|negmedspace|"
+    r"negthickspace|"
+    # Linear algebra / probability
+    r"det|tr|rank|"
+    # Misc binary / relations
+    r"mid|nmid|parallel|nparallel|perp|bot|top|"
+    r"vdash|dashv|models|"
+    # Chemistry (mhchem) — `\ce{...}` `\pu{...}`
+    r"ce|pu|"
+    # Quantum / physics
+    r"bra|ket|braket|"
+    # Cases / matrices (already have `begin/end` but bare tokens leak too)
+    r"matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix|cases|aligned|gathered|"
+    # Legacy
+    r"over|atop|choose|root"
 )
 _RAW_TEX_CMD_RE = re.compile(
     rf"\\(?:{_TEX_MATH_INDICATOR_CMDS})(?![A-Za-z])|\\[,;:!]"
@@ -1303,6 +1442,143 @@ def _ensure_katex_loaded(html: str) -> tuple[str, int]:
     return html[:head_end] + block + html[head_end:], 1
 
 
+# ── Dollar-math conversion ───────────────────────────────────────────
+# KaTeX auto-render is configured with `\(…\)` and `\[…\]` delimiters by
+# default — single-`$` and `$$…$$` math from author markdown gets ignored
+# unless we convert it. We require strong math signals in the content (a
+# TeX command, subscript, superscript, or `\<cmd>` token) so currency
+# strings like "$5 to $10" don't get rewrapped.
+
+_DISPLAY_DOLLAR_RE = re.compile(
+    r"(?<!\\)\$\$([^\$\n][\s\S]*?[^\$\n])\$\$(?!\$)",
+    re.MULTILINE,
+)
+_INLINE_DOLLAR_RE = re.compile(
+    r"(?<![\\$])\$(?!\$)([^\$\n]+?)(?<![\\])\$(?!\$)"
+)
+# Strong math signals — at least one must appear in the content.
+_MATH_CONTENT_HINT = re.compile(
+    r"\\[A-Za-z]+|[_^]\{|[_^][A-Za-z0-9]|\\frac|\\sqrt"
+)
+
+
+def _fix_dollar_math(html: str) -> tuple[str, int]:
+    """Convert `$x$` and `$$x$$` math to `\\(x\\)` and `\\[x\\]`.
+
+    Conservative: requires the content to look like math (contains a TeX
+    command, subscript, or superscript). Currency / shell-prompt prose is
+    left alone.
+    """
+    def _on(chunk: str) -> tuple[str, int]:
+        n = 0
+        def _wrap_display(m: re.Match) -> str:
+            nonlocal n
+            inner = m.group(1)
+            if _MATH_CONTENT_HINT.search(inner):
+                n += 1
+                return f"\\[{inner}\\]"
+            return m.group(0)
+        def _wrap_inline(m: re.Match) -> str:
+            nonlocal n
+            inner = m.group(1)
+            if _MATH_CONTENT_HINT.search(inner):
+                n += 1
+                return f"\\({inner}\\)"
+            return m.group(0)
+        chunk = _DISPLAY_DOLLAR_RE.sub(_wrap_display, chunk)
+        chunk = _INLINE_DOLLAR_RE.sub(_wrap_inline, chunk)
+        return chunk, n
+    return _apply_outside_protected(html, _on)
+
+
+# ── Empty math span ──────────────────────────────────────────────────
+# `\(\)` or `\[\]` (possibly with whitespace inside) — KaTeX raises a parse
+# error and prints a red `\(\)` to the page. Strip them.
+
+_EMPTY_MATH_RE = re.compile(r"\\\(\s*\\\)|\\\[\s*\\\]")
+
+
+def _fix_empty_math_span(html: str) -> tuple[str, int]:
+    def _on(chunk: str) -> tuple[str, int]:
+        n = 0
+        def _strip(m: re.Match) -> str:
+            nonlocal n
+            n += 1
+            return ""
+        return _EMPTY_MATH_RE.sub(_strip, chunk), n
+    return _apply_outside_protected(html, _on)
+
+
+# ── HTML-escaped TeX in math contexts ────────────────────────────────
+# When a markdown sanitizer over-escapes content INSIDE a math span, you can
+# end up with `\(&#x5C;tau\)` (where `&#x5C;` is a numeric character ref for
+# backslash). KaTeX doesn't decode entities in its input — it sees the raw
+# ampersand-escape and renders garbage. Decode `&#x5C;`, `&#92;`, `&amp;`,
+# `&lt;`, `&gt;`, and named refs INSIDE math spans only.
+
+_HTML_ENT_BACKSLASH = re.compile(r"&(?:#x?5[Cc]|#92|bsol);")
+_HTML_ENT_AMP = re.compile(r"&amp;")
+_HTML_ENT_LT = re.compile(r"&lt;")
+_HTML_ENT_GT = re.compile(r"&gt;")
+
+
+def _fix_html_entity_in_math(html: str) -> tuple[str, int]:
+    """Decode HTML entities that crept inside `\\(...\\)` / `\\[...\\]` spans
+    and would otherwise reach KaTeX as literal `&amp;` / `&#x5C;` text."""
+    def _on(chunk: str) -> tuple[str, int]:
+        n = [0]
+        def _decode_span(m: re.Match) -> str:
+            inner = m.group(0)
+            new = _HTML_ENT_BACKSLASH.sub("\\\\", inner)
+            new = _HTML_ENT_AMP.sub("&", new)
+            new = _HTML_ENT_LT.sub("<", new)
+            new = _HTML_ENT_GT.sub(">", new)
+            if new != inner:
+                n[0] += 1
+            return new
+        new_chunk = _MATH_SPAN_RE.sub(_decode_span, chunk)
+        return new_chunk, n[0]
+    return _apply_outside_protected(html, _on)
+
+
+# ── Mismatched math delimiters ───────────────────────────────────────
+# `\(...\]` or `\[...\)` — either the author or a pipeline mangled one
+# end. Replace the wrong closer with the right one when the opener side
+# is unambiguous.
+
+_MISMATCHED_OPEN_PAREN = re.compile(r"\\\(([\s\S]*?)\\\]")
+_MISMATCHED_OPEN_BRACKET = re.compile(r"\\\[([\s\S]*?)\\\)")
+
+
+def _fix_mismatched_math_delim(html: str) -> tuple[str, int]:
+    """Repair `\\(...\\]` → `\\(...\\)` and `\\[...\\)` → `\\[...\\]`.
+
+    Conservative: only triggers when the inner content is short (≤ 200
+    chars) and contains no second math-delimiter, so we don't accidentally
+    bridge two unrelated math spans.
+    """
+    def _on(chunk: str) -> tuple[str, int]:
+        n = 0
+        def _fix_paren(m: re.Match) -> str:
+            nonlocal n
+            inner = m.group(1)
+            if len(inner) > 200 or "\\(" in inner or "\\[" in inner:
+                return m.group(0)
+            n += 1
+            return f"\\({inner}\\)"
+        def _fix_bracket(m: re.Match) -> str:
+            nonlocal n
+            inner = m.group(1)
+            if len(inner) > 400 or "\\[" in inner or "\\(" in inner:
+                return m.group(0)
+            n += 1
+            return f"\\[{inner}\\]"
+        chunk = _MISMATCHED_OPEN_PAREN.sub(_fix_paren, chunk)
+        chunk = _MISMATCHED_OPEN_BRACKET.sub(_fix_bracket, chunk)
+        return chunk, n
+    return _apply_outside_protected(html, _on)
+
+
 def _fix_lazy_load_images(html: str) -> tuple[str, int]:
     """Add `loading="lazy"` to `<img>` tags missing it (skips images already
     above the fold — a heuristic; we just skip the first 2 images)."""
@@ -1334,6 +1610,10 @@ _CHECKS: list[Callable[[str, str], list[AuditIssue]]] = [
     _check_katex_delimiter_config,
     _check_math_balance,
     _check_double_escaped_math,
+    _check_dollar_math,
+    _check_empty_math_span,
+    _check_html_entity_in_math,
+    _check_mismatched_math_delim,
     _check_raw_latex_leak,
     _check_stray_dollar,
     _check_render_fallback,
@@ -1363,8 +1643,16 @@ _FIXES: list[tuple[str, Callable[[str], tuple[str, int]]]] = [
     # again at view time. Escaping early also stops downstream prose-math
     # detection from picking up the raw `<` as new math.
     ("math_html_leak",               _fix_math_html_leak),
+    # Multi-escape collapse (now handles double, triple, quadruple, …).
     ("double_escaped_math",          _fix_double_escaped_math),
+    # Mismatched delimiters BEFORE prose-math-wrap so the wrap doesn't
+    # walk into a half-open math span and produce more breakage.
+    ("mismatched_math_delim",        _fix_mismatched_math_delim),
+    # Dollar-math conversion runs early so the resulting `\(…\)` spans get
+    # the same downstream protection as native delimiters.
+    ("dollar_math",                  _fix_dollar_math),
     ("double_escaped_latex_command", _fix_double_escaped_latex_commands),
+    ("html_entity_in_math",          _fix_html_entity_in_math),
     ("double_superscript",           _fix_double_superscript),
     ("math_unbalanced_block",        _fix_unbalanced_block_math),
     # Raw LaTeX leak (e.g., `\int_{-\infty}^{t} x(\tau)d\tau` in a table cell
@@ -1372,6 +1660,9 @@ _FIXES: list[tuple[str, Callable[[str], tuple[str, int]]]] = [
     # `\(...\)` spans get respected by downstream passes.
     ("raw_latex_leak",               _fix_raw_latex_leak),
     ("prose_math_wrap",              _fix_prose_math_wrap),
+    # Empty-span cleanup runs LAST among math fixes so any earlier pass
+    # that accidentally left `\(\)` gets cleaned up before the page ships.
+    ("empty_math_span",              _fix_empty_math_span),
     # Re-inject the KaTeX bundle if a previous fix introduced new math markers.
     ("katex_loader_injected",        _ensure_katex_loaded),
     ("inline_font_size_override",    _fix_inline_font_overrides),
