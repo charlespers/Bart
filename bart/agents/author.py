@@ -24,6 +24,8 @@ class AuthorAgent(Agent):
         temperature: float = 0.7,
         label_suffix: str = "",
         on_density: callable = None,  # type: ignore[valid-type]
+        research_slice: str = "",
+        exam_patterns_block: str = "",
     ) -> str:
         cfg = self.ctx.cfg
 
@@ -56,6 +58,24 @@ class AuthorAgent(Agent):
                 f"BRIEF\n{brief}"
             ),
         }]
+        if research_slice.strip():
+            user.append({
+                "type": "text",
+                "text": (
+                    "RESEARCH SLICE — verbatim corpus excerpts for this artifact's topic. "
+                    "Quote these exactly when they fit; do not paraphrase.\n\n"
+                    f"{research_slice}"
+                ),
+            })
+        if exam_patterns_block.strip():
+            user.append({
+                "type": "text",
+                "text": (
+                    "EXAM PATTERNS — patterned on the user's past exams. "
+                    "Match the style, phrasing, and difficulty distribution shown here.\n\n"
+                    f"{exam_patterns_block}"
+                ),
+            })
         # Top-level artifacts (schematics, whimsy, short guide, practice exam)
         # tolerate the fast model. --turbo sets the override env var.
         is_daily = artifact_kind == "daily_lesson"
