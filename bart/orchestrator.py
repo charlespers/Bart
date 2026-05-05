@@ -337,6 +337,23 @@ class Orchestrator:
                     fallback = self._prefetch_research(missing, researcher)
                     research_by_day.update(fallback)
 
+            # ── Per-day Researcher: full-corpus excerpts for each day.
+            # Runs in addition to the topic-distiller study card. The Author
+            # gets BOTH — the study card (concise day plan) and the
+            # research slice (verbatim corpus excerpts). Disk-cached so
+            # --resume is free.
+            import os as _os
+            if _os.environ.get("BART_SKIP_RESEARCHER") == "1":
+                research_full_by_day: dict[int, str] = {}
+                self.console.print(
+                    "  [dim]BART_SKIP_RESEARCHER=1 — skipping per-day Researcher[/dim]"
+                )
+            else:
+                self.console.print(
+                    "\n[bold #c96442]▸ Per-day Researcher (full corpus)[/bold #c96442]"
+                )
+                research_full_by_day = self._prefetch_research(day_entries, researcher)
+
             # Then generate daily lessons (Author + optional Reviewer).
             self.console.print("\n[bold #c96442]▸ Generating daily lessons[/bold #c96442]")
             with self._stage("daily_lessons"):
@@ -346,6 +363,8 @@ class Orchestrator:
                     problem_index=problem_index,
                     review_queue=review_queue,
                     whimsy_index=whimsy_index,
+                    research_full_by_day=research_full_by_day,
+                    exam_patterns=exam_patterns,
                 )
 
             # ----- 4. Manifest + telemetry + summary
@@ -718,6 +737,8 @@ class Orchestrator:
         problem_index: list[dict[str, Any]] | None = None,
         review_queue: dict[int, list[dict[str, Any]]] | None = None,
         whimsy_index: dict[str, str] | None = None,
+        research_full_by_day: dict[int, str] | None = None,
+        exam_patterns: dict[str, Any] | None = None,
     ):
         if not day_entries:
             self.console.print("[yellow]  ⚠ Planner produced no day entries — skipping daily lessons.[/yellow]")
@@ -725,6 +746,8 @@ class Orchestrator:
         problem_index = problem_index or []
         review_queue = review_queue or {}
         whimsy_index = whimsy_index or {}
+        research_full_by_day = research_full_by_day or {}
+        exam_patterns = exam_patterns or {}
 
         def _gen_day(entry):
             day_num = entry["day"]
@@ -762,6 +785,11 @@ class Orchestrator:
                         f"  [yellow]⚠[/yellow] Day {day_num:02d} block density "
                         f"[dim]{report.score:.0f}/100 — missing {dict(report.missing)} — applying block-fix[/dim]"
                     )
+            from .agents import exam_pattern as _exam_pattern
+            day_research_full = research_full_by_day.get(day_num, "")
+            exam_patterns_drill = _exam_pattern.format_for_daily_drill(
+                exam_patterns, day_topics,
+            )
             # max_tokens=6000 is plenty for a fully-instrumented daily lesson
             # (~18K chars). The previous 12000 ceiling let Sonnet pad to 35K
             # chars, which is the dominant wall-time cost on subscription mode.
@@ -769,6 +797,8 @@ class Orchestrator:
                 "daily_lesson", brief,
                 max_tokens=6000, label_suffix=f"day{day_num}",
                 on_density=_on_density,
+                research_slice=day_research_full,
+                exam_patterns_block=exam_patterns_drill,
             )
 
             if self.use_critic:
