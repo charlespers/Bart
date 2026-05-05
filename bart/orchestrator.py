@@ -299,6 +299,7 @@ class Orchestrator:
                 self._run_artifacts_parallel(
                     artifacts, author, reviewer, master_plan,
                     solver=solver, notation_card=notation_card,
+                    exam_patterns=exam_patterns,
                 )
 
             # ── Whimsy index: parse generated whimsy artifact into per-topic hooks.
@@ -591,8 +592,10 @@ class Orchestrator:
         self, artifacts, author, reviewer, master_plan,
         solver: SolverAgent | None = None,
         notation_card: str = "",
+        exam_patterns: dict[str, Any] | None = None,
     ):
         results: dict[str, str] = {}
+        exam_patterns = exam_patterns or {}
 
         def _gen_one(kind, filename, brief_fn, max_tokens):
             target = self.paths.root / filename
@@ -619,9 +622,12 @@ class Orchestrator:
             # Solver fills Part B (answer key). Each call is shorter than the
             # combined call would be, and Solver is corpus-free.
             if kind == "practice_exam" and solver is not None:
+                from .agents import exam_pattern as _exam_pattern
+                exam_patterns_full = _exam_pattern.format_for_practice_exam(exam_patterns)
                 part_a = author.write(
                     "practice_exam_part_a", brief, max_tokens=max_tokens,
                     label_suffix="part_a", on_density=_on_density,
+                    exam_patterns_block=exam_patterns_full,
                 )
                 part_b = solver.solve(part_a, notation_card, max_tokens=max_tokens)
                 text = part_a.rstrip() + "\n\n---\n\n" + part_b.lstrip()
