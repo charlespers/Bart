@@ -14,6 +14,7 @@ Orchestration logic lives in `bart.orchestrator`; agents themselves are stateles
 from .author import AuthorAgent
 from .critic import CriticAgent
 from .distiller import DistillerAgent
+from .exam_pattern import ExamPatternAgent
 from .notation_extractor import NotationExtractorAgent
 from .planner import PlannerAgent
 from .problem_indexer import ProblemIndexerAgent
@@ -28,6 +29,6 @@ __all__ = [
     "DistillerAgent", "TopicDistillerAgent", "PlannerAgent", "AuthorAgent",
     "CriticAgent", "ReviserAgent", "ResearcherAgent",
     "ReviewerAgent", "ReviewResult",
-    "NotationExtractorAgent", "ProblemIndexerAgent",
+    "NotationExtractorAgent", "ProblemIndexerAgent", "ExamPatternAgent",
     "SolverAgent", "WhimsyIndexerAgent",
 ]
