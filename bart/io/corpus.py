@@ -2,7 +2,8 @@
 
 Strategy:
 - Each file gets a header + body.
-- Files larger than the per-file cap get a head + tail slice (preserves intro & conclusion).
+- Files larger than the per-file cap get a head + middle-sample + tail slice
+  (preserves intro, mid-document worked examples, and conclusion).
 - Total budget is enforced; once exhausted, remaining files are noted but their content is dropped.
 - A separate manifest of all files is preserved for the planner to reason about.
 """
@@ -135,11 +136,27 @@ def build_corpus(
         header = f"\n\n=== FILE: {ef.rel_path} ===\n\n"
         body = ef.text
         if len(body) > per_file_cap:
-            half = per_file_cap // 2
+            # Reserve ~300 chars for the two truncation markers so the
+            # assembled body fits within per_file_cap without triggering
+            # the budget-exhausted trim (which would drop the tail).
+            slice_len = max(1, (per_file_cap - 300) // 3)
+            half_slice = slice_len // 2
+            mid_center = len(body) // 2
+            head_end = slice_len
+            mid_start = max(head_end, mid_center - half_slice)
+            mid_end = min(len(body) - slice_len, mid_start + slice_len)
+            tail_start = max(mid_end, len(body) - slice_len)
+            head_part = body[:head_end]
+            middle_part = body[mid_start:mid_end]
+            tail_part = body[tail_start:]
+            dropped_before_middle = mid_start - head_end
+            dropped_after_middle = tail_start - mid_end
             body = (
-                body[:half]
-                + f"\n\n[…truncated {len(ef.text) - per_file_cap:,} mid-document chars…]\n\n"
-                + body[-half:]
+                head_part
+                + f"\n\n[…truncated {dropped_before_middle:,} chars before middle sample…]\n\n"
+                + middle_part
+                + f"\n\n[…truncated {dropped_after_middle:,} chars after middle sample…]\n\n"
+                + tail_part
             )
         if used + len(header) + len(body) > char_budget:
             remaining = char_budget - used - len(header)
