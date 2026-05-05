@@ -230,6 +230,10 @@ def main(argv: list[str] | None = None) -> int:
             no_critic = True
             if not model_override:
                 model_override = "claude-sonnet-4-6"
+            # Both speed presets skip the per-day Researcher (full-corpus path).
+            # The topic-distiller study card stays in place, so daily lessons
+            # still get a per-day plan — they just don't get verbatim excerpts.
+            os.environ["BART_SKIP_RESEARCHER"] = "1"
         if turbo_mode:
             # Haiku for the daily-lesson Author too. Massive wall-time win.
             if not getattr(args, "model", None):
@@ -240,6 +244,9 @@ def main(argv: list[str] | None = None) -> int:
             # call that guarantees structural density. Speed dominates output
             # length; this retry costs ~5-10s and keeps block usage high.
             os.environ.pop("BART_SKIP_BLOCK_FIX", None)
+            # Turbo also skips the past-exam-pattern sidecar — saves one Haiku
+            # call. --fast keeps it (minor cost, big quality lift on practice exam).
+            os.environ["BART_SKIP_EXAM_PATTERN"] = "1"
             # Haiku tolerates higher concurrency than Sonnet on subscription.
             max_parallel = 3
 
