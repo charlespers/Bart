@@ -266,11 +266,17 @@ def expand_blocks(markdown_text: str) -> ExpansionResult:
                         ))
                 else:
                     raise
-            except Exception:
+            except Exception as e2:  # noqa: BLE001
+                # Recovery itself failed — report the SECONDARY error so the
+                # author sees the real shape problem (e.g. items being a list
+                # of strings when the renderer expected list-of-dicts), not
+                # the misleading original 'unexpected keyword argument' echo.
                 warnings.append(ExpansionWarning(
-                    "render_error", f"bart-{name}: {e}", name,
+                    "render_error",
+                    f"bart-{name}: recovery failed: {type(e2).__name__}: {e2}",
+                    name,
                 ))
-                return _inline_warning(name, str(e))
+                return _inline_warning(name, f"{type(e2).__name__}: {e2}")
         except Exception as e:  # noqa: BLE001
             warnings.append(ExpansionWarning(
                 "render_error", f"bart-{name}: {type(e).__name__}: {e}", name,
