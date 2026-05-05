@@ -233,6 +233,26 @@ def _check_double_escaped_math(rel: str, html: str) -> list[AuditIssue]:
     )]
 
 
+def _check_raw_latex_leak(rel: str, html: str) -> list[AuditIssue]:
+    """Flag pages where a TeX command appears outside any math span.
+
+    The fix `_fix_raw_latex_leak` will wrap these on `--fix`, but the
+    audit alone surfaces the count so users know the page has the leak.
+    """
+    body_no_spans = _MATH_SPAN_RE.sub("", _strip_protected(html))
+    body_no_tags = re.sub(r"<[^>]+>", "", body_no_spans)
+    hits = list(_RAW_TEX_CMD_RE.finditer(body_no_tags))
+    if not hits:
+        return []
+    return [AuditIssue(
+        rel, "raw_latex_leak",
+        f"{len(hits)} raw LaTeX command(s) (e.g. `\\int`, `\\tau`) outside math delimiters — "
+        f"will render as source text",
+        "error",
+        line=_line_of(html, hits[0].start()),
+    )]
+
+
 _STRAY_DOLLAR = re.compile(r"(?<![\\\d])\$\d|\d\$(?!\d)")  # very loose
 
 
@@ -1050,6 +1070,153 @@ def _fix_double_escaped_latex_commands(html: str) -> tuple[str, int]:
     return _apply_outside_protected(html, _on)
 
 
+# Conservative list of TeX commands that almost never appear in legitimate
+# English prose — when one shows up in unwrapped text, it's a math leak.
+_TEX_MATH_INDICATOR_CMDS = (
+    r"int|sum|prod|frac|sqrt|infty|partial|nabla|cdot|times|div|pm|mp|"
+    r"leq|geq|neq|approx|equiv|sim|propto|implies|iff|"
+    r"to|rightarrow|leftarrow|Rightarrow|Leftarrow|mapsto|"
+    r"alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|"
+    r"iota|kappa|lambda|mu|nu|xi|omicron|pi|varpi|rho|varrho|sigma|"
+    r"varsigma|tau|upsilon|phi|varphi|chi|psi|omega|"
+    r"Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|"
+    r"vec|hat|bar|tilde|dot|ddot|overline|underline|widehat|widetilde|"
+    r"sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|sinh|cosh|tanh|"
+    r"log|ln|exp|lim|sup|inf|max|min|arg|det|gcd|lcm|"
+    r"mathbb|mathbf|mathcal|mathrm|mathit|mathsf|mathtt|"
+    r"left|right|big|Big|bigg|Bigg|"
+    r"begin|end|"
+    r"forall|exists|nexists|in|notin|subset|supset|cup|cap|emptyset|"
+    r"langle|rangle|lceil|rceil|lfloor|rfloor"
+)
+_RAW_TEX_CMD_RE = re.compile(
+    rf"\\(?:{_TEX_MATH_INDICATOR_CMDS})(?![A-Za-z])|\\[,;:!]"
+)
+# Char class for "math-typical": chars that can appear inside a math run.
+_MATH_BODY_CHAR = "A-Za-z0-9()_^{}\\[\\]+\\-*/=."
+_MATH_BODY_RE = re.compile(rf"[{_MATH_BODY_CHAR}]")
+
+
+def _fix_raw_latex_leak(html: str) -> tuple[str, int]:
+    """Wrap raw LaTeX commands in `\\(...\\)` so KaTeX renders them.
+
+    Targets two leak patterns:
+      1. Table cells like `<td>y(t) = \\int_{-\\infty}^{t} x(\\tau)d\\tau</td>`
+         where the entire cell content is math but has no math delimiters.
+      2. Inline math runs in prose like `... responds to a\\,x_1+b\\,x_2, not ...`
+         where a TeX command + neighboring math chars is buried in prose.
+
+    Conservative: only triggers on a curated list of TeX commands that
+    don't appear in legitimate English. Skips text inside existing math
+    spans, code/script regions, and HTML attribute values.
+    """
+    def _on(chunk: str) -> tuple[str, int]:
+        sentinels: list[str] = []
+        def _stash_span(m: re.Match) -> str:
+            sentinels.append(m.group(0))
+            return f"\x00MS{len(sentinels)-1}\x00"
+        masked = _MATH_SPAN_RE.sub(_stash_span, chunk)
+
+        tag_holds: list[str] = []
+        def _stash_tag(m: re.Match) -> str:
+            tag_holds.append(m.group(0))
+            return f"\x00T{len(tag_holds)-1}\x00"
+        masked2 = re.sub(r"<[^>]+>", _stash_tag, masked)
+
+        n = 0
+        out_parts: list[str] = []
+        i = 0
+        while i < len(masked2):
+            m = _RAW_TEX_CMD_RE.search(masked2, i)
+            if not m:
+                out_parts.append(masked2[i:])
+                break
+
+            # Expand left: math chars and single spaces between math chars.
+            # Multi-letter runs going leftward mean we crossed into an English
+            # word — back off when a 2+ letter run is detected.
+            start = m.start()
+            letter_run = 0
+            letter_run_origin = start
+            while start > i:
+                ch = masked2[start - 1]
+                if ch == "\x00":
+                    break
+                if ch.isalpha():
+                    if letter_run == 0:
+                        letter_run_origin = start
+                    letter_run += 1
+                    if letter_run >= 2:
+                        # English word boundary — back off the entire letter run
+                        # and any space immediately to the right of it.
+                        start = letter_run_origin
+                        if start < m.start() and masked2[start:start + 1] == " ":
+                            start += 1
+                        break
+                    start -= 1
+                    continue
+                letter_run = 0
+                if _MATH_BODY_RE.match(ch) or ch == "\\":
+                    start -= 1
+                    continue
+                if ch == " " and start - 1 > i:
+                    prev = masked2[start - 2]
+                    if _MATH_BODY_RE.match(prev) or prev in ")}]":
+                        start -= 1
+                        continue
+                break
+            # Expand right: math chars, additional TeX commands, and single
+            # spaces between math chars (but not into English prose).
+            end = m.end()
+            while end < len(masked2):
+                ch = masked2[end]
+                if ch == "\x00":
+                    break
+                if _MATH_BODY_RE.match(ch):
+                    end += 1
+                    continue
+                if ch == "\\":
+                    sub = re.match(r"\\[A-Za-z]+|\\[,;:!]", masked2[end:])
+                    if sub:
+                        end += sub.end()
+                        continue
+                    break
+                if ch == " " and end + 1 < len(masked2):
+                    nxt = masked2[end + 1]
+                    if nxt == "\\":
+                        end += 1
+                        continue
+                    if _MATH_BODY_RE.match(nxt):
+                        # If the next non-space starts a 3+ letter ASCII word
+                        # followed by a non-math char, that's an English-word
+                        # boundary — stop here.
+                        if re.match(r"[A-Za-z]{3,}(?:[^A-Za-z0-9_^{}]|$)",
+                                    masked2[end + 1:]):
+                            break
+                        end += 1
+                        continue
+                break
+            # Trim trailing punctuation that isn't math-meaningful.
+            while end > start and masked2[end - 1] in " .,":
+                end -= 1
+            run = masked2[start:end]
+            if run.strip() and "\\" in run:
+                out_parts.append(masked2[i:start])
+                out_parts.append("\\(" + run + "\\)")
+                n += 1
+                i = end
+            else:
+                out_parts.append(masked2[i:m.end()])
+                i = m.end()
+
+        new_chunk = "".join(out_parts)
+        # Restore tags, then math spans.
+        new_chunk = re.sub(r"\x00T(\d+)\x00", lambda m: tag_holds[int(m.group(1))], new_chunk)
+        new_chunk = re.sub(r"\x00MS(\d+)\x00", lambda m: sentinels[int(m.group(1))], new_chunk)
+        return new_chunk, n
+    return _apply_outside_protected(html, _on)
+
+
 _HTML_DOUBLE_SUPER_RE = re.compile(
     r"(\\[A-Za-z]+(?:_\{[^}]*\})?)\^\*_\{([^}]+)\}\^(\d+|\{[^}]+\})"
 )
@@ -1158,6 +1325,7 @@ _CHECKS: list[Callable[[str, str], list[AuditIssue]]] = [
     _check_katex_delimiter_config,
     _check_math_balance,
     _check_double_escaped_math,
+    _check_raw_latex_leak,
     _check_stray_dollar,
     _check_render_fallback,
     _check_block_error,
@@ -1190,6 +1358,10 @@ _FIXES: list[tuple[str, Callable[[str], tuple[str, int]]]] = [
     ("double_escaped_latex_command", _fix_double_escaped_latex_commands),
     ("double_superscript",           _fix_double_superscript),
     ("math_unbalanced_block",        _fix_unbalanced_block_math),
+    # Raw LaTeX leak (e.g., `\int_{-\infty}^{t} x(\tau)d\tau` in a table cell
+    # with no math delimiters). Run BEFORE prose_math_wrap so the inserted
+    # `\(...\)` spans get respected by downstream passes.
+    ("raw_latex_leak",               _fix_raw_latex_leak),
     ("prose_math_wrap",              _fix_prose_math_wrap),
     # Re-inject the KaTeX bundle if a previous fix introduced new math markers.
     ("katex_loader_injected",        _ensure_katex_loaded),
