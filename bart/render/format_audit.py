@@ -1196,8 +1196,17 @@ def _fix_raw_latex_leak(html: str) -> tuple[str, int]:
                         end += 1
                         continue
                 break
-            # Trim trailing punctuation that isn't math-meaningful.
+            # Trim trailing punctuation that isn't math-meaningful — but
+            # never strip a `.` or `,` that's preceded by `\` (it's part of
+            # a TeX spacing command like `\,` or `\.` and stripping it
+            # would break the math run).
             while end > start and masked2[end - 1] in " .,":
+                if (
+                    masked2[end - 1] in ".,"
+                    and end - 2 >= start
+                    and masked2[end - 2] == "\\"
+                ):
+                    break
                 end -= 1
             run = masked2[start:end]
             if run.strip() and "\\" in run:

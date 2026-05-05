@@ -92,3 +92,16 @@ def test_legitimate_prose_with_no_tex_commands_untouched():
     fixed, n = _fix_raw_latex_leak(html)
     assert n == 0
     assert fixed == html
+
+
+def test_tex_spacing_command_comma_is_not_stripped():
+    """Regression: trim used to drop the `,` from `\\,`, leaving content `a\\`
+    which closes the math span prematurely as `\\(a\\\\)`."""
+    # Simulates input AFTER prose_math_wrap already partially wrapped x_1/x_2:
+    # `a\,\(x_1\)+b\,\(x_2\)` — the loose `\,` runs need clean wrapping.
+    html = "<p>responds to a\\,\\(x_1\\)+b\\,\\(x_2\\), not about</p>"
+    fixed, n = _fix_raw_latex_leak(html)
+    # Must NOT produce the malformed `\(a\\)` shape.
+    assert "\\(a\\\\)" not in fixed, f"trim broke spacing command: {fixed!r}"
+    # `\,` must still be inside a math span.
+    assert "\\(a\\,\\)" in fixed or "\\(a\\,x" in fixed

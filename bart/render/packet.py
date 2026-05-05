@@ -493,6 +493,7 @@ def _render_one(
         _fix_double_escaped_latex_commands,
         _fix_double_superscript,
         _fix_unbalanced_block_math,
+        _fix_raw_latex_leak,
         _fix_prose_math_wrap,
         _ensure_katex_loaded,
         _fix_inline_font_overrides,
@@ -505,6 +506,9 @@ def _render_one(
     body_html, _ = _fix_double_escaped_latex_commands(body_html)
     body_html, _ = _fix_double_superscript(body_html)
     body_html, _ = _fix_unbalanced_block_math(body_html)
+    # Raw LaTeX leak fix BEFORE prose_math_wrap so spacing commands like `\,`
+    # don't get torn in half by the variable-subscript wrap.
+    body_html, _ = _fix_raw_latex_leak(body_html)
     body_html, _ = _fix_prose_math_wrap(body_html)
     body_html, _ = _fix_inline_font_overrides(body_html)
     body_html, _ = _fix_displaymath_inside_p(body_html)
