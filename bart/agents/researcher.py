@@ -26,7 +26,7 @@ class ResearcherAgent(Agent):
             model=cfg.fast_model,
             system=self.system_prompt,
             user=user,
-            max_tokens=4000,
+            max_tokens=6000,
             label=f"researcher:{topic[:40]}",
             temperature=0.2,
         )
