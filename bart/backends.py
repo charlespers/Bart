@@ -83,6 +83,37 @@ _OUTER_FENCE_RE = _re_san.compile(
 )
 
 
+def _input_overlap_ratio(output: str, input_text: str, *, chunk: int = 60) -> float:
+    """Estimate how much of `output` is literally copied from `input_text`.
+
+    Slides a `chunk`-character window across the output and counts how many
+    starting positions match a contiguous substring of the input. Returns a
+    value in [0.0, 1.0]. 0.0 means no overlap; 0.4 means roughly 40% of
+    the output is contiguously borrowed from the input — a reliable signal
+    that a small model is regurgitating prompt rather than reasoning.
+
+    Much more accurate than hardcoded anchor strings, which produce false
+    positives on legitimate outputs that quote single header words.
+    """
+    if not output or not input_text:
+        return 0.0
+    out = output.strip()
+    if len(out) < chunk:
+        chunk = max(20, len(out) // 2)
+    # Sample up to 200 evenly-spaced windows to keep this O(1) regardless
+    # of artifact length.
+    n_windows = min(200, max(1, len(out) - chunk + 1))
+    step = max(1, (len(out) - chunk) // n_windows) if len(out) > chunk else 1
+    hits = 0
+    total = 0
+    for i in range(0, max(1, len(out) - chunk + 1), step):
+        window = out[i:i + chunk]
+        total += 1
+        if window in input_text:
+            hits += 1
+    return hits / max(total, 1)
+
+
 def _sanitize_local_output(text: str, response_format: str | None = None) -> str:
     """Strip chatter that small local models (Gemma 3, especially) wrap
     around their actual output. Idempotent: safe to call repeatedly.
@@ -619,7 +650,7 @@ class OllamaBackend:
         cache_dir: Path | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
         host: str | None = None,
-        timeout_s: int = 1800,
+        timeout_s: int = 3600,  # 1 hour — small models on CPU can be slow per call
     ):
         from .local_setup import OLLAMA_HOST
         self._host = (host or OLLAMA_HOST).rstrip("/")
@@ -676,10 +707,12 @@ class OllamaBackend:
         # overflows the context window, the model echoes the prompt back or
         # returns garbage, and the orchestrator silently writes that as the
         # artifact. Estimate input size and round up to a Gemma-supported
-        # power of two; 27B / 12B / 4B all support ≥ 32K, 1B supports 32K.
+        # power of two. Floor at 16K — every published Gemma 3 size supports
+        # ≥ 32K, and the smaller buckets (4K / 8K) are too tight for bart's
+        # corpus-heavy prompts in practice.
         approx_input_tokens = (len(sys_text) + len(usr_text)) // 4
-        ctx_budget = approx_input_tokens + max_tokens + 1024  # headroom
-        for ceiling in (4096, 8192, 16384, 32768, 65536, 131072):
+        ctx_budget = approx_input_tokens + max_tokens + 2048  # generous headroom
+        for ceiling in (16384, 32768, 65536, 131072):
             if ctx_budget <= ceiling:
                 num_ctx = ceiling
                 break
@@ -755,35 +788,66 @@ class OllamaBackend:
         # that the orchestrator does NOT want written into the .md file.
         text = _sanitize_local_output(text, response_format=response_format)
 
-        # Echo-detection: small models (especially gemma3:1b) sometimes
-        # repeat the prompt back when overwhelmed. Catch the most common
-        # signatures so the orchestrator doesn't silently write the prompt
-        # text as the artifact (the symptom: rendered HTML pages that show
-        # raw prompt content + empty bart-block boxes).
-        echo_signals = (
-            "ARTIFACT:",                 # author.py user-message header
-            "TEACHING CONTRACT —",       # _daily_lesson_brief preamble
-            "OBJECTIVES",                # daily-lesson brief
-            "SKELETON (follow",          # daily-lesson brief
-            "BRIEF\n",                   # author.py user-message brief block
-            "Subject:",                  # most agent user messages
-        )
-        # Treat as echo if 2+ prompt-anchor strings appear unchanged in the
-        # output AND the output isn't a plausible artifact (e.g., < 600
-        # chars but contains prompt scaffolding).
-        echo_hits = sum(1 for s in echo_signals if s in text)
-        if echo_hits >= 2 and len(text) < max(800, len(usr_text) // 3):
+        # Echo-detection: small models occasionally regurgitate the prompt
+        # when overwhelmed. We detect this by measuring the literal byte
+        # overlap between the model's output and the actual input — much
+        # more accurate than hardcoded anchor strings, which produced
+        # false positives on agents whose legitimate output happens to
+        # mention "Subject:" or "OBJECTIVES" once.
+        echo_ratio = _input_overlap_ratio(text, sys_text + "\n" + usr_text)
+        is_echo = echo_ratio >= 0.40 and len(text) < max(400, len(usr_text) // 4)
+        if is_echo:
+            # One-shot retry with a stripped-down prompt. We drop the
+            # system prompt addendum (the LOCAL MODE PRIMER + base prompt)
+            # to its essentials, raise the output budget so the model has
+            # more room to think, and disable json-mode if it was on (the
+            # constraint can compound with context pressure).
+            self._on_event("echo_retry", {"label": label, "model": model})
+            retry_payload = dict(payload)
+            retry_payload["messages"] = [
+                {"role": "system", "content": (
+                    "Produce ONLY the requested artifact. No preamble, no "
+                    "postamble, no code-fence wrapper around the whole "
+                    "output. Start with the artifact's first character."
+                )},
+                {"role": "user", "content": usr_text},
+            ]
+            retry_payload["options"] = dict(payload["options"])
+            retry_payload["options"]["num_predict"] = max(max_tokens, 2000)
+            retry_payload["options"]["temperature"] = max(temperature, 0.6)
+            retry_payload.pop("format", None)
+            retry_req = urllib.request.Request(
+                f"{self._host}/api/chat",
+                data=json.dumps(retry_payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(retry_req, timeout=self._timeout_s) as r2:
+                    retry_body = r2.read().decode()
+                retry_data = json.loads(retry_body)
+                retry_text = (retry_data.get("message") or {}).get("content", "") or ""
+                retry_text = _sanitize_local_output(retry_text, response_format=None)
+                retry_overlap = _input_overlap_ratio(retry_text, sys_text + "\n" + usr_text)
+                if retry_text.strip() and retry_overlap < 0.40:
+                    text = retry_text
+                    is_echo = False
+            except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError):
+                pass  # fall through to the LLMError below
+
+        if is_echo:
             raise LLMError(
-                f"ollama model `{model}` appears to be echoing the prompt "
-                f"on '{label}' (output {len(text)} chars, contains "
-                f"{echo_hits} prompt anchor(s)).\n\n"
-                "  This is the classic 'context window too small' failure "
-                "mode for tiny local models. Either:\n"
-                "    1. Pick a larger Gemma variant: `./run setup` → option 3 → "
-                "      gemma3:4b or gemma3:12b.\n"
+                f"ollama model `{model}` is echoing the prompt on "
+                f"'{label}' (output {len(text)} chars, "
+                f"{int(echo_ratio*100)}% overlap with input). Retry "
+                f"with a stripped prompt also failed.\n\n"
+                "  This means the model can't actually do this task. "
+                "Options:\n"
+                "    1. Pick a larger Gemma variant: `./run setup` → option 3 "
+                "→ gemma3:4b or gemma3:12b.\n"
                 "    2. Override the context window: "
-                "      BART_OLLAMA_NUM_CTX=16384 ./run\n"
-                "    3. Switch to API or subscription mode for these prompts."
+                "BART_OLLAMA_NUM_CTX=32768 ./run\n"
+                "    3. Switch to API or subscription mode."
             )
 
         dt = time.time() - t0
