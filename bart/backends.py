@@ -1,6 +1,6 @@
 """LLM backends.
 
-Two paths to run bart:
+Three paths to run bart:
 
   1. AnthropicAPIBackend  - API key from console.anthropic.com. Pay-per-token,
      supports prompt caching, exposes detailed usage telemetry.
@@ -10,8 +10,13 @@ Two paths to run bart:
      (covered by the subscription), no prompt caching at the API layer (we
      fall back to disk cache), no usage telemetry.
 
-Both classes expose the same `complete(...)` method so the orchestrator does
-not care which one is in use.
+  3. OllamaBackend        - runs Gemma 4 (or any Ollama-hosted model) on the
+     local machine. No per-token cost, no Anthropic dependency. Models are
+     pulled at run start and cached for 24h between runs. See `local_setup`
+     for lifecycle management.
+
+All three classes expose the same `complete(...)` method so the orchestrator
+does not care which one is in use.
 
 Hanging vs slow: the Claude Code CLI with `--print` is non-streaming. We get
 NO output until the model finishes generating. Long lessons can take 4-6 min
@@ -489,6 +494,154 @@ class ClaudeCodeBackend:
         ))
         self._on_event("call_done", {
             "label": label, "duration_s": dt, "chars": len(text), "backend": "claude-code",
+        })
+        if use_disk_cache:
+            _write_disk_cache(self._cache_dir, key, text)
+        return text
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Ollama (local-model) backend — Gemma 4 default, free, offline
+# ─────────────────────────────────────────────────────────────────────
+
+
+class OllamaBackend:
+    """Talks to a local Ollama daemon over its HTTP API. Suitable for users
+    who don't have a Claude subscription or API key.
+
+    Strips Anthropic-only `cache_control` blocks before serializing — Ollama
+    doesn't have an equivalent. Falls back to bart's disk cache for repeat-
+    call savings. Cost is always $0 (PRICING table has zero entries for
+    the Gemma model names below).
+    """
+
+    name = "ollama-local"
+
+    def __init__(
+        self,
+        telemetry: Telemetry,
+        cache_dir: Path | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        host: str | None = None,
+        timeout_s: int = 1800,
+    ):
+        from .local_setup import OLLAMA_HOST
+        self._host = (host or OLLAMA_HOST).rstrip("/")
+        self._tel = telemetry
+        self._cache_dir = cache_dir
+        self._on_event = on_event or (lambda evt, payload: None)
+        self._timeout_s = timeout_s
+
+    @staticmethod
+    def _flatten(blocks: str | list[dict[str, Any]]) -> str:
+        """Concatenate `[{type:'text', text:'...'}, ...]` (the Anthropic
+        block shape) into a single string. `cache_control` blocks are
+        ignored — Ollama has no equivalent."""
+        if isinstance(blocks, str):
+            return blocks
+        out: list[str] = []
+        for b in blocks:
+            if isinstance(b, dict) and b.get("type") == "text":
+                txt = b.get("text", "")
+                if txt:
+                    out.append(txt)
+        return "\n\n".join(out)
+
+    def complete(
+        self,
+        *,
+        model: str,
+        system: str | list[dict[str, Any]],
+        user: str | list[dict[str, Any]],
+        max_tokens: int = 8000,
+        label: str = "",
+        use_disk_cache: bool = True,
+        temperature: float = 1.0,
+    ) -> str:
+        sys_text = self._flatten(system)
+        usr_text = self._flatten(user)
+
+        sys_blocks = [{"type": "text", "text": sys_text}]
+        usr_blocks = [{"type": "text", "text": usr_text}]
+        key = _cache_key(model, sys_blocks, [{"role": "user", "content": usr_blocks}], max_tokens)
+        if use_disk_cache:
+            cached = _read_disk_cache(self._cache_dir, key)
+            if cached is not None:
+                self._on_event("cache_hit", {"label": label, "key": key})
+                return cached
+
+        import urllib.error
+        import urllib.request
+
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": sys_text},
+                {"role": "user", "content": usr_text},
+            ],
+            "stream": False,
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": temperature,
+            },
+            # Keep weights in VRAM between calls within a run — much faster
+            # than reloading per call. Orchestrator force-unloads at end.
+            "keep_alive": "30m",
+        }
+        req = urllib.request.Request(
+            f"{self._host}/api/chat",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        t0 = time.time()
+        self._on_event("call_start", {"label": label, "model": model, "backend": "ollama"})
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
+                body = resp.read().decode()
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode()[:400]
+            except Exception:
+                pass
+            raise LLMError(
+                f"ollama HTTP {e.code} on '{label}' (model={model}): "
+                f"{e.reason}. {err_body}"
+            ) from e
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            raise LLMError(
+                f"ollama not reachable at {self._host} on '{label}': {e}. "
+                "Run `ollama serve` to start the daemon."
+            ) from e
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as e:
+            raise LLMError(f"ollama returned non-JSON on '{label}': {body[:200]}") from e
+
+        text = (data.get("message") or {}).get("content", "") or ""
+        if not text.strip():
+            raise LLMError(
+                f"ollama returned empty content on '{label}' (model={model}). "
+                f"raw response: {body[:300]}"
+            )
+
+        dt = time.time() - t0
+        in_tok = int(data.get("prompt_eval_count", 0) or 0)
+        out_tok = int(data.get("eval_count", 0) or 0)
+        self._tel.record(CallRecord(
+            label=label,
+            model=model,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+            duration_s=dt,
+            cost_usd=0.0,
+        ))
+        self._on_event("call_done", {
+            "label": label, "duration_s": dt, "chars": len(text),
+            "backend": "ollama", "input_tokens": in_tok, "output_tokens": out_tok,
         })
         if use_disk_cache:
             _write_disk_cache(self._cache_dir, key, text)

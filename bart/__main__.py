@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("setup", help="Run the configuration wizard only.")
     sub.add_parser("list", help="List previous runs in output/.")
     sub.add_parser("doctor", help="Verify environment, dependencies, and API key.")
+    sub.add_parser(
+        "cleanup",
+        help="Local-mode only: force-delete every cached Gemma model and "
+             "clear the 24h cache file. Use when you want to reclaim disk.",
+    )
 
     rndr = sub.add_parser("render", help="Re-render an existing run's HTML packet (no API calls).")
     rndr.add_argument("run_id", nargs="?", help="Run id (folder name in output/). Defaults to most recent.")
@@ -152,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     # If the user typed bare `./run` (or any flags but no subcommand), default
     # the subcommand to `run`. This makes the run-subcommand's flags available
     # on the namespace even when the user didn't type the word "run".
-    known_cmds = {"run", "setup", "list", "doctor", "render", "format", "quality", "fix-patch", "preview"}
+    known_cmds = {"run", "setup", "list", "doctor", "render", "format", "quality", "fix-patch", "preview", "cleanup"}
     if not argv or argv[0] not in known_cmds:
         argv = ["run", *argv]
     args = build_parser().parse_args(argv)
@@ -173,6 +178,28 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "doctor":
         from .commands import doctor
         return doctor()
+
+    if cmd == "cleanup":
+        from . import local_setup as _ls
+        if not _ls.ollama_running():
+            console.print(
+                "[yellow]ollama daemon isn't running, so there's nothing to clean up.[/yellow] "
+                "[dim]start it with[/dim] [white]ollama serve[/white] [dim]and re-run.[/dim]"
+            )
+            return 0
+        removed = _ls.purge_all_cached()
+        if removed:
+            console.print(
+                f"[green]✓[/green] removed {len(removed)} cached model(s):"
+            )
+            for m in removed:
+                console.print(f"    [cyan]{m}[/cyan]")
+            console.print(
+                "[dim]disk reclaimed; next run will re-pull on demand.[/dim]"
+            )
+        else:
+            console.print("[dim]no cached models to remove.[/dim]")
+        return 0
 
     if cmd == "render":
         from .commands import render_packet

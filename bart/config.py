@@ -21,7 +21,7 @@ CONFIG_PATH = ROOT / ".bart_config.json"
 
 
 class Config(BaseModel):
-    auth_mode: str = "api"  # "api" | "claude-code"
+    auth_mode: str = "api"  # "api" | "claude-code" | "ollama-local"
     api_key: str = ""        # required when auth_mode == "api"
     exam_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     subject: str = Field(min_length=1, max_length=200)
@@ -43,8 +43,8 @@ class Config(BaseModel):
     @field_validator("auth_mode")
     @classmethod
     def valid_auth_mode(cls, v: str) -> str:
-        if v not in ("api", "claude-code"):
-            raise ValueError("auth_mode must be 'api' or 'claude-code'")
+        if v not in ("api", "claude-code", "ollama-local"):
+            raise ValueError("auth_mode must be 'api' | 'claude-code' | 'ollama-local'")
         return v
 
     @property
@@ -118,26 +118,50 @@ def run_setup_wizard(force: bool = False) -> Config:
         else:
             auth_mode = ""
             api_key = ""
+    elif not force and saved_mode == "ollama-local":
+        if Confirm.ask("[1/6] Use saved auth mode (local Gemma 4 via Ollama)?", default=True):
+            pass
+        else:
+            auth_mode = ""
     else:
         auth_mode = ""
 
     if not auth_mode:
-        # Offer the choice. Only show "claude-code" if the CLI is installed.
+        # Offer the full choice. Order: subscription → API → local.
+        # Show option 1 only when the CLI is detected; options 2 & 3 always
+        # available (no preconditions on local mode itself — install runs
+        # later if needed).
+        choices_lines = []
+        choice_num = 1
+        choice_map: dict[str, str] = {}
         if claude_cli_present:
-            console.print(
-                "\n[bold][1/6] How do you want bart to talk to Claude?[/bold]\n"
-                f"  [{ACCENT}]1[/{ACCENT}]  Claude Code subscription [dim](use your existing claude.ai login — recommended if you have Pro/Max/Team)[/dim]\n"
-                f"  [{ACCENT}]2[/{ACCENT}]  Anthropic API key      [dim](pay-per-token, supports prompt caching + cost tracking)[/dim]"
+            choices_lines.append(
+                f"  [{ACCENT}]{choice_num}[/{ACCENT}]  Claude Code subscription "
+                f"[dim](use your existing claude.ai login — best quality if you have Pro/Max/Team)[/dim]"
             )
-            choice = Prompt.ask("  pick", choices=["1", "2"], default="1")
-            auth_mode = "claude-code" if choice == "1" else "api"
-        else:
-            console.print(
-                "\n[dim]bart found no `claude` CLI on PATH, so subscription auth isn't available.[/dim]\n"
-                "[dim]If you have Pro/Max/Team, install Claude Code from[/dim] [cyan]https://claude.ai/code[/cyan] [dim]and rerun setup.[/dim]\n"
-                "[dim]Otherwise, paste an Anthropic API key below.[/dim]"
-            )
-            auth_mode = "api"
+            choice_map[str(choice_num)] = "claude-code"
+            choice_num += 1
+        choices_lines.append(
+            f"  [{ACCENT}]{choice_num}[/{ACCENT}]  Anthropic API key      "
+            f"[dim](pay-per-token, supports prompt caching + cost tracking)[/dim]"
+        )
+        choice_map[str(choice_num)] = "api"
+        choice_num += 1
+        choices_lines.append(
+            f"  [{ACCENT}]{choice_num}[/{ACCENT}]  Local Gemma 4 (Ollama) "
+            f"[dim](free, runs offline; ~Sonnet-class quality, not Opus)[/dim]"
+        )
+        choice_map[str(choice_num)] = "ollama-local"
+
+        console.print(
+            "\n[bold][1/6] How do you want bart to talk to a model?[/bold]\n"
+            + "\n".join(choices_lines)
+        )
+        default_choice = "1" if claude_cli_present else "1"
+        choice = Prompt.ask(
+            "  pick", choices=list(choice_map.keys()), default=default_choice,
+        )
+        auth_mode = choice_map[choice]
 
     if auth_mode == "api" and not api_key:
         console.print(
@@ -154,6 +178,73 @@ def run_setup_wizard(force: bool = False) -> Config:
             console.print("[yellow]⚠ That doesn't look like an Anthropic key (expected sk-…). Continuing anyway.[/yellow]")
     elif auth_mode == "claude-code":
         api_key = ""  # not needed; clear any stale value
+
+    # ─── 1b/6  Local-mode setup (Ollama detect, install, model tier pick) ───
+    local_primary = defaults.get("primary_model", "claude-opus-4-7")
+    local_fast = defaults.get("fast_model", "claude-haiku-4-5-20251001")
+    if auth_mode == "ollama-local":
+        api_key = ""  # not used in local mode
+        from . import local_setup as _ls
+        if not _ls.ollama_installed():
+            console.print(
+                "\n[yellow]ollama isn't installed.[/yellow] bart can install it for you, "
+                "or you can install it yourself.\n"
+            )
+            ok = _ls.install_with_consent(
+                lambda q: Confirm.ask(f"[bold]{q}[/bold]", default=True)
+            )
+            if not ok:
+                console.print(
+                    "\n[dim]skipping auto-install. install ollama yourself, then re-run "
+                    "[white]./run setup[/white] and pick local mode again.[/dim]\n"
+                )
+                console.print(_ls.manual_install_message())
+                sys.exit(1)
+            console.print("  [green]✓[/green] ollama installed")
+
+        mem_gb, source = _ls.probe_memory_gb()
+        primary, fast, label = _ls.pick_tier(mem_gb)
+        cpu_warn = ""
+        if not _ls.has_gpu_or_unified():
+            cpu_warn = (
+                "\n  [yellow]⚠ no GPU detected — generation will run on CPU "
+                "and may be very slow (~1 token/sec on big models). "
+                "we'll pre-pick the 1B variant to keep things usable.[/yellow]"
+            )
+            primary, fast, label = "gemma4:1b", "gemma4:1b", "1B (CPU-only fallback)"
+        console.print(
+            f"\n  detected [cyan]{mem_gb:.1f} GB[/cyan] available {source} "
+            f"memory → preselecting [bold]{label}[/bold]"
+            + cpu_warn
+        )
+        if Confirm.ask("\n  use this preselection?", default=True):
+            local_primary = primary
+            local_fast = fast
+        else:
+            console.print(
+                "\n  available variants:\n"
+                "    [bold]gemma4:27b[/bold]  ~40GB unified/VRAM\n"
+                "    [bold]gemma4:12b[/bold]  ~18GB\n"
+                "    [bold]gemma4:4b[/bold]   ~6GB\n"
+                "    [bold]gemma4:1b[/bold]   ~2GB (works on CPU)\n"
+            )
+            local_primary = Prompt.ask(
+                "  primary model (long-form Author)",
+                default=primary,
+            )
+            local_fast = Prompt.ask(
+                "  fast model (Distiller / Researcher / sidecars)",
+                default=fast,
+            )
+        console.print(
+            f"\n  [dim]models will be pulled at run start (10–30 min on first run; "
+            f"cached for 24 hours so back-to-back runs are fast).[/dim]"
+        )
+        console.print(
+            f"  [dim]quality note: local Gemma 4 produces ~Sonnet-class lessons. "
+            f"For Opus-class quality on long structured artifacts, switch to "
+            f"`./run setup` and pick option 1 or 2.[/dim]\n"
+        )
 
     # Exam date
     while True:
@@ -226,6 +317,12 @@ def run_setup_wizard(force: bool = False) -> Config:
         lines.append(line)
     guidance = "\n".join(lines).strip() or "(no extra guidance)"
 
+    if auth_mode == "ollama-local":
+        primary_model_for_cfg = local_primary
+        fast_model_for_cfg = local_fast
+    else:
+        primary_model_for_cfg = defaults.get("primary_model", "claude-opus-4-7")
+        fast_model_for_cfg = defaults.get("fast_model", "claude-haiku-4-5-20251001")
     cfg = Config(
         auth_mode=auth_mode,
         api_key=api_key,
@@ -235,8 +332,8 @@ def run_setup_wizard(force: bool = False) -> Config:
         student_level=level,
         style=style,
         daily_hours=daily_hours,
-        primary_model=defaults.get("primary_model", "claude-opus-4-7"),
-        fast_model=defaults.get("fast_model", "claude-haiku-4-5-20251001"),
+        primary_model=primary_model_for_cfg,
+        fast_model=fast_model_for_cfg,
     )
     save_config(cfg)
     console.print("\n[green]✓[/green] config saved to [cyan].bart_config.json[/cyan]\n")

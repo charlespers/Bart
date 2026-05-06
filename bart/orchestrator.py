@@ -81,7 +81,7 @@ from .branding import ACCENT, ACCENT_HI, ACCENT_LO, CREAM_LO, INK, RICH_DIM, RIC
 from .config import Config
 from .io.checkpoint import atomic_write_json, atomic_write_text, is_complete
 from .io.corpus import build_corpus, extract_all
-from .backends import AnthropicAPIBackend, ClaudeCodeBackend
+from .backends import AnthropicAPIBackend, ClaudeCodeBackend, OllamaBackend
 from .paths import RunPaths
 from .telemetry import Telemetry
 
@@ -140,6 +140,24 @@ class Orchestrator:
 
             if self.cfg.auth_mode == "claude-code":
                 llm = ClaudeCodeBackend(
+                    telemetry=self.telemetry,
+                    cache_dir=self.paths.cache_dir,
+                    on_event=self._on_llm_event,
+                )
+            elif self.cfg.auth_mode == "ollama-local":
+                # Pull (or reuse cached) Gemma weights before the run starts.
+                # The cleanup (VRAM unload + 24h cache touch) happens in the
+                # outer try/finally so Ctrl-C still leaves the system tidy.
+                from . import local_setup as _ls
+                self.console.print(
+                    "\n[bold #c96442]▸ Local model setup[/bold #c96442]"
+                )
+                _ls.ensure_ready(
+                    primary_model=self.cfg.primary_model,
+                    fast_model=self.cfg.fast_model,
+                    console=self.console,
+                )
+                llm = OllamaBackend(
                     telemetry=self.telemetry,
                     cache_dir=self.paths.cache_dir,
                     on_event=self._on_llm_event,
@@ -394,6 +412,21 @@ class Orchestrator:
             self.console.print(f"[dim]Full traceback in {self.paths.log_path}[/dim]")
             self.console.print(f"[dim]Resume with:[/dim] [white]./run --resume {self.paths.run_id}[/white]")
             return 1
+        finally:
+            # Local-mode cleanup runs even on Ctrl-C / exception. Touches the
+            # 24h cache so the next run within a day reuses the model, and
+            # force-unloads from VRAM so the user's machine isn't still
+            # holding 12-40 GB after the packet is done.
+            if self.cfg.auth_mode == "ollama-local":
+                try:
+                    from . import local_setup as _ls
+                    _ls.end_of_run(
+                        primary_model=self.cfg.primary_model,
+                        fast_model=self.cfg.fast_model,
+                        console=self.console,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ------------------------------------------------------------------
     def _extract(self):
@@ -472,6 +505,14 @@ class Orchestrator:
         if self.cfg.auth_mode == "claude-code":
             cost_line = f"  cost:       [{ACCENT_HI}]covered by your Claude subscription[/{ACCENT_HI}]"
             footer = "[dim]subscription rate limits apply.[/dim]"
+        elif self.cfg.auth_mode == "ollama-local":
+            cost_line = (
+                f"  cost:       [{ACCENT_HI}]$0.00 (local — Gemma 4 via Ollama)[/{ACCENT_HI}]"
+            )
+            footer = (
+                "[dim]first run pulls the model (~10-30 min); cached for 24h. "
+                "no API calls; no internet needed after the pull.[/dim]"
+            )
         else:
             estimate = self._estimate_cost(corpus_chars, days)
             cost_line = f"  est. cost:  [{ACCENT_HI}]~${estimate:.2f}[/{ACCENT_HI}]{critic_note}"
