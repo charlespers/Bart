@@ -507,7 +507,7 @@ class Orchestrator:
             footer = "[dim]subscription rate limits apply.[/dim]"
         elif self.cfg.auth_mode == "ollama-local":
             cost_line = (
-                f"  cost:       [{ACCENT_HI}]$0.00 (local — Gemma 4 via Ollama)[/{ACCENT_HI}]"
+                f"  cost:       [{ACCENT_HI}]$0.00 (local — Gemma via Ollama)[/{ACCENT_HI}]"
             )
             footer = (
                 "[dim]first run pulls the model (~10-30 min); cached for 24h. "

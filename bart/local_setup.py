@@ -45,11 +45,15 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/"
 # Probed VRAM (or unified memory on Apple Silicon) is the ceiling — we pick
 # the largest tier the machine can run. fast_model is intentionally tiny
 # so the per-day Researcher / brief / sidecar calls stay fast.
+#
+# Defaults to `gemma3` because that's what Ollama's registry currently
+# publishes. Once Ollama packages Gemma 4 you can swap the names here (or
+# override per-run via `./run setup`) without any other code change.
 TIERS: list[tuple[float, str, str, str]] = [
-    (40.0, "gemma4:27b", "gemma4:1b", "27B (high-end, ~40GB)"),
-    (18.0, "gemma4:12b", "gemma4:1b", "12B (mid-range, ~18GB)"),
-    (6.0,  "gemma4:4b",  "gemma4:1b", "4B  (laptop, ~6GB)"),
-    (0.0,  "gemma4:1b",  "gemma4:1b", "1B  (CPU / minimal RAM)"),
+    (40.0, "gemma3:27b", "gemma3:1b", "Gemma 3 27B (high-end, ~40GB)"),
+    (18.0, "gemma3:12b", "gemma3:1b", "Gemma 3 12B (mid-range, ~18GB)"),
+    (6.0,  "gemma3:4b",  "gemma3:1b", "Gemma 3 4B  (laptop, ~6GB)"),
+    (0.0,  "gemma3:1b",  "gemma3:1b", "Gemma 3 1B  (CPU / minimal RAM)"),
 ]
 
 
@@ -59,6 +63,43 @@ def pick_tier(memory_gb: float) -> tuple[str, str, str]:
         if memory_gb >= floor:
             return primary, fast, label
     return TIERS[-1][1], TIERS[-1][2], TIERS[-1][3]
+
+
+def model_exists_in_registry(model: str) -> bool:
+    """HEAD-check the Ollama OCI registry for a given model:tag.
+
+    Returns True iff `ollama pull <model>` would succeed. Uses the OCI
+    registry at registry.ollama.ai (the same endpoint `ollama pull` hits
+    internally) — the public website at ollama.com/library returns 200
+    for any URL pattern, so it can't be used to validate.
+
+    Implementation note: the system `curl` is used (not Python's urllib)
+    because urllib often can't validate SSL on macOS Python distributions
+    that ship without certifi. `curl` uses the system CA store, which is
+    what `ollama pull` itself relies on.
+
+    Falls back to True (best-effort) if curl is missing or the network is
+    flaky — the actual pull will surface any real error.
+    """
+    if ":" in model:
+        name, tag = model.split(":", 1)
+    else:
+        name, tag = model, "latest"
+    url = f"https://registry.ollama.ai/v2/library/{name}/manifests/{tag}"
+    if shutil.which("curl") is None:
+        return True
+    try:
+        out = subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+             "--max-time", "5", "-I", url],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return True
+    code = (out.stdout or "").strip()
+    if not code or not code.isdigit():
+        return True
+    return 200 <= int(code) < 400
 
 
 # --- Hardware probe ------------------------------------------------------
@@ -372,6 +413,22 @@ def ensure_ready(primary_model: str, fast_model: str, console) -> None:
                           f"[dim](<24h since last use)[/dim]")
             cache_touch(model)
             continue
+        # Pre-pull existence check. If Ollama's registry HEAD returns 404 we
+        # can fail with a clear, actionable message instead of the cryptic
+        # `pull model manifest: file does not exist` from the streaming pull.
+        if not model_exists_in_registry(model):
+            raise RuntimeError(
+                f"model `{model}` is not available in Ollama's registry "
+                f"(https://ollama.com/library).\n\n"
+                f"  Currently published Gemma sizes:\n"
+                f"    [bold]gemma3:27b[/bold]  ~40GB\n"
+                f"    [bold]gemma3:12b[/bold]  ~18GB\n"
+                f"    [bold]gemma3:4b[/bold]   ~6GB\n"
+                f"    [bold]gemma3:1b[/bold]   ~2GB\n\n"
+                f"  Re-run [white]./run setup[/white] and pick local mode "
+                f"again to choose a published model. (Gemma 4 may not be in "
+                f"Ollama's library yet — check https://ollama.com/library.)"
+            )
         console.print(f"  → pulling [cyan]{model}[/cyan] [dim](first run / cache "
                       f"expired — may take several minutes)[/dim]")
         try:
@@ -382,7 +439,12 @@ def ensure_ready(primary_model: str, fast_model: str, console) -> None:
                     console.print(f"    [dim]{s}[/dim]")
             ollama_pull(model, on_progress=_on_progress)
         except Exception as e:
-            raise RuntimeError(f"failed to pull {model}: {e}") from e
+            raise RuntimeError(
+                f"failed to pull {model}: {e}\n"
+                f"  Try [white]./run setup[/white] and pick a different "
+                f"local-model variant. Currently published: gemma3:1b / 4b / "
+                f"12b / 27b."
+            ) from e
         cache_touch(model)
         console.print(f"  [green]✓[/green] pulled [cyan]{model}[/cyan]")
 

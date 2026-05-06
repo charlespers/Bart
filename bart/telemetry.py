@@ -17,6 +17,12 @@ PRICING = {
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30},
     "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0, "cache_write": 1.0, "cache_read": 0.08},
     # Local Gemma — runs on the user's machine via Ollama, $0 per token.
+    "gemma3:1b":  {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma3:4b":  {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma3:12b": {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma3:27b": {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    # Future-proof: Gemma 4 entries (zero) so when Ollama publishes them
+    # users can switch with a config edit and the cost math stays at $0.
     "gemma4:1b":  {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
     "gemma4:4b":  {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
     "gemma4:12b": {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},

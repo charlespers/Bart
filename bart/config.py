@@ -61,8 +61,33 @@ def load_config() -> Optional[Config]:
         return None
     try:
         data = json.loads(CONFIG_PATH.read_text())
+    except json.JSONDecodeError:
+        return None
+    # Auto-migrate stale local-mode model names. Earlier builds preselected
+    # `gemma4:Xb` before that name existed in Ollama's registry; rewrite to
+    # the published `gemma3:Xb` so existing configs heal without a manual
+    # `./run setup`.
+    if data.get("auth_mode") == "ollama-local":
+        rewrites = {
+            "gemma4:1b": "gemma3:1b",
+            "gemma4:4b": "gemma3:4b",
+            "gemma4:12b": "gemma3:12b",
+            "gemma4:27b": "gemma3:27b",
+        }
+        changed = False
+        for key in ("primary_model", "fast_model"):
+            v = data.get(key)
+            if v in rewrites:
+                data[key] = rewrites[v]
+                changed = True
+        if changed:
+            try:
+                CONFIG_PATH.write_text(json.dumps(data, indent=2))
+            except OSError:
+                pass
+    try:
         return Config(**data)
-    except (json.JSONDecodeError, ValidationError):
+    except ValidationError:
         return None
 
 
@@ -119,7 +144,7 @@ def run_setup_wizard(force: bool = False) -> Config:
             auth_mode = ""
             api_key = ""
     elif not force and saved_mode == "ollama-local":
-        if Confirm.ask("[1/6] Use saved auth mode (local Gemma 4 via Ollama)?", default=True):
+        if Confirm.ask("[1/6] Use saved auth mode (local Gemma via Ollama)?", default=True):
             pass
         else:
             auth_mode = ""
@@ -148,7 +173,7 @@ def run_setup_wizard(force: bool = False) -> Config:
         choice_map[str(choice_num)] = "api"
         choice_num += 1
         choices_lines.append(
-            f"  [{ACCENT}]{choice_num}[/{ACCENT}]  Local Gemma 4 (Ollama) "
+            f"  [{ACCENT}]{choice_num}[/{ACCENT}]  Local Gemma (Ollama)   "
             f"[dim](free, runs offline; ~Sonnet-class quality, not Opus)[/dim]"
         )
         choice_map[str(choice_num)] = "ollama-local"
@@ -222,11 +247,13 @@ def run_setup_wizard(force: bool = False) -> Config:
             local_fast = fast
         else:
             console.print(
-                "\n  available variants:\n"
-                "    [bold]gemma4:27b[/bold]  ~40GB unified/VRAM\n"
-                "    [bold]gemma4:12b[/bold]  ~18GB\n"
-                "    [bold]gemma4:4b[/bold]   ~6GB\n"
-                "    [bold]gemma4:1b[/bold]   ~2GB (works on CPU)\n"
+                "\n  available variants (Ollama-published):\n"
+                "    [bold]gemma3:27b[/bold]  ~40GB unified/VRAM\n"
+                "    [bold]gemma3:12b[/bold]  ~18GB\n"
+                "    [bold]gemma3:4b[/bold]   ~6GB\n"
+                "    [bold]gemma3:1b[/bold]   ~2GB (works on CPU)\n"
+                "  [dim]Gemma 4 will be available here once Ollama publishes "
+                "it; you can edit `.bart_config.json` to switch later.[/dim]\n"
             )
             local_primary = Prompt.ask(
                 "  primary model (long-form Author)",
@@ -236,12 +263,22 @@ def run_setup_wizard(force: bool = False) -> Config:
                 "  fast model (Distiller / Researcher / sidecars)",
                 default=fast,
             )
+        # Validate the chosen models exist in the Ollama registry BEFORE
+        # saving config. Cheaper than a failed pull at run time.
+        for m in {local_primary, local_fast}:
+            if not _ls.model_exists_in_registry(m):
+                console.print(
+                    f"\n[red]✗ model `{m}` is not in Ollama's registry.[/red]\n"
+                    f"  Pick one of: gemma3:27b / gemma3:12b / gemma3:4b / "
+                    f"gemma3:1b (the currently published variants).\n"
+                )
+                sys.exit(1)
         console.print(
             f"\n  [dim]models will be pulled at run start (10–30 min on first run; "
             f"cached for 24 hours so back-to-back runs are fast).[/dim]"
         )
         console.print(
-            f"  [dim]quality note: local Gemma 4 produces ~Sonnet-class lessons. "
+            f"  [dim]quality note: local Gemma produces ~Sonnet-class lessons. "
             f"For Opus-class quality on long structured artifacts, switch to "
             f"`./run setup` and pick option 1 or 2.[/dim]\n"
         )
