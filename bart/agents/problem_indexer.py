@@ -30,17 +30,15 @@ class ProblemIndexerAgent(Agent):
             max_tokens=4000,
             label="problem_indexer",
             temperature=0.1,
+            response_format="json",
         )
         return self._parse(text)
 
     @staticmethod
     def _parse(text: str) -> list[dict[str, Any]]:
-        m = re.search(r"```json\s*(\[.*?\])\s*```", text, re.DOTALL)
-        if not m:
-            return []
-        try:
-            data = json.loads(m.group(1))
-        except json.JSONDecodeError:
+        from .base import extract_json
+        data = extract_json(text, expect="array")
+        if data is None:
             return []
         out: list[dict[str, Any]] = []
         for entry in data if isinstance(data, list) else []:

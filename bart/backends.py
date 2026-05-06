@@ -50,6 +50,100 @@ def _indent(text: str, prefix: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Output sanitizer for local models
+# ─────────────────────────────────────────────────────────────────────
+
+import re as _re_san
+
+
+_GEMMA_PREAMBLES = [
+    _re_san.compile(p, _re_san.IGNORECASE) for p in (
+        r"^\s*(?:sure|certainly|absolutely|of course|here you go)[^\n]*\n+",
+        r"^\s*here(?:'s| is)\s+(?:the|your|a)\b[^\n]*\n+",
+        r"^\s*(?:i(?:'ll| will)|let me)\s+(?:write|create|generate|provide|produce)[^\n]*\n+",
+        r"^\s*okay\s*[,!.]?\s*\n+",
+        r"^\s*<think>[\s\S]*?</think>\s*",   # gemma3 think-mode tags, when on
+        r"^\s*<thinking>[\s\S]*?</thinking>\s*",
+    )
+]
+_GEMMA_POSTAMBLES = [
+    _re_san.compile(p, _re_san.IGNORECASE | _re_san.DOTALL) for p in (
+        # "I hope this helps" / "hope that helps" / "hope this is helpful"
+        r"\n+\s*(?:i\s+)?hope\s+(?:this|that)\s+(?:helps|is helpful)[^\n]*$",
+        r"\n+\s*(?:let me know|feel free|please reach out)[^\n]*$",
+        r"\n+\s*(?:happy|good)\s+(?:studying|learning|exam)[^\n]*$",
+    )
+]
+# Outer code-fence wrappers like ```markdown ... ``` that the model adds
+# around the entire artifact. We strip them only when they wrap the WHOLE
+# output (not when they're a legitimate code block within the artifact).
+_OUTER_FENCE_RE = _re_san.compile(
+    r"\A\s*```(?:markdown|md|html)?\s*\n([\s\S]*?)\n```\s*\Z",
+    _re_san.MULTILINE,
+)
+
+
+def _sanitize_local_output(text: str, response_format: str | None = None) -> str:
+    """Strip chatter that small local models (Gemma 3, especially) wrap
+    around their actual output. Idempotent: safe to call repeatedly.
+
+    For `response_format="json"` callers, also extracts JSON from inside
+    leading/trailing prose if Ollama's json-mode hiccups."""
+    original = text
+
+    # 1. Outer fence (```markdown\n...\n```) wrapping the entire artifact.
+    m = _OUTER_FENCE_RE.match(text)
+    if m:
+        text = m.group(1)
+
+    # 2. Preamble strip — repeat once to handle "Sure!\n\nHere is the lesson:"
+    for _ in range(2):
+        for pat in _GEMMA_PREAMBLES:
+            text = pat.sub("", text)
+
+    # 3. Postamble strip.
+    for pat in _GEMMA_POSTAMBLES:
+        text = pat.sub("", text)
+
+    # 4. JSON-mode: try to surface a JSON object/array even when wrapped.
+    if response_format == "json":
+        s = text.strip()
+        # If it doesn't start with `{` or `[`, look for the first one.
+        if s and s[0] not in "{[":
+            for opener, closer in (("{", "}"), ("[", "]")):
+                start = s.find(opener)
+                if start < 0:
+                    continue
+                # Walk braces honoring strings & escapes to find balanced close.
+                depth, in_str, esc, end = 0, False, False, -1
+                for i, ch in enumerate(s[start:], start):
+                    if esc:
+                        esc = False
+                        continue
+                    if ch == "\\":
+                        esc = True
+                        continue
+                    if ch == '"':
+                        in_str = not in_str
+                        continue
+                    if in_str:
+                        continue
+                    if ch == opener:
+                        depth += 1
+                    elif ch == closer:
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                if end > 0:
+                    text = s[start:end]
+                    break
+
+    text = text.strip()
+    return text or original  # never return blank — fall back to original
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Disk-cache helpers shared by both backends
 # ─────────────────────────────────────────────────────────────────────
 
@@ -120,6 +214,7 @@ class AnthropicAPIBackend:
         label: str = "",
         use_disk_cache: bool = True,
         temperature: float = 1.0,
+        response_format: str | None = None,  # "json" honored by OllamaBackend; ignored here
     ) -> str:
         sys_blocks = self._cacheable_system(system) if isinstance(system, str) else list(system)
         usr_blocks = [{"type": "text", "text": user}] if isinstance(user, str) else list(user)
@@ -322,6 +417,7 @@ class ClaudeCodeBackend:
         label: str = "",
         use_disk_cache: bool = True,
         temperature: float = 1.0,  # unused — CLI doesn't expose
+        response_format: str | None = None,  # ignored; CLI doesn't expose
     ) -> str:
         # The CLI doesn't expose cache_control, but flatten() reads either form.
         sys_text = self._flatten(system)
@@ -557,6 +653,7 @@ class OllamaBackend:
         label: str = "",
         use_disk_cache: bool = True,
         temperature: float = 1.0,
+        response_format: str | None = None,
     ) -> str:
         sys_text = self._flatten(system)
         usr_text = self._flatten(user)
@@ -592,7 +689,7 @@ class OllamaBackend:
         if env_override and env_override.isdigit():
             num_ctx = int(env_override)
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": sys_text},
@@ -608,6 +705,13 @@ class OllamaBackend:
             # than reloading per call. Orchestrator force-unloads at end.
             "keep_alive": "30m",
         }
+        # Ollama's structured-output mode. When the caller asks for "json",
+        # the model is forced to emit syntactically valid JSON — dramatically
+        # improves JSON-emitting agents (problem_indexer, exam_pattern,
+        # topic_distiller, whimsy_indexer, reviewer-grade) on small models
+        # that otherwise wrap JSON in code fences or chatty preambles.
+        if response_format == "json":
+            payload["format"] = "json"
         req = urllib.request.Request(
             f"{self._host}/api/chat",
             data=json.dumps(payload).encode(),
@@ -645,6 +749,11 @@ class OllamaBackend:
                 f"ollama returned empty content on '{label}' (model={model}). "
                 f"raw response: {body[:300]}"
             )
+        # Strip Gemma's common chatter: leading "Here is the lesson:" /
+        # "Sure! Here's…" preambles, trailing "Hope this helps!" /
+        # "Let me know if…" postambles, and outer markdown code fences
+        # that the orchestrator does NOT want written into the .md file.
+        text = _sanitize_local_output(text, response_format=response_format)
 
         # Echo-detection: small models (especially gemma3:1b) sometimes
         # repeat the prompt back when overwhelmed. Catch the most common

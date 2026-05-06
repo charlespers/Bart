@@ -38,18 +38,14 @@ class ExamPatternAgent(Agent):
             max_tokens=4000,
             label="exam_pattern",
             temperature=0.1,
+            response_format="json",
         )
         return self._parse(text)
 
     @staticmethod
     def _parse(text: str) -> dict[str, Any]:
-        m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if not m:
-            return dict(EMPTY_PATTERNS)
-        try:
-            data = json.loads(m.group(1))
-        except json.JSONDecodeError:
-            return dict(EMPTY_PATTERNS)
+        from .base import extract_json
+        data = extract_json(text, expect="object")
         if not isinstance(data, dict):
             return dict(EMPTY_PATTERNS)
         if not all(k in data for k in _REQUIRED_KEYS):

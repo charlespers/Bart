@@ -62,17 +62,15 @@ class TopicDistillerAgent(Agent):
             max_tokens=12000,  # 36 days * ~300 words = ~10800 tokens budget
             label="topic_distiller",
             temperature=0.2,
+            response_format="json",
         )
         return self._parse(text)
 
     @staticmethod
     def _parse(text: str) -> dict[int, str]:
-        m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if not m:
-            return {}
-        try:
-            raw = json.loads(m.group(1))
-        except json.JSONDecodeError:
+        from .base import extract_json
+        raw = extract_json(text, expect="object")
+        if not isinstance(raw, dict):
             return {}
         out: dict[int, str] = {}
         for k, v in raw.items():

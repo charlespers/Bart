@@ -33,17 +33,15 @@ class WhimsyIndexerAgent(Agent):
             max_tokens=3000,
             label="whimsy_indexer",
             temperature=0.2,
+            response_format="json",
         )
         return self._parse(text)
 
     @staticmethod
     def _parse(text: str) -> dict[str, str]:
-        m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if not m:
-            return {}
-        try:
-            data = json.loads(m.group(1))
-        except json.JSONDecodeError:
+        from .base import extract_json
+        data = extract_json(text, expect="object")
+        if not isinstance(data, dict):
             return {}
         return {str(k): str(v) for k, v in data.items() if v}
 
