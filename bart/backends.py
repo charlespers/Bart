@@ -573,6 +573,25 @@ class OllamaBackend:
         import urllib.error
         import urllib.request
 
+        # CRITICAL: set num_ctx explicitly. Ollama defaults to 2048 tokens —
+        # which is far too small for bart's prompts (corpus brief + skeleton
+        # + research slice routinely exceed 8K tokens). When the input
+        # overflows the context window, the model echoes the prompt back or
+        # returns garbage, and the orchestrator silently writes that as the
+        # artifact. Estimate input size and round up to a Gemma-supported
+        # power of two; 27B / 12B / 4B all support ≥ 32K, 1B supports 32K.
+        approx_input_tokens = (len(sys_text) + len(usr_text)) // 4
+        ctx_budget = approx_input_tokens + max_tokens + 1024  # headroom
+        for ceiling in (4096, 8192, 16384, 32768, 65536, 131072):
+            if ctx_budget <= ceiling:
+                num_ctx = ceiling
+                break
+        else:
+            num_ctx = 131072
+        env_override = os.environ.get("BART_OLLAMA_NUM_CTX")
+        if env_override and env_override.isdigit():
+            num_ctx = int(env_override)
+
         payload = {
             "model": model,
             "messages": [
@@ -582,6 +601,7 @@ class OllamaBackend:
             "stream": False,
             "options": {
                 "num_predict": max_tokens,
+                "num_ctx": num_ctx,
                 "temperature": temperature,
             },
             # Keep weights in VRAM between calls within a run — much faster
@@ -624,6 +644,37 @@ class OllamaBackend:
             raise LLMError(
                 f"ollama returned empty content on '{label}' (model={model}). "
                 f"raw response: {body[:300]}"
+            )
+
+        # Echo-detection: small models (especially gemma3:1b) sometimes
+        # repeat the prompt back when overwhelmed. Catch the most common
+        # signatures so the orchestrator doesn't silently write the prompt
+        # text as the artifact (the symptom: rendered HTML pages that show
+        # raw prompt content + empty bart-block boxes).
+        echo_signals = (
+            "ARTIFACT:",                 # author.py user-message header
+            "TEACHING CONTRACT —",       # _daily_lesson_brief preamble
+            "OBJECTIVES",                # daily-lesson brief
+            "SKELETON (follow",          # daily-lesson brief
+            "BRIEF\n",                   # author.py user-message brief block
+            "Subject:",                  # most agent user messages
+        )
+        # Treat as echo if 2+ prompt-anchor strings appear unchanged in the
+        # output AND the output isn't a plausible artifact (e.g., < 600
+        # chars but contains prompt scaffolding).
+        echo_hits = sum(1 for s in echo_signals if s in text)
+        if echo_hits >= 2 and len(text) < max(800, len(usr_text) // 3):
+            raise LLMError(
+                f"ollama model `{model}` appears to be echoing the prompt "
+                f"on '{label}' (output {len(text)} chars, contains "
+                f"{echo_hits} prompt anchor(s)).\n\n"
+                "  This is the classic 'context window too small' failure "
+                "mode for tiny local models. Either:\n"
+                "    1. Pick a larger Gemma variant: `./run setup` → option 3 → "
+                "      gemma3:4b or gemma3:12b.\n"
+                "    2. Override the context window: "
+                "      BART_OLLAMA_NUM_CTX=16384 ./run\n"
+                "    3. Switch to API or subscription mode for these prompts."
             )
 
         dt = time.time() - t0

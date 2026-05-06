@@ -236,12 +236,24 @@ def run_setup_wizard(force: bool = False) -> Config:
                 "and may be very slow (~1 token/sec on big models). "
                 "we'll pre-pick the 1B variant to keep things usable.[/yellow]"
             )
-            primary, fast, label = "gemma4:1b", "gemma4:1b", "1B (CPU-only fallback)"
+            primary, fast, label = "gemma3:1b", "gemma3:1b", "Gemma 3 1B (CPU-only fallback)"
         console.print(
             f"\n  detected [cyan]{mem_gb:.1f} GB[/cyan] available {source} "
             f"memory → preselecting [bold]{label}[/bold]"
             + cpu_warn
         )
+        # Loud warning when the picker chose 1B: that variant is genuinely
+        # too small for bart's daily-lesson prompts and produces empty or
+        # prompt-echo output. We let it through, but the user should know.
+        if primary == "gemma3:1b":
+            console.print(
+                "\n  [yellow]⚠ Gemma 3 1B is very small. Daily lessons may "
+                "come back empty or unstructured because the prompts exceed "
+                "what a 1B model can reason over. Practice exam and short "
+                "guide work better, but quality is far below Sonnet-class.\n"
+                "  If you have ≥6 GB free, prefer gemma3:4b. For real "
+                "Sonnet-class output, switch to API or subscription mode.[/yellow]"
+            )
         if Confirm.ask("\n  use this preselection?", default=True):
             local_primary = primary
             local_fast = fast
