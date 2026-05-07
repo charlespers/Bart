@@ -175,6 +175,77 @@ def _sanitize_local_output(text: str, response_format: str | None = None) -> str
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Memory-aware num_ctx ceiling for local Gemma models
+# ─────────────────────────────────────────────────────────────────────
+#
+# Per-token KV cache size (bytes, FP16) for the Gemma 3 family. These are
+# rough — actual numbers depend on group-query head count and sliding-window
+# layers — but they are correct to within ~30%, which is what we need for
+# a conservative ceiling.
+_KV_BYTES_PER_TOKEN = {
+    "gemma3:1b":  36_000,
+    "gemma3:4b":  80_000,
+    "gemma3:12b": 196_000,
+    "gemma3:27b": 432_000,
+    # Future Gemma 4 — same architectural family, conservative reuse.
+    "gemma4:1b":  36_000,
+    "gemma4:4b":  80_000,
+    "gemma4:12b": 196_000,
+    "gemma4:27b": 432_000,
+}
+
+# Approximate Q4-quantized model weight footprint (bytes).
+_WEIGHTS_BYTES = {
+    "gemma3:1b":   700 * 1024 * 1024,
+    "gemma3:4b":  2_500 * 1024 * 1024,
+    "gemma3:12b": 7_500 * 1024 * 1024,
+    "gemma3:27b": 16_000 * 1024 * 1024,
+    "gemma4:1b":   700 * 1024 * 1024,
+    "gemma4:4b":  2_500 * 1024 * 1024,
+    "gemma4:12b": 7_500 * 1024 * 1024,
+    "gemma4:27b": 16_000 * 1024 * 1024,
+}
+
+# Inference workspace overhead (activations, scratch, daemon process).
+_WORKSPACE_BYTES = 1_200 * 1024 * 1024
+
+
+def _hard_num_ctx_cap(model: str) -> int:
+    """Largest num_ctx that fits weights + KV cache + workspace in RAM.
+
+    Local-mode lifesaver: Ollama silently allocates the full num_ctx-sized
+    KV cache up front, and on a small machine that allocation can OOM-kill
+    the daemon mid-call. The orchestrator surfaces the kill as a hung
+    `call_start` with no `call_done`. Bound num_ctx to what the machine
+    can actually carry, then raise a clean LLMError if a caller asks for
+    more.
+
+    Returns the largest power-of-two num_ctx for which:
+        weights + workspace + num_ctx * kv_bytes_per_token <= 0.70 * available_ram
+
+    Falls back to 8192 if probing fails — that's enough for chunked
+    per-file agents without being so small that a daily-lesson Author gets
+    refused. Operators can always raise via `BART_OLLAMA_NUM_CTX`.
+    """
+    try:
+        from .local_setup import probe_memory_gb
+        avail_gb, _ = probe_memory_gb()
+        avail_bytes = avail_gb * (1024 ** 3)
+    except Exception:  # noqa: BLE001
+        return 8192
+    weights = _WEIGHTS_BYTES.get(model, 2_500 * 1024 * 1024)
+    kv_per_tok = _KV_BYTES_PER_TOKEN.get(model, 80_000)
+    budget = (avail_bytes * 0.70) - weights - _WORKSPACE_BYTES
+    if budget <= 0:
+        return 4096  # machine is dangerously full; smallest viable window
+    max_tokens_fit = int(budget / kv_per_tok)
+    for cap in (131072, 65536, 32768, 16384, 8192, 4096):
+        if max_tokens_fit >= cap:
+            return cap
+    return 4096
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Disk-cache helpers shared by both backends
 # ─────────────────────────────────────────────────────────────────────
 
@@ -702,22 +773,39 @@ class OllamaBackend:
         import urllib.request
 
         # CRITICAL: set num_ctx explicitly. Ollama defaults to 2048 tokens —
-        # which is far too small for bart's prompts (corpus brief + skeleton
-        # + research slice routinely exceed 8K tokens). When the input
-        # overflows the context window, the model echoes the prompt back or
-        # returns garbage, and the orchestrator silently writes that as the
-        # artifact. Estimate input size and round up to a Gemma-supported
-        # power of two. Floor at 16K — every published Gemma 3 size supports
-        # ≥ 32K, and the smaller buckets (4K / 8K) are too tight for bart's
-        # corpus-heavy prompts in practice.
+        # which is far too small for bart's prompts. But the OPPOSITE failure
+        # is also catastrophic: oversizing num_ctx allocates an O(num_ctx)
+        # KV cache on top of the model weights, and on the small machines
+        # that pick gemma3:1b/4b that allocation OOM-kills Ollama mid-call.
+        # The orchestrator never gets a clean error — the call_done event
+        # simply never arrives.
+        #
+        # Defense: a hard memory-aware ceiling. Approximate KV-cache cost
+        # per token for the Gemma 3 family (FP16, group-query attention),
+        # then cap so weights + KV + workspace fit in ~70% of probed RAM.
         approx_input_tokens = (len(sys_text) + len(usr_text)) // 4
-        ctx_budget = approx_input_tokens + max_tokens + 2048  # generous headroom
-        for ceiling in (16384, 32768, 65536, 131072):
+        ctx_budget = approx_input_tokens + max_tokens + 1024  # tight headroom
+        hard_cap = _hard_num_ctx_cap(model)
+        for ceiling in (4096, 8192, 16384, 32768, 65536, 131072):
             if ctx_budget <= ceiling:
                 num_ctx = ceiling
                 break
         else:
             num_ctx = 131072
+        if num_ctx > hard_cap:
+            # Refuse the call rather than OOM the daemon. The orchestrator
+            # routes full-corpus work through chunked agents in local mode,
+            # so a hit here means an agent tried to send something it
+            # shouldn't have — give a precise error so the caller can fix.
+            raise LLMError(
+                f"ollama call '{label}' would need num_ctx={num_ctx} "
+                f"but the hard ceiling for `{model}` on this machine is "
+                f"{hard_cap} (KV cache + weights wouldn't fit in RAM). "
+                f"Approx input: {approx_input_tokens} tokens. "
+                f"Either chunk the input upstream, raise BART_OLLAMA_NUM_CTX "
+                f"manually if you know your machine has the headroom, or "
+                f"switch to a smaller corpus path."
+            )
         env_override = os.environ.get("BART_OLLAMA_NUM_CTX")
         if env_override and env_override.isdigit():
             num_ctx = int(env_override)

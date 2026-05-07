@@ -250,15 +250,22 @@ def test_ollama_backend_flatten_strips_cache_control():
     assert out == "kept"  # text preserved; cache_control attribute irrelevant
 
 
-def test_ollama_backend_sets_num_ctx_above_default(monkeypatch):
-    """Ollama defaults num_ctx to 2048, which truncates bart's prompts and
-    causes prompt-echo. The backend must compute a context budget large
-    enough to fit the input + max_tokens with headroom. Floor is 16K
-    even for small inputs because bart's full prompts always exceed
-    the smaller Ollama buckets in practice."""
+def test_ollama_backend_sizes_num_ctx_to_actual_need(monkeypatch):
+    """Ollama defaults num_ctx to 2048, which truncates prompts and causes
+    prompt-echo. But oversizing is the *opposite* failure: Ollama allocates
+    the full num_ctx-sized KV cache up front, and on a small machine that
+    allocation OOM-kills the daemon mid-call. The backend must size num_ctx
+    to fit the actual input + max_tokens, not inflate to a fixed floor.
+
+    A small input should pick the smallest bucket that fits it; a larger
+    input should escalate.
+    """
     import urllib.request
     from bart.backends import OllamaBackend
     from bart.telemetry import Telemetry
+
+    # Pretend the host has plenty of RAM so the hard cap doesn't kick in.
+    monkeypatch.setattr("bart.local_setup.probe_memory_gb", lambda: (64.0, "system"))
 
     captured = {}
 
@@ -275,7 +282,8 @@ def test_ollama_backend_sets_num_ctx_above_default(monkeypatch):
                         lambda req, timeout=None: (captured.update(
                             body=json.loads(req.data.decode())) or _FakeResp()))
     backend = OllamaBackend(telemetry=Telemetry(), cache_dir=None)
-    # Even a small input should hit the 16K floor.
+    # Tiny input: we should NOT inflate to 16K — that would over-allocate
+    # the KV cache. The smallest bucket that fits is what we want.
     backend.complete(
         model="gemma3:12b",
         system="short",
@@ -284,9 +292,11 @@ def test_ollama_backend_sets_num_ctx_above_default(monkeypatch):
         label="t",
         use_disk_cache=False,
     )
-    assert captured["body"]["options"]["num_ctx"] >= 16384, (
-        f"num_ctx floor not respected: {captured['body']['options']['num_ctx']}"
+    small_ctx = captured["body"]["options"]["num_ctx"]
+    assert small_ctx <= 8192, (
+        f"num_ctx over-allocated for tiny input: {small_ctx} (expect ≤ 8192)"
     )
+    assert small_ctx >= 2048, "num_ctx must beat the Ollama default 2048"
 
     # Larger inputs should escalate to a bigger bucket.
     backend.complete(
@@ -297,7 +307,41 @@ def test_ollama_backend_sets_num_ctx_above_default(monkeypatch):
         label="t",
         use_disk_cache=False,
     )
-    assert captured["body"]["options"]["num_ctx"] >= 32768
+    big_ctx = captured["body"]["options"]["num_ctx"]
+    assert big_ctx >= 32768, f"escalation failed for big input: {big_ctx}"
+    assert big_ctx > small_ctx, "larger input did not pick a bigger bucket"
+
+
+def test_ollama_backend_refuses_oversized_call_on_small_machine(monkeypatch):
+    """When the requested num_ctx wouldn't fit in available RAM after
+    weights + workspace, the backend must refuse the call rather than
+    let Ollama OOM-kill itself silently."""
+    import urllib.request
+    from bart.backends import OllamaBackend, LLMError
+    from bart.telemetry import Telemetry
+
+    # Pretend the host has only 4GB available — typical of the laptops
+    # that pick gemma3:1b.
+    monkeypatch.setattr("bart.local_setup.probe_memory_gb", lambda: (4.0, "unified"))
+
+    def _should_not_be_called(*a, **kw):
+        raise AssertionError("urlopen reached despite over-cap input")
+    monkeypatch.setattr(urllib.request, "urlopen", _should_not_be_called)
+
+    backend = OllamaBackend(telemetry=Telemetry(), cache_dir=None)
+    try:
+        backend.complete(
+            model="gemma3:1b",
+            system="x" * 200_000,  # ~50K tokens
+            user="y" * 200_000,    # ~50K tokens
+            max_tokens=8000,
+            label="oversized",
+            use_disk_cache=False,
+        )
+    except LLMError as e:
+        assert "hard ceiling" in str(e) or "wouldn't fit" in str(e), str(e)
+        return
+    raise AssertionError("backend allowed an over-cap call through")
 
 
 def test_ollama_backend_num_ctx_env_override(monkeypatch):
