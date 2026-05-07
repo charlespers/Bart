@@ -207,8 +207,16 @@ class Orchestrator:
                 raise
 
             # Build the full-corpus context (used only by Distiller + Researcher).
+            # In ollama-local mode this `full_corpus_block` is *deliberately
+            # never used* — the chunked agents in `local_chunked.py` walk
+            # `corpus.files` directly so no single LLM call ever sees the
+            # whole corpus. We still build it so a misrouted call would fail
+            # loud (the OllamaBackend num_ctx ceiling will refuse the call)
+            # rather than silently OOM the daemon.
             full_corpus_block = self._make_corpus_block(corpus.body)
             full_ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=full_corpus_block)
+
+            is_local = self.cfg.auth_mode == "ollama-local"
 
             # ── Distill the corpus to a tight brief ONCE, with the fast model.
             # All downstream agents (Planner, Author, Reviewer) use the brief
@@ -222,6 +230,24 @@ class Orchestrator:
             if brief_path.exists() and brief_path.stat().st_size > 500:
                 corpus_brief = brief_path.read_text()
                 self.console.print(f"  [dim]✓ reused cached corpus brief ({len(corpus_brief):,} chars)[/dim]")
+            elif is_local:
+                # Local mode: per-file map-reduce. Never sends the full
+                # corpus to a 1B-4B model in a single call.
+                from .agents.local_chunked import chunked_distill
+                self.console.print(
+                    f"  [dim](local mode: per-file digest across "
+                    f"{len(corpus.files)} file(s))[/dim]"
+                )
+                def _distill_progress(i: int, n: int, label: str) -> None:
+                    if i == 1 or i == n or i % 5 == 0:
+                        self.console.print(
+                            f"  [dim]  · digest {i}/{n}: {label}[/dim]"
+                        )
+                corpus_brief = chunked_distill(
+                    llm, self.cfg, corpus.files, on_progress=_distill_progress,
+                )
+                brief_path.write_text(corpus_brief)
+                self.console.print(f"  [{RICH_OK}]✓[/{RICH_OK}] corpus brief written ({len(corpus_brief):,} chars)")
             else:
                 distiller = DistillerAgent(full_ctx)
                 corpus_brief = distiller.distill()
@@ -256,16 +282,29 @@ class Orchestrator:
             # ── Per-run sidecar primitives (notation card, problem index,
             # exam patterns). Three independent corpus reads → run them in
             # parallel for ~3x faster sidecar extraction.
+            #
+            # In local mode we route problem-index and exam-pattern through
+            # chunked per-file paths instead of full-corpus single calls,
+            # for the same reason as the distiller: a 1B model can't ingest
+            # 400K chars without OOM-ing.
             with ThreadPoolExecutor(max_workers=3) as _sidecar_pool:
                 _f_notation = _sidecar_pool.submit(
                     self._extract_notation_card, corpus_brief, brief_ctx,
                 )
-                _f_problems = _sidecar_pool.submit(
-                    self._extract_problem_index, full_ctx,
-                )
-                _f_exam = _sidecar_pool.submit(
-                    self._extract_exam_patterns, full_ctx,
-                )
+                if is_local:
+                    _f_problems = _sidecar_pool.submit(
+                        self._extract_problem_index_local, llm, corpus.files,
+                    )
+                    _f_exam = _sidecar_pool.submit(
+                        self._extract_exam_patterns_local, llm, corpus.files,
+                    )
+                else:
+                    _f_problems = _sidecar_pool.submit(
+                        self._extract_problem_index, full_ctx,
+                    )
+                    _f_exam = _sidecar_pool.submit(
+                        self._extract_exam_patterns, full_ctx,
+                    )
                 notation_card = _f_notation.result()
                 problem_index = _f_problems.result()
                 exam_patterns = _f_exam.result()
@@ -355,26 +394,46 @@ class Orchestrator:
                 self.console.print(
                     f"  [{RICH_OK}]✓[/{RICH_OK}] {len(research_by_day)} study card(s) generated"
                 )
-                # If the batched call missed any days, fall back to per-day Researchers
+                # If the batched call missed any days, fall back to per-day Researchers.
+                # In local mode the per-day Researcher would hit the OllamaBackend
+                # hard num_ctx cap (full-corpus call), so we substitute an empty
+                # research slice — the Author still has the brief + day entry to
+                # work from, which is enough on local models.
                 missing = [d for d in day_entries if d["day"] not in research_by_day]
                 if missing:
-                    self.console.print(
-                        f"  [yellow]⚠[/yellow] {len(missing)} day(s) missing from batch — "
-                        f"falling back to per-day researcher"
-                    )
-                    fallback = self._prefetch_research(missing, researcher)
-                    research_by_day.update(fallback)
+                    if is_local:
+                        self.console.print(
+                            f"  [yellow]⚠[/yellow] {len(missing)} day(s) missing from batch — "
+                            f"local mode fills with empty research slice (brief carries the load)"
+                        )
+                        for d in missing:
+                            research_by_day[d["day"]] = ""
+                    else:
+                        self.console.print(
+                            f"  [yellow]⚠[/yellow] {len(missing)} day(s) missing from batch — "
+                            f"falling back to per-day researcher"
+                        )
+                        fallback = self._prefetch_research(missing, researcher)
+                        research_by_day.update(fallback)
 
             # ── Per-day Researcher: full-corpus excerpts for each day.
             # Runs in addition to the topic-distiller study card. The Author
             # gets BOTH — the study card (concise day plan) and the
             # research slice (verbatim corpus excerpts). Disk-cached so
             # --resume is free.
+            #
+            # Local mode auto-skips the heavy per-day full-corpus pass
+            # unless explicitly forced. The chunked researcher does work
+            # there, but it's N_days × N_files calls — burning that on a
+            # 1B model would dominate wall-time. The brief + topic_distiller
+            # study card carry the load instead.
             import os as _os
-            if _os.environ.get("BART_SKIP_RESEARCHER") == "1":
+            local_skip = is_local and _os.environ.get("BART_FORCE_RESEARCHER_LOCAL") != "1"
+            if _os.environ.get("BART_SKIP_RESEARCHER") == "1" or local_skip:
                 research_full_by_day: dict[int, str] = {}
+                reason = "BART_SKIP_RESEARCHER=1" if not local_skip else "local mode"
                 self.console.print(
-                    "  [dim]BART_SKIP_RESEARCHER=1 — skipping per-day Researcher[/dim]"
+                    f"  [dim]{reason} — skipping per-day Researcher full-corpus pass[/dim]"
                 )
             else:
                 self.console.print(
@@ -469,38 +528,146 @@ class Orchestrator:
         )
 
     def _estimate_cost(self, corpus_chars: int, days: int) -> float:
-        """Rough USD cost estimate before the run starts."""
-        # Each artifact reads the corpus once. Cache means subsequent reads are 90% cheaper.
-        # 4 top-level artifacts + days lessons + planner + (researchers via fast model).
-        n_calls = 1 + 4 + days  # primary calls
-        # Approx tokens: corpus is ~corpus_chars/4 tokens. First call writes cache, rest read.
-        corpus_tokens = corpus_chars // 4
-        cache_write_tokens = corpus_tokens
-        cache_read_tokens = corpus_tokens * (n_calls - 1)
-        output_tokens = n_calls * 8000  # conservative
-        # Critic uses fast model, doesn't read corpus.
-        critic_input = n_calls * 4000  # artifact text
-        critic_output = n_calls * 800
-        # Researcher (fast model) reads corpus per day (cached).
-        researcher_input = days * 1000
-        researcher_output = days * 1500
+        """USD cost estimate that mirrors the actual call graph.
 
+        The previous estimate counted only ``1 + 4 + days`` calls and
+        applied a flat 1.4× critic multiplier. That undercounts the real
+        cost by ~5-10× because it omits, in order of magnitude:
+
+        - The per-day Researcher full-corpus pass (the largest hidden line
+          item — ~corpus_tokens × days of cache-read).
+        - Three sidecar full-corpus calls (notation, problem_indexer,
+          exam_pattern).
+        - The TopicDistiller batched call.
+        - Author retry calls (truncation_fix, block_fix).
+        - Reviewer + Reviser calls (these run on the *primary* model with
+          a brief + full artifact, not cheap).
+        - Solver (practice exam Part B answer key).
+        - Whimsy index extraction.
+        - Output tokens approximated as 8K/call when the actual ceiling
+          for the daily-lesson Author is 6K and Sonnet/Opus fill the budget.
+
+        The new version computes each line explicitly and returns the sum.
+        Callers can also reach `cost_breakdown(...)` to render a table.
+        """
+        bd = self.cost_breakdown(corpus_chars, days)
+        return bd["total"]
+
+    def cost_breakdown(self, corpus_chars: int, days: int) -> dict[str, float]:
+        """Return a dict of {line_item: usd} the orchestrator can render.
+
+        Each line item is computed by replicating the orchestrator's call
+        graph with conservative-but-realistic token budgets. Subscription
+        and ollama-local are zero-cost; only API mode produces non-zero
+        items here. The returned dict always includes a ``total`` key.
+        """
         from .telemetry import PRICING
         opus = PRICING.get(self.cfg.primary_model, PRICING["claude-opus-4-7"])
         haiku = PRICING.get(self.cfg.fast_model, PRICING["claude-haiku-4-5-20251001"])
 
-        cost = (
-            cache_write_tokens * opus["cache_write"]
-            + cache_read_tokens * opus["cache_read"]
-            + output_tokens * opus["output"]
-            + critic_input * haiku["input"]
-            + critic_output * haiku["output"]
-            + researcher_input * haiku["cache_read"]
-            + researcher_output * haiku["output"]
-        ) / 1_000_000.0
+        corpus_tokens = corpus_chars // 4
+
+        # Brief is what most agents see going forward; ~12K chars typical
+        # after distillation (the distiller is asked for ≤2500 words).
+        brief_tokens = 3_000
+
+        # Brief + per-call instruction + skeleton + small sidecars.
+        author_user_tokens = brief_tokens + 2_000
+
+        # Reviewer sees brief + full artifact (corpus-free).
+        artifact_out_tokens = 5_500   # average over schematics/whimsy/exam/short_guide
+        daily_out_tokens   = 5_500   # current max_tokens=6000; the model fills.
+        reviewer_in_tokens = brief_tokens + artifact_out_tokens
+        reviewer_out_tokens = 4_000   # PASS path is short, REVISE path is long; avg.
+
+        items: dict[str, float] = {}
+
+        def _line(name: str, m: dict, *, in_=0, out=0, cw=0, cr=0) -> None:
+            items[name] = (
+                in_ * m["input"]
+                + out * m["output"]
+                + cw * m["cache_write"]
+                + cr * m["cache_read"]
+            ) / 1_000_000.0
+
+        # 1. Distiller: full corpus → 6K-token brief. Fast model.
+        _line("distiller", haiku, cw=corpus_tokens, out=brief_tokens)
+
+        # 2. Three sidecar full-corpus calls. Each reads the corpus from cache
+        #    (cache write happened in the distiller call within 5 min of start)
+        #    and emits ~1.5K tokens.
+        _line("notation_extractor", haiku, in_=brief_tokens, out=400)
+        _line("problem_indexer", haiku, cr=corpus_tokens, out=2_500)
+        _line("exam_pattern", haiku, cr=corpus_tokens, out=2_500)
+
+        # 3. TopicDistiller batched call: brief + day plan in, study cards out.
+        _line(
+            "topic_distiller", haiku,
+            in_=brief_tokens + 2_000, out=days * 600,
+        )
+
+        # 4. Whimsy indexer: small Haiku call.
+        _line("whimsy_indexer", haiku, in_=2_000, out=600)
+
+        # 5. Top-level artifact Authors (4). Brief is cached after distiller.
+        n_top = 4
+        _line(
+            "top_level_authors", opus,
+            cr=n_top * brief_tokens, in_=n_top * 2_000,
+            out=n_top * artifact_out_tokens,
+        )
+
+        # 6. Top-level Reviewer pass (only ~50% trigger after density gates).
         if self.use_critic:
-            cost *= 1.4  # critic + revision overhead
-        return cost
+            _line(
+                "top_level_reviewer", opus,
+                in_=n_top * reviewer_in_tokens // 2,
+                out=n_top * reviewer_out_tokens // 2,
+            )
+
+        # 7. Daily lesson Authors (N). Each gets brief + skeleton + research.
+        _line(
+            "daily_authors", opus,
+            cr=days * brief_tokens, in_=days * author_user_tokens,
+            out=days * daily_out_tokens,
+        )
+        # Block-fix continuation (Haiku, ~50% trigger rate).
+        _line(
+            "daily_block_fix", haiku,
+            in_=days * 600 // 2, out=days * 800 // 2,
+        )
+
+        # 8. Daily Reviewer pass (~50% trigger after density gates).
+        if self.use_critic:
+            _line(
+                "daily_reviewer", opus,
+                in_=days * reviewer_in_tokens // 2,
+                out=days * reviewer_out_tokens // 2,
+            )
+
+        # 9. Per-day Researcher full-corpus pass (the previously-missed item).
+        #    Disabled by --fast / --turbo / BART_SKIP_RESEARCHER / local mode.
+        import os as _os
+        skip_researcher = (
+            _os.environ.get("BART_SKIP_RESEARCHER") == "1"
+            or self.cfg.auth_mode == "ollama-local"
+        )
+        if not skip_researcher:
+            _line(
+                "per_day_researcher", haiku,
+                cr=days * corpus_tokens, out=days * 1_500,
+            )
+
+        # 10. Solver (practice exam Part B answer key).
+        _line("solver", opus, in_=brief_tokens + artifact_out_tokens, out=4_000)
+
+        # Subscription and ollama-local are operationally $0 — zero out.
+        if self.cfg.auth_mode in ("claude-code", "ollama-local"):
+            for k in items:
+                items[k] = 0.0
+
+        items["total"] = sum(v for k, v in items.items() if k != "total")
+        return items
 
     def _confirm_cost(self, corpus_chars: int, days: int) -> bool:
         """Show estimated cost + time and ask for confirmation. Auto-yes if non-interactive."""
@@ -523,9 +690,25 @@ class Orchestrator:
                 "no API calls; no internet needed after the pull.[/dim]"
             )
         else:
-            estimate = self._estimate_cost(corpus_chars, days)
+            bd = self.cost_breakdown(corpus_chars, days)
+            estimate = bd["total"]
+            # Top three line items, for transparency. Helpful when the
+            # number lands higher than the user expects — they can see
+            # which agent dominates and decide whether to disable it
+            # (--fast / --turbo / BART_SKIP_RESEARCHER / --no-critic).
+            ranked = sorted(
+                ((k, v) for k, v in bd.items() if k != "total" and v > 0),
+                key=lambda kv: kv[1], reverse=True,
+            )[:3]
+            top3 = ", ".join(f"{k} ${v:.2f}" for k, v in ranked) if ranked else ""
             cost_line = f"  est. cost:  [{ACCENT_HI}]~${estimate:.2f}[/{ACCENT_HI}]{critic_note}"
-            footer = "[dim]final cost depends on response lengths and cache hits.[/dim]"
+            if top3:
+                cost_line += f"\n  top items:  [dim]{top3}[/dim]"
+            footer = (
+                "[dim]final cost depends on response lengths and cache hits. "
+                "knobs: [/dim][white]--fast[/white][dim] / [/dim][white]--turbo[/white]"
+                "[dim] / [/dim][white]--no-critic[/white][dim] each cut sizable items.[/dim]"
+            )
 
         self.console.print(
             Panel.fit(
@@ -586,6 +769,61 @@ class Orchestrator:
             index = []
         atomic_write_json(path, index)
         return index
+
+    def _extract_problem_index_local(self, llm, files) -> list[dict[str, Any]]:
+        """Local-mode chunked variant of `_extract_problem_index`.
+
+        Uses the same disk-cache file as the API path so a re-run with
+        --resume can reuse either form. The shape of the JSON written is
+        identical, so downstream `filter_for_topics` works unchanged.
+        """
+        path = self.paths.checkpoints_dir / "problem_index.json"
+        if path.exists() and path.stat().st_size > 10:
+            try:
+                data = json.loads(path.read_text())
+                self.console.print(f"  [dim]✓ reused problem index ({len(data)} entries)[/dim]")
+                return data
+            except json.JSONDecodeError:
+                pass
+        from .agents.local_chunked import chunked_problem_index
+        self.console.print(
+            f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing corpus problems "
+            f"[dim](local · per-file chunked)[/dim]"
+        )
+        index = chunked_problem_index(llm, self.cfg, files)
+        atomic_write_json(path, index)
+        return index
+
+    def _extract_exam_patterns_local(self, llm, files) -> dict[str, Any]:
+        """Local-mode chunked variant of `_extract_exam_patterns`."""
+        import os
+        path = self.paths.checkpoints_dir / "exam_patterns.json"
+        if path.exists() and path.stat().st_size > 10:
+            try:
+                data = json.loads(path.read_text())
+                self.console.print(
+                    f"  [dim]✓ reused exam patterns "
+                    f"({len(data.get('problems', []))} problems)[/dim]"
+                )
+                return data
+            except json.JSONDecodeError:
+                pass
+        if os.environ.get("BART_SKIP_EXAM_PATTERN") == "1":
+            from .agents.exam_pattern import EMPTY_PATTERNS
+            return dict(EMPTY_PATTERNS)
+        from .agents.local_chunked import chunked_exam_pattern
+        self.console.print(
+            f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing past-exam patterns "
+            f"[dim](local · per-file chunked)[/dim]"
+        )
+        try:
+            patterns = chunked_exam_pattern(llm, self.cfg, files)
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("exam_pattern (local) extraction failed: %s", e)
+            from .agents.exam_pattern import EMPTY_PATTERNS
+            patterns = dict(EMPTY_PATTERNS)
+        atomic_write_json(path, patterns)
+        return patterns
 
     def _extract_exam_patterns(self, full_ctx: AgentContext) -> dict[str, Any]:
         import os
