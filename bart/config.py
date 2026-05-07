@@ -64,15 +64,20 @@ def load_config() -> Optional[Config]:
     except json.JSONDecodeError:
         return None
     # Auto-migrate stale local-mode model names. Earlier builds preselected
-    # `gemma4:Xb` before that name existed in Ollama's registry; rewrite to
-    # the published `gemma3:Xb` so existing configs heal without a manual
-    # `./run setup`.
+    # `gemma4:1b/4b/12b/27b` as future-proof placeholders before Ollama
+    # actually published Gemma 4. Those tags are still 404 in the registry
+    # — Gemma 4's real published tags are e2b / e4b / 26b / 31b — so rewrite
+    # the placeholders to the closest real Gemma 4 tag (preferred) so users
+    # who saved a config with the bad placeholder heal automatically.
+    # Valid tags (gemma4:e2b, gemma4:e4b, gemma4:26b, gemma4:31b,
+    # gemma4:latest, and any gemma3:*) are left untouched.
     if data.get("auth_mode") == "ollama-local":
         rewrites = {
-            "gemma4:1b": "gemma3:1b",
-            "gemma4:4b": "gemma3:4b",
-            "gemma4:12b": "gemma3:12b",
-            "gemma4:27b": "gemma3:27b",
+            # Old placeholders → closest real Gemma 4 tag.
+            "gemma4:1b":  "gemma4:e2b",
+            "gemma4:4b":  "gemma4:e4b",
+            "gemma4:12b": "gemma4:26b",
+            "gemma4:27b": "gemma4:31b",
         }
         changed = False
         for key in ("primary_model", "fast_model"):
@@ -260,12 +265,16 @@ def run_setup_wizard(force: bool = False) -> Config:
         else:
             console.print(
                 "\n  available variants (Ollama-published):\n"
-                "    [bold]gemma3:27b[/bold]  ~40GB unified/VRAM\n"
+                "  [bold]Gemma 4[/bold] [dim](newer; 128K–256K context, native system-role support)[/dim]\n"
+                "    [bold]gemma4:31b[/bold]   ~20GB  (dense, highest quality)\n"
+                "    [bold]gemma4:26b[/bold]   ~18GB  (MoE — 3.8B active, faster than 31b)\n"
+                "    [bold]gemma4:e4b[/bold]   ~9.6GB (mid-range edge model)\n"
+                "    [bold]gemma4:e2b[/bold]   ~7.2GB (smallest Gemma 4 — laptop-friendly)\n"
+                "  [bold]Gemma 3[/bold] [dim](older; smaller variants still useful as fast model)[/dim]\n"
+                "    [bold]gemma3:27b[/bold]  ~40GB\n"
                 "    [bold]gemma3:12b[/bold]  ~18GB\n"
                 "    [bold]gemma3:4b[/bold]   ~6GB\n"
-                "    [bold]gemma3:1b[/bold]   ~2GB (works on CPU)\n"
-                "  [dim]Gemma 4 will be available here once Ollama publishes "
-                "it; you can edit `.bart_config.json` to switch later.[/dim]\n"
+                "    [bold]gemma3:1b[/bold]   ~2GB (works on CPU; recommended fast_model)\n"
             )
             local_primary = Prompt.ask(
                 "  primary model (long-form Author)",

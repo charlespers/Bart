@@ -15,17 +15,33 @@ import pytest
 from bart import local_setup as ls
 
 
-def test_pick_tier_high_end_picks_27b():
+def test_pick_tier_high_end_picks_gemma4_31b():
+    """High-end machines now preselect Gemma 4 31B (dense, ~20GB) — newer
+    architecture with 256K context and native system-role support."""
     primary, fast, label = ls.pick_tier(64.0)
-    assert primary == "gemma3:27b"
+    assert primary == "gemma4:31b"
     assert fast == "gemma3:1b"
-    assert "27B" in label
+    assert "31B" in label
 
 
-def test_pick_tier_mid_range_picks_12b():
+def test_pick_tier_mid_range_picks_gemma4():
+    """Mid-range memory (20GB available) still prefers a Gemma 4 variant —
+    26B MoE in this case. Threshold table:
+      ≥24GB → 31b, ≥22GB → 26b, ≥12GB → e4b, ≥9GB → e2b,
+      ≥6GB → gemma3:4b, else → gemma3:1b.
+    """
     primary, fast, _ = ls.pick_tier(20.0)
-    assert primary == "gemma3:12b"
+    assert primary == "gemma4:e4b"
     assert fast == "gemma3:1b"
+
+
+def test_pick_tier_picks_gemma4_e2b_at_smallest_threshold():
+    """At 9–11GB we preselect Gemma 4 E2B (~7.2GB on disk). Below 9GB
+    we have to drop to gemma3:4b — there is no smaller published Gemma 4."""
+    primary, _, _ = ls.pick_tier(9.0)
+    assert primary == "gemma4:e2b"
+    primary, _, _ = ls.pick_tier(8.0)
+    assert primary == "gemma3:4b"
 
 
 def test_pick_tier_laptop_picks_4b():
@@ -83,10 +99,13 @@ def test_model_exists_in_registry_best_effort_on_network_error(monkeypatch):
     assert ls.model_exists_in_registry("gemma3:12b") is True
 
 
-def test_load_config_migrates_stale_gemma4_to_gemma3(tmp_path, monkeypatch):
-    """Earlier builds saved `gemma4:Xb` model names which don't exist in
-    Ollama's registry. load_config() should silently rewrite them to
-    `gemma3:Xb` so existing users don't have to re-run setup."""
+def test_load_config_migrates_stale_gemma4_placeholders_to_real_tags(tmp_path, monkeypatch):
+    """Earlier builds saved `gemma4:1b/4b/12b/27b` placeholder model names
+    before Ollama actually published Gemma 4. Those tags are 404 in the
+    registry. Now that Gemma 4 IS published (under e2b/e4b/26b/31b),
+    load_config() should silently rewrite the bad placeholders to the
+    closest real Gemma 4 tag — not back to Gemma 3, which would silently
+    downgrade users who were expecting Gemma 4."""
     import json
     from bart import config as cfg_mod
 
@@ -100,17 +119,46 @@ def test_load_config_migrates_stale_gemma4_to_gemma3(tmp_path, monkeypatch):
         "student_level": "undergraduate",
         "style": "academic-rigorous",
         "daily_hours": 3.0,
-        "primary_model": "gemma4:12b",
-        "fast_model": "gemma4:1b",
+        "primary_model": "gemma4:12b",  # placeholder → should heal
+        "fast_model": "gemma4:1b",      # placeholder → should heal
     }))
     monkeypatch.setattr(cfg_mod, "CONFIG_PATH", fake_path)
     cfg = cfg_mod.load_config()
     assert cfg is not None
-    assert cfg.primary_model == "gemma3:12b"
-    assert cfg.fast_model == "gemma3:1b"
+    # `gemma4:12b` → closest real Gemma 4 tag is `gemma4:26b` (the next
+    # mid-large variant); `gemma4:1b` → `gemma4:e2b` (smallest published).
+    assert cfg.primary_model == "gemma4:26b"
+    assert cfg.fast_model == "gemma4:e2b"
     # Migration is persisted to disk so the next load is also clean.
     rewritten = json.loads(fake_path.read_text())
-    assert rewritten["primary_model"] == "gemma3:12b"
+    assert rewritten["primary_model"] == "gemma4:26b"
+
+
+def test_load_config_preserves_valid_gemma4_tags(tmp_path, monkeypatch):
+    """Valid published Gemma 4 tags (e2b / e4b / 26b / 31b / latest) must
+    survive the migration unchanged — earlier code mistakenly rewrote ALL
+    `gemma4:*` strings, which silently downgraded users to Gemma 3."""
+    import json
+    from bart import config as cfg_mod
+
+    fake_path = tmp_path / ".bart_config.json"
+    fake_path.write_text(json.dumps({
+        "auth_mode": "ollama-local",
+        "api_key": "",
+        "exam_date": "2099-01-01",
+        "subject": "test",
+        "guidance": "",
+        "student_level": "undergraduate",
+        "style": "academic-rigorous",
+        "daily_hours": 3.0,
+        "primary_model": "gemma4:e4b",
+        "fast_model": "gemma4:e2b",
+    }))
+    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", fake_path)
+    cfg = cfg_mod.load_config()
+    assert cfg is not None
+    assert cfg.primary_model == "gemma4:e4b"
+    assert cfg.fast_model == "gemma4:e2b"
 
 
 def test_load_config_leaves_anthropic_models_alone(tmp_path, monkeypatch):
@@ -519,6 +567,53 @@ def test_ollama_backend_retries_on_echo_and_recovers(monkeypatch):
     )
     assert "Real answer" in out
     assert call_count["n"] == 2  # initial + 1 retry
+
+
+def test_ollama_backend_passes_gemma4_specific_sampling(monkeypatch):
+    """Gemma 4 has its own recommended sampling (top_p=0.95, top_k=64)
+    plus a `think: False` knob. These options must be added for any
+    `gemma4:*` model and must NOT leak into Gemma 3 or Claude calls."""
+    import urllib.request
+    from bart.backends import OllamaBackend
+    from bart.telemetry import Telemetry
+
+    captured = {}
+
+    class _FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def read(self):
+            return json.dumps({
+                "message": {"content": "ok content here that is plenty long " * 30},
+                "prompt_eval_count": 1, "eval_count": 1,
+            }).encode()
+
+    monkeypatch.setattr("bart.local_setup.probe_memory_gb", lambda: (64.0, "system"))
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=None: (captured.update(
+                            body=json.loads(req.data.decode())) or _FakeResp()))
+    backend = OllamaBackend(telemetry=Telemetry(), cache_dir=None)
+
+    # Gemma 4: should add top_p / top_k / think.
+    backend.complete(
+        model="gemma4:e4b", system="s", user="u",
+        max_tokens=500, label="t", use_disk_cache=False,
+    )
+    opts = captured["body"]["options"]
+    assert opts.get("top_p") == 0.95
+    assert opts.get("top_k") == 64
+    assert opts.get("think") is False
+
+    # Gemma 3: must NOT have those keys (preserves prior behavior).
+    captured.clear()
+    backend.complete(
+        model="gemma3:12b", system="s", user="u",
+        max_tokens=500, label="t", use_disk_cache=False,
+    )
+    opts = captured["body"]["options"]
+    assert "top_p" not in opts
+    assert "top_k" not in opts
+    assert "think" not in opts
 
 
 def test_ollama_backend_complete_round_trips_via_http(monkeypatch):

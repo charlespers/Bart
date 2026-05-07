@@ -72,6 +72,13 @@ MODEL_CTX_WINDOW: dict[str, int] = {
     "gemma3:4b": 128_000,
     "gemma3:12b": 128_000,
     "gemma3:27b": 128_000,
+    # Gemma 4 (Ollama) — Edge variants 128K, MoE / dense large 256K.
+    # Tag names match Ollama's real registry (e2b / e4b / 26b / 31b / latest).
+    "gemma4:e2b":    128_000,
+    "gemma4:e4b":    128_000,
+    "gemma4:26b":    256_000,
+    "gemma4:31b":    256_000,
+    "gemma4:latest": 128_000,  # currently aliases e4b
 }
 
 
@@ -124,6 +131,13 @@ _GEMMA_PREAMBLES = [
         r"^\s*okay\s*[,!.]?\s*\n+",
         r"^\s*<think>[\s\S]*?</think>\s*",   # gemma3 think-mode tags, when on
         r"^\s*<thinking>[\s\S]*?</thinking>\s*",
+        # Gemma 4 thinking-mode artifacts. The new arch emits
+        # `<|channel>thought\n...<channel|>` blocks when thinking is
+        # active; strip the entire block so only the final answer remains.
+        # We don't enable thinking by default, but the model occasionally
+        # emits these tokens spontaneously on small variants.
+        r"^\s*<\|channel>\s*thought[\s\S]*?<channel\|>\s*",
+        r"^\s*<\|think\|>[\s\S]*?<\|/think\|>\s*",
     )
 ]
 _GEMMA_POSTAMBLES = [
@@ -247,23 +261,31 @@ _KV_BYTES_PER_TOKEN = {
     "gemma3:4b":  80_000,
     "gemma3:12b": 196_000,
     "gemma3:27b": 432_000,
-    # Future Gemma 4 — same architectural family, conservative reuse.
-    "gemma4:1b":  36_000,
-    "gemma4:4b":  80_000,
-    "gemma4:12b": 196_000,
-    "gemma4:27b": 432_000,
+    # Gemma 4 — actual published tags. e2b/e4b are "edge" variants
+    # (small effective param count, similar KV footprint to gemma3:4b).
+    # 26b is MoE (3.8B active of 25.2B total) — KV cache scales with the
+    # FULL model, not active params, so use a 12b-like footprint.
+    # 31b is dense, similar to gemma3:27b.
+    "gemma4:e2b":    50_000,
+    "gemma4:e4b":    80_000,
+    "gemma4:26b":   240_000,
+    "gemma4:31b":   480_000,
+    "gemma4:latest": 80_000,  # aliases e4b
 }
 
-# Approximate Q4-quantized model weight footprint (bytes).
+# Approximate Q4-quantized model weight footprint (bytes). Matches the
+# advertised on-disk sizes shown in Ollama's library listing.
 _WEIGHTS_BYTES = {
     "gemma3:1b":   700 * 1024 * 1024,
     "gemma3:4b":  2_500 * 1024 * 1024,
     "gemma3:12b": 7_500 * 1024 * 1024,
     "gemma3:27b": 16_000 * 1024 * 1024,
-    "gemma4:1b":   700 * 1024 * 1024,
-    "gemma4:4b":  2_500 * 1024 * 1024,
-    "gemma4:12b": 7_500 * 1024 * 1024,
-    "gemma4:27b": 16_000 * 1024 * 1024,
+    # Gemma 4 — real published sizes (Q4-quantized, in bytes).
+    "gemma4:e2b":     7_200 * 1024 * 1024,   #  7.2 GB on disk
+    "gemma4:e4b":     9_600 * 1024 * 1024,   #  9.6 GB on disk
+    "gemma4:26b":    18_000 * 1024 * 1024,   #   18 GB on disk (MoE)
+    "gemma4:31b":    20_000 * 1024 * 1024,   #   20 GB on disk
+    "gemma4:latest":  9_600 * 1024 * 1024,   # aliases e4b
 }
 
 # Inference workspace overhead (activations, scratch, daemon process).
@@ -894,6 +916,29 @@ class OllamaBackend:
         if env_override and env_override.isdigit():
             num_ctx = int(env_override)
 
+        # Gemma 4 has its own recommended sampling (temp=1.0, top_p=0.95,
+        # top_k=64) AND native `system` role support — the system message
+        # we send is honored as a real system turn rather than spliced into
+        # the first user message like in Gemma 3. We pass top_p / top_k for
+        # Gemma 4 only; for Gemma 3 we keep the existing default behavior so
+        # we don't change anything that already works for the user.
+        is_gemma4 = model.startswith("gemma4:")
+        options: dict[str, Any] = {
+            "num_predict": max_tokens,
+            "num_ctx": num_ctx,
+            "temperature": temperature,
+        }
+        if is_gemma4:
+            # Recommended Gemma 4 sampling. Only override when the caller
+            # didn't already set a non-default temperature.
+            options["top_p"] = 0.95
+            options["top_k"] = 64
+            # Disable Gemma 4's optional thinking mode by default — bart's
+            # local-mode primer asks for "no chain-of-thought" and we
+            # already strip thinking-tag artifacts in the sanitizer. Ollama
+            # honors `think: False` for models that expose a thinking knob.
+            options["think"] = False
+
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -901,11 +946,7 @@ class OllamaBackend:
                 {"role": "user", "content": usr_text},
             ],
             "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "num_ctx": num_ctx,
-                "temperature": temperature,
-            },
+            "options": options,
             # Keep weights in VRAM between calls within a run — much faster
             # than reloading per call. Orchestrator force-unloads at end.
             "keep_alive": "30m",

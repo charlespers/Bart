@@ -46,13 +46,19 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/"
 # the largest tier the machine can run. fast_model is intentionally tiny
 # so the per-day Researcher / brief / sidecar calls stay fast.
 #
-# Defaults to `gemma3` because that's what Ollama's registry currently
-# publishes. Once Ollama packages Gemma 4 you can swap the names here (or
-# override per-run via `./run setup`) without any other code change.
+# Prefer Gemma 4 over Gemma 3 at every tier where the machine can run it:
+# Gemma 4 has native `system` role support (Gemma 3 splices it into the
+# user message), 128K-256K context windows, and noticeably better
+# instruction following. The fast_model stays gemma3:1b — Gemma 4's
+# smallest published variant is gemma4:e2b at ~7GB, which is too heavy
+# for the fast-path agents. fast_model only needs JSON-mode, and 1B
+# works well enough there with bart's lenient json extractor.
 TIERS: list[tuple[float, str, str, str]] = [
-    (40.0, "gemma3:27b", "gemma3:1b", "Gemma 3 27B (high-end, ~40GB)"),
-    (18.0, "gemma3:12b", "gemma3:1b", "Gemma 3 12B (mid-range, ~18GB)"),
-    (6.0,  "gemma3:4b",  "gemma3:1b", "Gemma 3 4B  (laptop, ~6GB)"),
+    (24.0, "gemma4:31b", "gemma3:1b", "Gemma 4 31B (high-end, ~20GB)"),
+    (22.0, "gemma4:26b", "gemma3:1b", "Gemma 4 26B MoE (mid-high, ~18GB, ~3.8B active)"),
+    (12.0, "gemma4:e4b", "gemma3:1b", "Gemma 4 E4B (mid, ~9.6GB)"),
+    (9.0,  "gemma4:e2b", "gemma3:1b", "Gemma 4 E2B (laptop, ~7.2GB)"),
+    (6.0,  "gemma3:4b",  "gemma3:1b", "Gemma 3 4B  (small laptop, ~6GB)"),
     (0.0,  "gemma3:1b",  "gemma3:1b", "Gemma 3 1B  (CPU / minimal RAM)"),
 ]
 
@@ -421,13 +427,20 @@ def ensure_ready(primary_model: str, fast_model: str, console) -> None:
                 f"model `{model}` is not available in Ollama's registry "
                 f"(https://ollama.com/library).\n\n"
                 f"  Currently published Gemma sizes:\n"
+                f"  [bold]Gemma 4[/bold] (newer):\n"
+                f"    [bold]gemma4:31b[/bold]   ~20GB (dense)\n"
+                f"    [bold]gemma4:26b[/bold]   ~18GB (MoE)\n"
+                f"    [bold]gemma4:e4b[/bold]   ~9.6GB\n"
+                f"    [bold]gemma4:e2b[/bold]   ~7.2GB\n"
+                f"  [bold]Gemma 3[/bold] (older):\n"
                 f"    [bold]gemma3:27b[/bold]  ~40GB\n"
                 f"    [bold]gemma3:12b[/bold]  ~18GB\n"
                 f"    [bold]gemma3:4b[/bold]   ~6GB\n"
                 f"    [bold]gemma3:1b[/bold]   ~2GB\n\n"
                 f"  Re-run [white]./run setup[/white] and pick local mode "
-                f"again to choose a published model. (Gemma 4 may not be in "
-                f"Ollama's library yet — check https://ollama.com/library.)"
+                f"again to choose a published model.\n"
+                f"  Tip: gemma4 tags use letter sizes (e2b/e4b/26b/31b), not "
+                f"the gemma3-style 1b/4b/12b/27b — those are 404 in the registry."
             )
         console.print(f"  → pulling [cyan]{model}[/cyan] [dim](first run / cache "
                       f"expired — may take several minutes)[/dim]")
