@@ -80,8 +80,13 @@ from .agents import whimsy_indexer as _whimsy_indexer
 from .branding import ACCENT, ACCENT_HI, ACCENT_LO, CREAM_LO, INK, RICH_DIM, RICH_OK
 from .config import Config
 from .io.checkpoint import atomic_write_json, atomic_write_text, is_complete
-from .io.corpus import build_corpus, extract_all
-from .backends import AnthropicAPIBackend, ClaudeCodeBackend, OllamaBackend
+from .io.corpus import build_corpus, default_char_budget, extract_all
+from .backends import (
+    AnthropicAPIBackend,
+    ClaudeCodeBackend,
+    LLMContextTooLongError,
+    OllamaBackend,
+)
 from .paths import RunPaths
 from .telemetry import Telemetry
 
@@ -125,7 +130,9 @@ class Orchestrator:
             self._print_header()
             with self._stage("extract"):
                 kept, skipped = self._extract()
-            corpus = build_corpus(kept, skipped)
+            corpus = build_corpus(
+                kept, skipped, char_budget=default_char_budget(self.cfg.auth_mode),
+            )
             self._print_corpus_summary(corpus, skipped)
 
             if self.dry_run:
@@ -236,7 +243,9 @@ class Orchestrator:
             author = AuthorAgent(brief_ctx)
 
             # Researcher keeps full corpus access — it's the only agent that needs it.
-            researcher = ResearcherAgent(full_ctx)
+            # Pass the brief block as a fallback so per-topic calls can survive
+            # context-too-long without crashing the run.
+            researcher = ResearcherAgent(full_ctx, fallback_corpus_block=brief_block)
 
             # Reviewer fuses critic + reviser into a single corpus-free call.
             reviewer_ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=[])
@@ -562,8 +571,19 @@ class Orchestrator:
             f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing corpus problems "
             f"[dim](haiku · cached for the rest of the run)[/dim]"
         )
-        agent = ProblemIndexerAgent(full_ctx)
-        index = agent.index()
+        # Side-car. If the corpus overflows the fast-model window we'd
+        # rather emit an empty index than crash the whole run — daily
+        # lessons can re-derive problems on the fly when this is empty.
+        try:
+            agent = ProblemIndexerAgent(full_ctx)
+            index = agent.index()
+        except LLMContextTooLongError as e:
+            self.logger.warning("problem_indexer skipped (context too long): %s", e)
+            self.console.print(
+                "  [yellow]⚠[/yellow] problem index skipped — corpus exceeds "
+                "fast-model window; daily lessons will derive problems inline"
+            )
+            index = []
         atomic_write_json(path, index)
         return index
 

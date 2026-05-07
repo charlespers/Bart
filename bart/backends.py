@@ -45,6 +45,66 @@ class LLMError(RuntimeError):
     pass
 
 
+class LLMContextTooLongError(LLMError):
+    """The request exceeded the model's input-context window.
+
+    Raised by every backend when the underlying provider reports a
+    prompt-too-long / context-length-exceeded error. Callers can catch this
+    specifically and reach for map-reduce or a longer-context model rather
+    than retrying blindly.
+    """
+
+
+# Per-model input context window (tokens). Used for preventative size checks
+# before sending — if estimated input > 0.85 * window, callers should
+# map-reduce or promote to a longer-context model rather than fail.
+# Source: https://docs.claude.com/en/docs/about-claude/models — and Gemma's
+# own published 32K/128K limits.
+MODEL_CTX_WINDOW: dict[str, int] = {
+    # Claude — 200K standard, 1M for the Opus-4-7-1m variant
+    "claude-haiku-4-5": 200_000,
+    "claude-haiku-4-5-20251001": 200_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-opus-4-7": 200_000,
+    "claude-opus-4-7-1m": 1_000_000,
+    # Gemma 3 (Ollama) — published limits
+    "gemma3:1b": 32_000,
+    "gemma3:4b": 128_000,
+    "gemma3:12b": 128_000,
+    "gemma3:27b": 128_000,
+}
+
+
+def model_ctx_window(model: str) -> int:
+    """Return the input-context limit for `model`, defaulting to 200K when
+    unknown. Conservative default keeps callers from mis-estimating headroom
+    on a model we haven't catalogued."""
+    return MODEL_CTX_WINDOW.get(model, 200_000)
+
+
+# Substrings the providers use to indicate input-too-long. Lowercased; we
+# match against the lowercased error/stderr text.
+_CONTEXT_TOO_LONG_SIGNALS = (
+    "prompt is too long",
+    "prompt too long",
+    "context length",
+    "context_length_exceeded",
+    "maximum context length",
+    "input is too long",
+    "exceeds the context window",
+    "exceeds context window",
+    "exceeds maximum",
+    "too many tokens",
+)
+
+
+def _looks_like_context_too_long(text: str) -> bool:
+    if not text:
+        return False
+    s = text.lower()
+    return any(sig in s for sig in _CONTEXT_TOO_LONG_SIGNALS)
+
+
 def _indent(text: str, prefix: str) -> str:
     return "\n".join(prefix + line for line in text.splitlines())
 
@@ -263,6 +323,17 @@ class AnthropicAPIBackend:
                 wait = 2 ** attempt
                 self._on_event("retry", {"label": label, "attempt": attempt, "wait_s": wait, "error": str(e)})
                 time.sleep(wait)
+            except anthropic.BadRequestError as e:
+                # 400-class. Detect prompt-too-long specifically so callers
+                # can chunk or promote to a larger-context model. Anything
+                # else (malformed request, unsupported field) is fatal.
+                msg = str(e)
+                if _looks_like_context_too_long(msg):
+                    raise LLMContextTooLongError(
+                        f"Input exceeds context window on '{label}' "
+                        f"(model={model}): {msg}"
+                    ) from e
+                raise LLMError(f"API error on '{label}': {e}") from e
             except anthropic.APIStatusError as e:
                 if e.status_code in (500, 502, 503, 529):
                     last_err = e
@@ -270,6 +341,11 @@ class AnthropicAPIBackend:
                     self._on_event("retry", {"label": label, "attempt": attempt, "wait_s": wait, "error": str(e)})
                     time.sleep(wait)
                     continue
+                if e.status_code == 400 and _looks_like_context_too_long(str(e)):
+                    raise LLMContextTooLongError(
+                        f"Input exceeds context window on '{label}' "
+                        f"(model={model}): {e}"
+                    ) from e
                 raise LLMError(f"API error on '{label}': {e}") from e
         raise LLMError(f"Exhausted retries on '{label}': {last_err}")
 
@@ -363,12 +439,14 @@ class ClaudeCodeBackend:
                             if txt:
                                 accumulated_text.append(txt)
                 elif etype == "result":
-                    # Final event — `result` field contains the complete text.
-                    if event.get("subtype") == "success":
-                        full = event.get("result", "")
-                        if full:
-                            # Replace accumulated text with the canonical result.
-                            accumulated_text = [full]
+                    # Final event — `result` field contains the complete text
+                    # (or the error message, when subtype indicates failure
+                    # like "error_max_tokens"). Capture it unconditionally so
+                    # downstream detection can match on the message; the
+                    # subprocess returncode tells us success vs. failure.
+                    full = event.get("result", "")
+                    if full:
+                        accumulated_text = [full]
                 # Periodic progress event so the orchestrator can show
                 # live char counts.
                 now = time.time()
@@ -534,6 +612,12 @@ class ClaudeCodeBackend:
                     "Your Claude Code CLI isn't logged in. Run `claude` once in a terminal, "
                     "complete the login flow, then re-run bart.\n\n"
                     f"  raw CLI stderr: {stderr[:200] or '(empty)'}"
+                )
+            if _looks_like_context_too_long(combined_err):
+                raise LLMContextTooLongError(
+                    f"Input exceeds context window on '{label}' "
+                    f"(model={model}, backend=claude-code).\n"
+                    f"  raw CLI stderr: {stderr[:300] or '(empty)'}"
                 )
             if "model" in combined_err and ("not found" in combined_err or "unavailable" in combined_err or "not supported" in combined_err):
                 raise LLMError(

@@ -9,6 +9,7 @@ Strategy:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,26 @@ from rich.console import Console
 
 from ..extractors import REGISTRY, extract, supported
 from ..paths import MATERIALS
+
+# API mode reads ~100K-token corpora cheaply because of prompt caching.
+# Subscription mode flattens to a single CLI request whose effective per-call
+# input limit is plan-dependent and often *below* the nominal 200K model
+# window — that's the failure mode the distiller's map-reduce path exists
+# to recover from. Tightening the default here cuts the failure rate before
+# the LLM even sees the request.
+DEFAULT_BUDGET_API = 400_000
+DEFAULT_BUDGET_SUBSCRIPTION = 300_000
+
+
+def default_char_budget(auth_mode: str) -> int:
+    """Pick a corpus char budget. Honors BART_CORPUS_BUDGET if set, else
+    picks based on auth_mode."""
+    env = os.environ.get("BART_CORPUS_BUDGET", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    if auth_mode == "claude-code":
+        return DEFAULT_BUDGET_SUBSCRIPTION
+    return DEFAULT_BUDGET_API
 
 
 @dataclass
