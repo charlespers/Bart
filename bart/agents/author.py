@@ -76,11 +76,23 @@ class AuthorAgent(Agent):
                     f"{exam_patterns_block}"
                 ),
             })
-        # Top-level artifacts (schematics, whimsy, short guide, practice exam)
-        # tolerate the fast model. --turbo sets the override env var.
+        # Model routing:
+        #   - daily lessons → cfg.daily_model (Sonnet by default; ~5× cheaper
+        #     than Opus and at parity for templated bart-block emission).
+        #     Block-fix at the bottom of write() still uses Haiku as a
+        #     quality floor regardless.
+        #   - top-level artifacts → cfg.primary_model (Opus by default).
+        #   - BART_TOP_LEVEL_MODEL_OVERRIDE forces a specific model on
+        #     top-level artifacts only (used by --turbo).
+        #   - BART_DAILY_MODEL_OVERRIDE forces a specific model on daily
+        #     lessons (escape hatch for power users).
         is_daily = artifact_kind == "daily_lesson"
-        override = os.environ.get("BART_TOP_LEVEL_MODEL_OVERRIDE", "")
-        model = override if (override and not is_daily) else cfg.primary_model
+        if is_daily:
+            daily_override = os.environ.get("BART_DAILY_MODEL_OVERRIDE", "")
+            model = daily_override or cfg.daily_model
+        else:
+            override = os.environ.get("BART_TOP_LEVEL_MODEL_OVERRIDE", "")
+            model = override or cfg.primary_model
         label = f"author:{artifact_kind}{':' + label_suffix if label_suffix else ''}"
 
         text = self.ctx.llm.complete(
@@ -95,7 +107,13 @@ class AuthorAgent(Agent):
         # ── Truncation continuation ──────────────────────────────────
         # If the output is suspiciously short, the model probably stopped
         # mid-stream. One cheap continuation usually recovers it.
+        # Budget the continuation against what's left rather than re-asking
+        # for the full max_tokens — saves output tokens on near-complete
+        # generations that just dipped below the floor.
         if len(text) < self._MIN_LENGTH:
+            # ~4 chars per output token is the standard heuristic.
+            already_tokens = max(0, len(text) // 4)
+            remaining = max(1500, max_tokens - already_tokens)
             try:
                 continuation = self.ctx.llm.complete(
                     model=model,
@@ -106,7 +124,7 @@ class AuthorAgent(Agent):
                             f"Continue from where this left off. Output ONLY the continuation."
                         },
                     ],
-                    max_tokens=max_tokens,
+                    max_tokens=remaining,
                     label=label + ":truncation_fix",
                     temperature=temperature,
                 )

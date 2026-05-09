@@ -30,7 +30,9 @@ class Config(BaseModel):
     style: str = "academic-rigorous"  # academic-rigorous | conversational | minimal
     daily_hours: float = 3.0
     primary_model: str = "claude-opus-4-7"
+    daily_model: str = "claude-sonnet-4-6"
     fast_model: str = "claude-haiku-4-5-20251001"
+    deep_research: bool = False
 
     @field_validator("exam_date")
     @classmethod

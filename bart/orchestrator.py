@@ -255,13 +255,16 @@ class Orchestrator:
                 self.console.print(f"  [{RICH_OK}]✓[/{RICH_OK}] corpus brief written ({len(corpus_brief):,} chars)")
 
             # The brief block is what most agents see going forward.
+            # 1h TTL: a typical run takes 10–30 min and re-uses this block
+            # across every Author + sidecar call. The 5-min default would
+            # expire mid-run and force a cache rewrite.
             brief_block = [{
                 "type": "text",
                 "text": (
                     "CORPUS BRIEF — a structured digest of the user's course materials, "
                     "use this as the primary source of truth:\n\n" + corpus_brief
                 ),
-                "cache_control": {"type": "ephemeral"},
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
             }]
 
             brief_ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=brief_block)
@@ -422,22 +425,43 @@ class Orchestrator:
             # research slice (verbatim corpus excerpts). Disk-cached so
             # --resume is free.
             #
-            # Local mode auto-skips the heavy per-day full-corpus pass
-            # unless explicitly forced. The chunked researcher does work
-            # there, but it's N_days × N_files calls — burning that on a
-            # 1B model would dominate wall-time. The brief + topic_distiller
-            # study card carry the load instead.
+            # Per-day Researcher full-corpus pass: OPT-IN as of tokenomics
+            # Tier 1. TopicDistiller (above) replaces the bulk of what this
+            # used to provide — per-day study cards keyed off the brief.
+            # The full-corpus pass adds verbatim excerpts on top of the
+            # brief. Useful for high-rigor courses but additive cost: N
+            # full-corpus reads × Haiku, with 6-concurrent fan-out that
+            # historically caused 429 storms.
+            #
+            # Opt back in via:
+            #   - cfg.deep_research = true   (persistent, in .bart_config.json)
+            #   - BART_RUN_FULL_RESEARCHER=1 (one-shot env override)
+            # Forced off via:
+            #   - BART_SKIP_RESEARCHER=1     (legacy env override, still honored)
+            #
+            # Local mode never runs this pass.
             import os as _os
-            local_skip = is_local and _os.environ.get("BART_FORCE_RESEARCHER_LOCAL") != "1"
-            if _os.environ.get("BART_SKIP_RESEARCHER") == "1" or local_skip:
+            wants_full = (
+                getattr(self.cfg, "deep_research", False)
+                or _os.environ.get("BART_RUN_FULL_RESEARCHER") == "1"
+            )
+            forced_off = _os.environ.get("BART_SKIP_RESEARCHER") == "1"
+            run_full = wants_full and not forced_off and not is_local
+
+            if not run_full:
                 research_full_by_day: dict[int, str] = {}
-                reason = "BART_SKIP_RESEARCHER=1" if not local_skip else "local mode"
+                if forced_off:
+                    reason = "BART_SKIP_RESEARCHER=1"
+                elif is_local:
+                    reason = "local mode"
+                else:
+                    reason = "deep_research disabled (default — TopicDistiller covers it)"
                 self.console.print(
                     f"  [dim]{reason} — skipping per-day Researcher full-corpus pass[/dim]"
                 )
             else:
                 self.console.print(
-                    "\n[bold #c96442]▸ Per-day Researcher (full corpus)[/bold #c96442]"
+                    "\n[bold #c96442]▸ Per-day Researcher (full corpus, deep_research=true)[/bold #c96442]"
                 )
                 research_full_by_day = self._prefetch_research(day_entries, researcher)
 
@@ -515,7 +539,9 @@ class Orchestrator:
                 f"exam:    [white]{self.cfg.exam_date}[/white]  ([{RICH_OK}]{days}[/{RICH_OK}] days away)\n"
                 f"level:   [white]{self.cfg.student_level}[/white]    style: [white]{self.cfg.style}[/white]\n"
                 f"auth:    [white]{auth_label}[/white]\n"
-                f"primary: [white]{self.cfg.primary_model}[/white]    fast:  [white]{self.cfg.fast_model}[/white]",
+                f"primary: [white]{self.cfg.primary_model}[/white]    "
+                f"daily: [white]{getattr(self.cfg, 'daily_model', self.cfg.primary_model)}[/white]    "
+                f"fast:  [white]{self.cfg.fast_model}[/white]",
                 border_style=ACCENT,
             )
         )
@@ -564,6 +590,11 @@ class Orchestrator:
         from .telemetry import PRICING
         opus = PRICING.get(self.cfg.primary_model, PRICING["claude-opus-4-7"])
         haiku = PRICING.get(self.cfg.fast_model, PRICING["claude-haiku-4-5-20251001"])
+        # Daily lessons run on cfg.daily_model (Sonnet by default).
+        daily = PRICING.get(
+            getattr(self.cfg, "daily_model", "claude-sonnet-4-6"),
+            PRICING["claude-sonnet-4-6"],
+        )
 
         corpus_tokens = corpus_chars // 4
 
@@ -626,8 +657,10 @@ class Orchestrator:
             )
 
         # 7. Daily lesson Authors (N). Each gets brief + skeleton + research.
+        # Tokenomics Tier 1: routed through cfg.daily_model (Sonnet by
+        # default) instead of Opus. ~5× cheaper on input + output.
         _line(
-            "daily_authors", opus,
+            "daily_authors", daily,
             cr=days * brief_tokens, in_=days * author_user_tokens,
             out=days * daily_out_tokens,
         )
@@ -645,14 +678,20 @@ class Orchestrator:
                 out=days * reviewer_out_tokens // 2,
             )
 
-        # 9. Per-day Researcher full-corpus pass (the previously-missed item).
-        #    Disabled by --fast / --turbo / BART_SKIP_RESEARCHER / local mode.
+        # 9. Per-day Researcher full-corpus pass.
+        #    Tokenomics Tier 1: now OFF by default (TopicDistiller covers
+        #    the bulk of the value at ~1/36 the cost). Counted only when
+        #    cfg.deep_research=true or BART_RUN_FULL_RESEARCHER=1.
         import os as _os
-        skip_researcher = (
-            _os.environ.get("BART_SKIP_RESEARCHER") == "1"
-            or self.cfg.auth_mode == "ollama-local"
+        run_full_researcher = (
+            (
+                getattr(self.cfg, "deep_research", False)
+                or _os.environ.get("BART_RUN_FULL_RESEARCHER") == "1"
+            )
+            and _os.environ.get("BART_SKIP_RESEARCHER") != "1"
+            and self.cfg.auth_mode != "ollama-local"
         )
-        if not skip_researcher:
+        if run_full_researcher:
             _line(
                 "per_day_researcher", haiku,
                 cr=days * corpus_tokens, out=days * 1_500,
@@ -878,12 +917,15 @@ class Orchestrator:
 
     def _make_corpus_block(self, corpus: str) -> list[dict]:
         # Cache breakpoint on the corpus block. Anthropic's prompt caching
-        # gives a ~90% input-token discount on cache hits within 5 min, so
-        # this dramatically helps API-mode users on subsequent calls.
+        # gives a ~90% input-token discount on cache hits, and the 1h TTL
+        # ensures the cache survives the entire run (Distiller +
+        # sidecar passes for problem index, exam patterns, plus optional
+        # per-day Researcher). Without 1h TTL the corpus block would have
+        # to be re-cached every 5 minutes.
         return [{
             "type": "text",
             "text": "USER'S COURSE MATERIALS — primary source of truth for all generations:\n\n" + corpus,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
         }]
 
     # ------------------------------------------------------------------

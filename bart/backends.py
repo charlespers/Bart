@@ -377,16 +377,26 @@ class AnthropicAPIBackend:
         self._max_retries = max_retries
         self._on_event = on_event or (lambda evt, payload: None)
 
+    # Beta header that unlocks the 1-hour cache TTL. Including it on every
+    # request is free when no block uses ttl=1h. Required so long-lived
+    # blocks (system prompts, corpus, brief) survive across multi-step runs
+    # that take longer than the default 5-minute cache window.
+    _BETA_HEADERS = {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+
     @staticmethod
     def _cacheable_system(s: str) -> list[dict[str, Any]]:
-        """Wrap a system prompt as a single cacheable block.
+        """Wrap a system prompt as a single cacheable block with 1h TTL.
 
-        System prompts are stable across many calls (one per agent role), so
-        caching them gets us cheap reads on every call after the first.
-        Anthropic supports up to 4 cache breakpoints per request — this is one
-        of them. Corpus block (in user message) is the second.
+        System prompts are stable across all calls in a run (one per agent
+        role). Anthropic supports up to 4 cache breakpoints per request —
+        this is one of them. Brief + corpus (in user message) are the others.
+        We use the 1h TTL so a 30-minute run doesn't pay cache-write twice.
         """
-        return [{"type": "text", "text": s, "cache_control": {"type": "ephemeral"}}]
+        return [{
+            "type": "text",
+            "text": s,
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }]
 
     def complete(
         self,
@@ -421,6 +431,7 @@ class AnthropicAPIBackend:
                     temperature=temperature,
                     system=sys_blocks,
                     messages=[{"role": "user", "content": usr_blocks}],
+                    extra_headers=self._BETA_HEADERS,
                 )
                 dt = time.time() - t0
                 text = "".join(b.text for b in resp.content if b.type == "text")

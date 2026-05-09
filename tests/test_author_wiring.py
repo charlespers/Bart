@@ -25,6 +25,7 @@ class _FakeCfg:
     daily_hours: float = 3.0
     guidance: str = "guidance"
     primary_model: str = "claude-opus-4-7"
+    daily_model: str = "claude-sonnet-4-6"
     fast_model: str = "claude-haiku-4-5-20251001"
 
 
