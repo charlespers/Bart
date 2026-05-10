@@ -779,6 +779,30 @@ def _check_double_escaped_entities(rel: str, html: str) -> list[AuditIssue]:
     )]
 
 
+_JSON_UNICODE_ESC = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _check_json_unicode_escape(rel: str, html: str) -> list[AuditIssue]:
+    """Literal `\\uXXXX` JSON escape sequences that survived into rendered HTML.
+
+    Surfaces when a `bart-*` block's JSON payload was emitted as text without
+    its strings being decoded — readers see `\\u03c4` instead of `τ`,
+    `\\u2014` instead of `—`, etc. Cosmetic but very visible.
+    """
+    body = _strip_protected(html)
+    hits = list(_JSON_UNICODE_ESC.finditer(body))
+    if not hits:
+        return []
+    sample = hits[0].group(0)
+    return [AuditIssue(
+        rel, "json_unicode_escape",
+        f"{len(hits)} literal `\\uXXXX` JSON escape(s) (e.g. '{sample}') — "
+        f"should decode to the actual Unicode character",
+        "warn",
+        line=_line_of(html, hits[0].start()),
+    )]
+
+
 _MATH_LT_LEAK = re.compile(r"\\\([^\\\)<>\n]*<\w[^\\\)<>\n]*\\\)")
 _MATH_GT_LEAK = re.compile(r"\\\([^\\\)<>\n]*\w>[^\\\)<>\n]*\\\)")
 # Also any \[…\] block with raw <\w / \w>
@@ -883,6 +907,57 @@ def _fix_double_escaped_entities(html: str) -> tuple[str, int]:
             return "&" + m.group(0)[len("&amp;"):]
         new = _DOUBLE_ENTITY.sub(_repl, chunk)
         return new, n[0]
+    return _apply_outside_protected(html, _on)
+
+
+def _fix_json_unicode_escape(html: str) -> tuple[str, int]:
+    """Decode literal `\\uXXXX` JSON escape sequences to actual Unicode chars.
+
+    Handles the common rendering bug where a `bart-*` block's JSON string
+    fields (e.g. `connect`, `contrast`, `apply`) reached the page without
+    being JSON-decoded, leaving readers staring at `\\u03c4` and `\\u2014`
+    instead of `τ` and `—`. Skips `<script>`, `<style>`, `<pre>`, `<code>`
+    so legitimate `\\u…` literals in JS/CSS/source examples stay intact.
+
+    Surrogate-pair codepoints (D800–DFFF) are decoded as a paired sequence
+    when followed immediately by their low surrogate, otherwise the match
+    is left untouched — `chr()` accepts the lone surrogate but it would
+    produce malformed UTF-8 on round-trip through `path.write_text`.
+    """
+    def _on(chunk: str) -> tuple[str, int]:
+        n = 0
+        out: list[str] = []
+        i = 0
+        while i < len(chunk):
+            m = _JSON_UNICODE_ESC.search(chunk, i)
+            if not m:
+                out.append(chunk[i:])
+                break
+            out.append(chunk[i:m.start()])
+            cp = int(m.group(1), 16)
+            if 0xD800 <= cp <= 0xDBFF:
+                # Possible high surrogate — check for paired low surrogate.
+                m2 = _JSON_UNICODE_ESC.match(chunk, m.end())
+                if m2:
+                    cp2 = int(m2.group(1), 16)
+                    if 0xDC00 <= cp2 <= 0xDFFF:
+                        combined = 0x10000 + ((cp - 0xD800) << 10) + (cp2 - 0xDC00)
+                        out.append(chr(combined))
+                        n += 1
+                        i = m2.end()
+                        continue
+                out.append(m.group(0))
+                i = m.end()
+                continue
+            if 0xDC00 <= cp <= 0xDFFF:
+                # Lone low surrogate — leave as-is.
+                out.append(m.group(0))
+                i = m.end()
+                continue
+            out.append(chr(cp))
+            n += 1
+            i = m.end()
+        return "".join(out), n
     return _apply_outside_protected(html, _on)
 
 
@@ -1625,6 +1700,7 @@ _CHECKS: list[Callable[[str, str], list[AuditIssue]]] = [
     _check_broken_attrs,
     _check_math_html_leak,
     _check_double_escaped_entities,
+    _check_json_unicode_escape,
     _check_anchors,
     _check_images,
     _check_inline_font_overrides,
@@ -1668,6 +1744,9 @@ _FIXES: list[tuple[str, Callable[[str], tuple[str, int]]]] = [
     ("inline_font_size_override",    _fix_inline_font_overrides),
     ("displaymath_in_paragraph",     _fix_displaymath_inside_p),
     ("double_escaped_entity",        _fix_double_escaped_entities),
+    # JSON `\uXXXX` decode runs late so any earlier passes that emit
+    # transient escape sequences (none currently do) still get cleaned up.
+    ("json_unicode_escape",          _fix_json_unicode_escape),
     ("img_missing_lazy_load",        _fix_lazy_load_images),
 ]
 
