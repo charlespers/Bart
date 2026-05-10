@@ -32,7 +32,10 @@ import os
 import shutil
 import subprocess
 import threading
+import os
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -53,6 +56,109 @@ class LLMContextTooLongError(LLMError):
     specifically and reach for map-reduce or a longer-context model rather
     than retrying blindly.
     """
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ConcurrencyGuard — per-model semaphores to keep parallel fan-out under
+# the provider's per-model rate limits. Anthropic enforces RPM and ITPM
+# *per model*, not per account, so a global max_parallel is the wrong
+# unit. Cap concurrency by model tier instead. Tier 2 (most users):
+# Opus 50 RPM, Sonnet 1000 RPM, Haiku 4000 RPM. Concurrency caps below
+# leave plenty of headroom for retries even at sustained throughput.
+# ─────────────────────────────────────────────────────────────────────
+
+# Default per-model concurrency caps. Conservative defaults that fit
+# inside Anthropic Tier-2 rate limits even with truncation/block-fix
+# retries firing. Power users can lift via env.
+_DEFAULT_CONCURRENCY = {
+    "opus":   2,
+    "sonnet": 4,
+    "haiku":  8,
+}
+
+
+def _model_tier(model: str) -> str | None:
+    """Map a model id to its tier key. Returns None for non-tiered models
+    (local Gemma, anything we don't recognise) — those get no cap."""
+    m = model.lower()
+    if "opus" in m:
+        return "opus"
+    if "sonnet" in m:
+        return "sonnet"
+    if "haiku" in m:
+        return "haiku"
+    return None
+
+
+class ConcurrencyGuard:
+    """Per-model concurrency limiter shared across all threads.
+
+    The orchestrator runs four overlapping ThreadPoolExecutors (sidecars,
+    top-level artifacts, daily lessons, optional researcher prefetch)
+    that each issue API calls without coordination. Without a single
+    chokepoint, parallel fan-out can launch 10+ concurrent calls to the
+    same model and trigger 429 storms. This class is that chokepoint:
+    `with guard.acquire(model):` blocks until a slot is free.
+
+    The cap is per *tier* (opus/sonnet/haiku), since Anthropic's rate
+    limits are per-model — Sonnet calls don't slow Opus calls down.
+    Models we don't recognise (e.g. local Gemma) acquire instantly.
+    """
+
+    def __init__(self, on_event: Callable[[str, dict[str, Any]], None] | None = None):
+        self._on_event = on_event or (lambda evt, payload: None)
+        self._sems: dict[str, threading.BoundedSemaphore] = {}
+        self._caps: dict[str, int] = {}
+        for tier, default in _DEFAULT_CONCURRENCY.items():
+            cap = int(os.environ.get(f"BART_MAX_CONCURRENT_{tier.upper()}", default))
+            cap = max(1, cap)
+            self._caps[tier] = cap
+            self._sems[tier] = threading.BoundedSemaphore(cap)
+
+    def cap_for(self, model: str) -> int | None:
+        tier = _model_tier(model)
+        return self._caps.get(tier) if tier else None
+
+    @contextmanager
+    def acquire(self, model: str, *, label: str = ""):
+        tier = _model_tier(model)
+        sem = self._sems.get(tier) if tier else None
+        if sem is None:
+            yield
+            return
+        # Try non-blocking first so we can emit a wait event only when we
+        # actually queue. Blocking wait is otherwise invisible.
+        if not sem.acquire(blocking=False):
+            t0 = time.time()
+            self._on_event("rate_limit_wait", {
+                "label": label, "model": model, "tier": tier, "cap": self._caps[tier],
+            })
+            sem.acquire()
+            self._on_event("rate_limit_resumed", {
+                "label": label, "model": model, "tier": tier,
+                "waited_s": round(time.time() - t0, 2),
+            })
+        try:
+            yield
+        finally:
+            sem.release()
+
+
+# Process-wide singleton. All backends share this so concurrent callers
+# from different code paths (sidecars, daily Authors, etc.) actually
+# share the cap.
+_GLOBAL_GUARD: ConcurrencyGuard | None = None
+_GLOBAL_GUARD_LOCK = threading.Lock()
+
+
+def get_concurrency_guard(
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
+) -> ConcurrencyGuard:
+    global _GLOBAL_GUARD
+    with _GLOBAL_GUARD_LOCK:
+        if _GLOBAL_GUARD is None:
+            _GLOBAL_GUARD = ConcurrencyGuard(on_event=on_event)
+        return _GLOBAL_GUARD
 
 
 # Per-model input context window (tokens). Used for preventative size checks
@@ -110,6 +216,36 @@ def _looks_like_context_too_long(text: str) -> bool:
         return False
     s = text.lower()
     return any(sig in s for sig in _CONTEXT_TOO_LONG_SIGNALS)
+
+
+def _retry_after_seconds(err: Exception) -> float | None:
+    """Extract the server-supplied retry-after hint from an Anthropic error.
+
+    Anthropic returns retry-after-ms (preferred, more precise) and/or
+    retry-after (seconds, integer) on 429 responses. Returns the wait
+    in seconds, or None if neither header is present or parseable.
+    """
+    response = getattr(err, "response", None)
+    headers = getattr(response, "headers", None) if response is not None else None
+    if not headers:
+        return None
+    try:
+        get = headers.get
+    except AttributeError:
+        return None
+    raw_ms = get("retry-after-ms") or get("Retry-After-Ms")
+    if raw_ms:
+        try:
+            return float(raw_ms) / 1000.0
+        except (TypeError, ValueError):
+            pass
+    raw_s = get("retry-after") or get("Retry-After")
+    if raw_s:
+        try:
+            return float(raw_s)
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 def _indent(text: str, prefix: str) -> str:
@@ -376,6 +512,10 @@ class AnthropicAPIBackend:
         self._cache_dir = cache_dir
         self._max_retries = max_retries
         self._on_event = on_event or (lambda evt, payload: None)
+        # Per-model concurrency cap. Shared across all backend instances and
+        # threads so concurrent code paths (sidecars, daily Authors, etc.)
+        # share the same Opus/Sonnet/Haiku slots.
+        self._guard = get_concurrency_guard(on_event=self._on_event)
 
     # Beta header that unlocks the 1-hour cache TTL. Including it on every
     # request is free when no block uses ttl=1h. Required so long-lived
@@ -425,14 +565,15 @@ class AnthropicAPIBackend:
             t0 = time.time()
             try:
                 self._on_event("call_start", {"label": label, "model": model, "attempt": attempt})
-                resp = self._client.messages.create(
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    system=sys_blocks,
-                    messages=[{"role": "user", "content": usr_blocks}],
-                    extra_headers=self._BETA_HEADERS,
-                )
+                with self._guard.acquire(model, label=label):
+                    resp = self._client.messages.create(
+                        model=model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        system=sys_blocks,
+                        messages=[{"role": "user", "content": usr_blocks}],
+                        extra_headers=self._BETA_HEADERS,
+                    )
                 dt = time.time() - t0
                 text = "".join(b.text for b in resp.content if b.type == "text")
                 usage = resp.usage
@@ -453,7 +594,21 @@ class AnthropicAPIBackend:
                 if use_disk_cache:
                     _write_disk_cache(self._cache_dir, key, text)
                 return text
-            except (anthropic.APIConnectionError, anthropic.APITimeoutError, anthropic.RateLimitError) as e:
+            except anthropic.RateLimitError as e:
+                # 429 — honor server-supplied retry hint when present.
+                # Anthropic returns retry-after (seconds) and/or
+                # retry-after-ms; either header lets us back off precisely
+                # instead of guessing with 2^attempt. Cap at 60s so a
+                # misconfigured upstream can't deadlock the run.
+                last_err = e
+                wait = _retry_after_seconds(e) or (2 ** attempt)
+                wait = min(wait, 60.0)
+                self._on_event("retry", {
+                    "label": label, "attempt": attempt, "wait_s": wait,
+                    "error": str(e), "reason": "rate_limit",
+                })
+                time.sleep(wait)
+            except (anthropic.APIConnectionError, anthropic.APITimeoutError) as e:
                 last_err = e
                 wait = 2 ** attempt
                 self._on_event("retry", {"label": label, "attempt": attempt, "wait_s": wait, "error": str(e)})
@@ -519,6 +674,10 @@ class ClaudeCodeBackend:
                 "auth_mode to 'api' and provide an API key."
             )
         self._timeout_s = timeout_s
+        # Subscription mode shares the same per-model concurrency caps —
+        # Claude Code subscriptions enforce per-model rate limits too, and
+        # they're typically tighter than the API tier limits.
+        self._guard = get_concurrency_guard(on_event=self._on_event)
 
     @staticmethod
     def is_available() -> bool:
@@ -700,15 +859,18 @@ class ClaudeCodeBackend:
         # Streaming mode (stream-json): we read one JSON event per line from
         # stdout, surface a per-call progress event, and accumulate text.
         # Plain mode falls back to subprocess.run.
+        # ConcurrencyGuard: hold a per-model slot for the lifetime of the
+        # CLI call so subscription-mode rate limits don't get pummeled.
         try:
-            if use_streaming:
-                stdout, stderr, returncode = self._run_streaming(cmd, combined, label, scrubbed_env)
-            else:
-                proc = subprocess.run(
-                    cmd, input=combined, capture_output=True, text=True,
-                    timeout=self._timeout_s, check=False, env=scrubbed_env,
-                )
-                stdout, stderr, returncode = proc.stdout or "", proc.stderr or "", proc.returncode
+            with self._guard.acquire(model, label=label):
+                if use_streaming:
+                    stdout, stderr, returncode = self._run_streaming(cmd, combined, label, scrubbed_env)
+                else:
+                    proc = subprocess.run(
+                        cmd, input=combined, capture_output=True, text=True,
+                        timeout=self._timeout_s, check=False, env=scrubbed_env,
+                    )
+                    stdout, stderr, returncode = proc.stdout or "", proc.stderr or "", proc.returncode
         except subprocess.TimeoutExpired as e:
             done.set()
             raise LLMError(f"`claude` CLI timed out after {self._timeout_s}s on '{label}'.") from e
