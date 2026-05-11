@@ -429,6 +429,60 @@ def _check_raw_fence_leak(rel: str, html: str) -> list[AuditIssue]:
     return []
 
 
+_RAW_TRIPLE_BACKTICK = re.compile(r"```")
+
+
+def _check_unclosed_code_fence(rel: str, html: str) -> list[AuditIssue]:
+    """An unclosed ``` fence in the source markdown leaves the literal
+    triple-backtick text in a `<p>` paragraph (python-markdown gives up on
+    the fence and dumps the body as prose), so the page renders as one
+    continuous chunk of markdown-looking text instead of a code block.
+
+    Detect: any literal ``` reaching the final HTML *outside* of <pre>,
+    <code>, <script>, <style>. Those regions legitimately contain
+    triple-backticks (sample source, KaTeX delim config). The sandbox page
+    is exempt because it displays sample fence syntax verbatim."""
+    if rel.endswith("sandbox.html"):
+        return []
+    body = _strip_protected(html.split("<body", 1)[-1])
+    hits = list(_RAW_TRIPLE_BACKTICK.finditer(body))
+    if not hits:
+        return []
+    return [AuditIssue(
+        rel, "unclosed_code_fence",
+        f"{len(hits)} literal ``` in HTML body — source markdown has an "
+        f"unclosed fence; needs a closing ``` + re-render from source",
+        "error",
+        line=_line_of(html, hits[0].start()),
+    )]
+
+
+# Pygments emits `<span class="gh">` (generic.heading) for `#`-prefixed
+# lines inside a markdown-highlighted code block. Real headings on the
+# page render as `<h1>`/`<h2>`, never as a `.gh` token — so seeing one
+# means a markdown source got fed back through the markdown lexer because
+# the document was wrapped in ` ```markdown `. That's the canonical
+# "single continuous markdown" rendering bug the user described.
+_PYGMENTS_GH_TOKEN = re.compile(r'<span class="gh">')
+
+
+def _check_llm_wrapper_fence(rel: str, html: str) -> list[AuditIssue]:
+    """Source markdown started with ``` ```markdown ``` (or similar) so the
+    document head renders as one giant Pygments-highlighted code block."""
+    if rel.endswith("sandbox.html"):
+        return []
+    body = html.split("<body", 1)[-1]
+    if _PYGMENTS_GH_TOKEN.search(body):
+        return [AuditIssue(
+            rel, "llm_wrapper_fence",
+            "page contains a Pygments-highlighted markdown heading "
+            "(`<span class=\"gh\">`) — source `.md` opened with a "
+            "```markdown wrapper fence; strip + re-render from source",
+            "error",
+        )]
+    return []
+
+
 _MD_LINK_LEAK = re.compile(r"(?<![\"'`])\[[^\]\n]+\]\([^)\n]+\)")
 
 
@@ -1694,6 +1748,8 @@ _CHECKS: list[Callable[[str, str], list[AuditIssue]]] = [
     _check_render_fallback,
     _check_block_error,
     _check_raw_fence_leak,
+    _check_unclosed_code_fence,
+    _check_llm_wrapper_fence,
     _check_markdown_leak,
     _check_raw_md_hr_leak,
     _check_raw_md_heading_leak,
@@ -1828,6 +1884,12 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
         # `_check_math_html_leak` doesn't go in this set because it has a
         # fast string-only autofix above (`_fix_math_html_leak`); rebuild
         # is only needed when string fixes can't synthesize structure.
+        #
+        # `_check_unclosed_code_fence` only triggers the rebuild when at
+        # least one source `.md` actually has an odd fence count — the same
+        # HTML symptom can come from library-block JSON leaking raw ```,
+        # which a source-side fence-close repair won't fix and rebuilding
+        # would be wasteful.
         corruption_hits: list[AuditIssue] = []
         for check in (_check_raw_md_hr_leak, _check_raw_md_heading_leak,
                       _check_broken_attrs, _check_render_fallback):
@@ -1835,11 +1897,43 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
                 corruption_hits.extend(check(rel, html))
             except Exception:
                 pass
+        try:
+            fence_hits = _check_unclosed_code_fence(rel, html)
+        except Exception:
+            fence_hits = []
+        if fence_hits and _count_odd_fence_sources(run_dir):
+            corruption_hits.extend(fence_hits)
+        try:
+            wrapper_hits = _check_llm_wrapper_fence(rel, html)
+        except Exception:
+            wrapper_hits = []
+        if wrapper_hits and _count_llm_wrapper_sources(run_dir):
+            corruption_hits.extend(wrapper_hits)
         if corruption_hits:
             needs_rerender = True
             rerender_kinds_total += len(corruption_hits)
 
         file_html[path] = html
+
+    # Trailing-meta residue: stray solo ``` lines outside any bart-* pair
+    # are LLM meta-commentary the wrapper-strip pass left behind. The HTML
+    # symptom (literal text wrapped in a Pygments code-block at the end of
+    # `<article>`) is masked by `_strip_protected` upstream, so we flag
+    # the source-side condition directly. Source-only triggers like this
+    # are gated on `apply_fixes` since the rebuild itself runs the
+    # truncation — a passive audit shouldn't fire a rebuild trigger.
+    if apply_fixes:
+        stray = _count_stray_fence_sources(run_dir)
+        if stray:
+            needs_rerender = True
+            rerender_kinds_total += stray
+            result.issues.append(AuditIssue(
+                "<run>", "trailing_meta_residue",
+                f"{stray} source `.md` file(s) carry stray solo ``` line(s) "
+                f"outside any bart-* pair — LLM trailing meta-commentary "
+                f"after a stripped wrapper; truncating + re-rendering",
+                "error",
+            ))
 
     # ── Stage 2: full-packet rebuild when corruption was detected ──
     if apply_fixes and needs_rerender:
@@ -1919,6 +2013,233 @@ def _ensure_sandbox_present(run_dir: Path) -> int:
     return n
 
 
+_FENCE_LINE_RE = re.compile(r"^```", re.MULTILINE)
+_WRAPPER_FENCE_OPEN_RE = re.compile(r"^```(?:markdown|md)?\s*$", re.IGNORECASE)
+
+
+def _detect_llm_wrapper_fence(text: str) -> int | None:
+    """Return the line index (0-based) of an LLM-wrapper fence opener,
+    or None if the source doesn't start with one.
+
+    Smoking gun: the first non-blank line is ` ```(markdown|md)? ` and
+    the next non-blank line is a markdown heading (`#`). Real documents
+    don't open with a code block whose first content is a heading.
+    """
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines):
+        return None
+    if not _WRAPPER_FENCE_OPEN_RE.match(lines[i]):
+        return None
+    j = i + 1
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    if j >= len(lines):
+        return None
+    if not lines[j].lstrip().startswith("#"):
+        return None
+    return i
+
+
+_BART_FENCE_OPEN_RE = re.compile(r"^```bart-", re.MULTILINE)
+_SOLO_FENCE_RE = re.compile(r"^```\s*$")
+_LANG_FENCE_OPEN_RE = re.compile(r"^```[a-zA-Z]")
+
+
+def _truncate_trailing_meta(text: str) -> tuple[str, int]:
+    """After stripping an LLM wrapper opener, the wrapper's "intended"
+    close shows up as a stray solo ``` line followed by meta-commentary
+    the LLM kept generating ("Practice exam Part A drafted: …"). Drop
+    everything from that stray fence onward.
+
+    We only truncate when every language-tagged fence in the doc is a
+    `bart-*` opener — otherwise a legit ``` ```python …``` ``` example
+    in prose would get destroyed. Returns (new_text, lines_dropped).
+    """
+    lines = text.splitlines(keepends=True)
+    # Bail if there's a non-bart language-tagged fence anywhere: that's
+    # almost always a real code example we don't want to chop through.
+    for line in lines:
+        if _LANG_FENCE_OPEN_RE.match(line) and not _BART_FENCE_OPEN_RE.match(line):
+            return text, 0
+
+    inside_bart = False
+    for i, line in enumerate(lines):
+        if _BART_FENCE_OPEN_RE.match(line):
+            inside_bart = True
+            continue
+        if _SOLO_FENCE_RE.match(line):
+            if inside_bart:
+                inside_bart = False
+                continue
+            # Stray solo fence outside any bart-* pair — the wrapper's
+            # intended close. Everything past this is trailing meta.
+            return "".join(lines[:i]), len(lines) - i
+    return text, 0
+
+
+def _strip_llm_wrapper_fence_in_sources(run_dir: Path) -> int:
+    """Repair LLM-emitted wrapper artifacts in live `.md` sources.
+
+    Two independent repairs, applied per file:
+
+      1. **Strip the leading ``` ```markdown ``` wrapper.** When the first
+         non-blank line is a ``` `(markdown|md)?` `` fence followed by a
+         heading, that's a wrapper opener around the entire document.
+         Removing it lets python-markdown render the head as real
+         headings instead of one giant Pygments-highlighted code block.
+
+      2. **Truncate trailing meta after the wrapper's close.** The LLM
+         often keeps generating "Practice exam Part A drafted: …" prose
+         after closing the wrapper, leaving stray solo ``` lines outside
+         any `bart-*` pair. We drop everything from the first such stray
+         fence to EOF — but only when the file looks like a structured
+         packet artifact (≥ 1 `bart-*` pair) and contains NO non-bart
+         language-tagged fences (so a legit ``` ```python …``` ``` example
+         in prose is never destroyed).
+
+    Either repair may apply to a file independently. A previous --fix
+    run may have stripped the wrapper without truncating the meta, so
+    the truncation pass re-checks every source regardless of whether
+    we just stripped a wrapper. Returns the count of files patched.
+    """
+    candidates: list[Path] = list(_live_md_sources(run_dir))
+    archive = run_dir / "markdown"
+    if archive.exists():
+        candidates.extend(archive.rglob("*.md"))
+    n = 0
+    for md_path in candidates:
+        try:
+            original = md_path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        text = original
+        idx = _detect_llm_wrapper_fence(text)
+        if idx is not None:
+            lines = text.splitlines(keepends=True)
+            del lines[idx]
+            text = "".join(lines)
+        if _looks_like_bart_artifact(text):
+            text, _ = _truncate_trailing_meta(text)
+        if text == original:
+            continue
+        try:
+            md_path.write_text(text, encoding="utf-8")
+            n += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return n
+
+
+def _looks_like_bart_artifact(text: str) -> bool:
+    """A source counts as a structured packet artifact when it contains
+    at least one ``` ```bart-* ``` opener. The trailing-meta truncation
+    only runs on these — freeform prose with bare ``` fences gets left
+    alone to avoid destroying legit code examples."""
+    return bool(_BART_FENCE_OPEN_RE.search(text))
+
+
+def _count_llm_wrapper_sources(run_dir: Path) -> int:
+    """How many live-source `.md` files carry an LLM-wrapper fence."""
+    return sum(
+        1 for p in _live_md_sources(run_dir)
+        if _detect_llm_wrapper_fence(_safe_read(p)) is not None
+    )
+
+
+def _safe_read(p: Path) -> str:
+    try:
+        return p.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _live_md_sources(run_dir: Path) -> list[Path]:
+    """The `.md` paths the renderer actually consumes (top-level + daily
+    lessons), excluding the `markdown/` archive that gets overwritten on
+    each rebuild."""
+    out: list[Path] = list(run_dir.glob("*.md"))
+    daily = run_dir / "daily_lessons"
+    if daily.exists():
+        out.extend(daily.glob("*.md"))
+    return out
+
+
+def _count_odd_fence_sources(run_dir: Path) -> int:
+    """Count live-source `.md` files with an odd number of `^```` lines —
+    i.e. an unclosed code fence the rebuild can repair."""
+    n = 0
+    for md_path in _live_md_sources(run_dir):
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        if len(_FENCE_LINE_RE.findall(text)) % 2 == 1:
+            n += 1
+    return n
+
+
+def _count_stray_fence_sources(run_dir: Path) -> int:
+    """Count live-source `.md` files with a stray solo ``` line outside
+    any `bart-*` pair, in an artifact that contains no non-bart language
+    fences (so the truncation pass is safe to run). These are trailing-
+    meta residue from a previously-stripped wrapper."""
+    n = 0
+    for md_path in _live_md_sources(run_dir):
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        if not _looks_like_bart_artifact(text):
+            continue
+        truncated, dropped = _truncate_trailing_meta(text)
+        if dropped:
+            n += 1
+    return n
+
+
+def _repair_unclosed_fences_in_sources(run_dir: Path) -> int:
+    """Close any odd-fence-count `.md` source the renderer consumes.
+
+    A markdown file with an odd number of `^```` lines has an unclosed
+    fence — python-markdown then dumps the would-be code body as prose
+    and leaves the literal triple-backtick text inside a `<p>`. We append
+    a closing ``` on its own line so the next render produces a real
+    `<pre><code>` block.
+
+    The renderer reads from the *live* sources at `run_dir/*.md` and
+    `run_dir/daily_lessons/*.md`; the `run_dir/markdown/` subdirectory is
+    an archive copy that `build_packet` overwrites on every rebuild, so
+    patching the archive alone has no effect. We patch both, since the
+    archive is what users open when inspecting source-of-truth.
+
+    Idempotent (balanced files are skipped). Returns the count patched.
+    """
+    candidates: list[Path] = list(_live_md_sources(run_dir))
+    archive = run_dir / "markdown"
+    if archive.exists():
+        candidates.extend(archive.rglob("*.md"))
+    n = 0
+    for md_path in candidates:
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        if len(_FENCE_LINE_RE.findall(text)) % 2 != 1:
+            continue
+        if not text.endswith("\n"):
+            text += "\n"
+        text += "```\n"
+        try:
+            md_path.write_text(text, encoding="utf-8")
+            n += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return n
+
+
 def _rebuild_packet_from_markdown(run_dir: Path) -> bool:
     """Trigger a full packet rebuild from sibling markdown — no API cost.
 
@@ -1927,10 +2248,19 @@ def _rebuild_packet_from_markdown(run_dir: Path) -> bool:
     the rebuild ran without raising. We swallow exceptions to keep the
     audit driver going — the next pass of checks will still report any
     issue the rebuild didn't actually fix.
+
+    Before invoking the renderer, we patch any unclosed ``` fence in the
+    source `.md` files — otherwise the rebuild faithfully reproduces the
+    same broken page that triggered the audit. The wrapper-fence strip
+    runs first so the odd-fence count is measured against the de-wrapped
+    document (the wrapper opener is a fence by itself; counting it would
+    flip the odd/even parity and trigger a spurious append).
     """
     try:
         import json as _json
         from .packet import build_packet
+        _strip_llm_wrapper_fence_in_sources(run_dir)
+        _repair_unclosed_fences_in_sources(run_dir)
         manifest_path = run_dir / "manifest.json"
         manifest = (
             _json.loads(manifest_path.read_text(encoding="utf-8"))

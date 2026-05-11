@@ -116,6 +116,43 @@ def _inline_md(text: str) -> str:
     return _re.sub(r"\x00M(\d+)\x00", lambda m: holds[int(m.group(1))], masked)
 
 
+def _block_md(text: str) -> str:
+    """Render multi-line markdown including fenced code blocks, lists,
+    sub-headings, and the inline patterns `_inline_md` handles.
+
+    Used for library-block content fields that may carry full markdown — a
+    ``` ```java … ``` ``` code block in a multiple-choice question, a
+    `## sub-heading` inside a multi-step solution, an indented list in a
+    concept-build rung body. Without full block-level rendering the field
+    text reaches the page literally and the wrapping `</div>` ends up
+    on the same line as the closing ` ``` `, breaking python-markdown's
+    fence matcher (the fence stays "open" and silently swallows every
+    subsequent library-block expansion until the next ` ``` ` line).
+
+    Math spans (`\\(…\\)`, `\\[…\\]`) are stashed before the markdown
+    pass and restored after so KaTeX sees the raw TeX.
+    """
+    if not text:
+        return ""
+    # Short-circuit: single-line, no fence → cheap inline path. This keeps
+    # one-line labels rendering inline (no wrapping `<p>` that would add
+    # vertical padding inside buttons / pills / chips).
+    if "\n" not in text and "```" not in text:
+        return _inline_md(text)
+    holds: list[str] = []
+    def _stash(m: _re.Match) -> str:
+        holds.append(m.group(0))
+        return f"\x00M{len(holds)-1}\x00"
+    masked = _re.sub(r"\\\([^\)]*?\\\)|\\\[[\s\S]*?\\\]", _stash, text)
+    import markdown as _md_mod
+    md = _md_mod.Markdown(
+        extensions=["fenced_code", "tables", "sane_lists"],
+        output_format="html5",
+    )
+    html = md.convert(masked)
+    return _re.sub(r"\x00M(\d+)\x00", lambda m: holds[int(m.group(1))], html)
+
+
 # ─── Primitives ───────────────────────────────────────────────────
 
 
@@ -248,18 +285,18 @@ def worked_example(
         '<div class="b-worked-example">',
         f'<div class="b-worked-example-tag"><span>{_esc(tag_label)}</span></div>',
         '<div class="b-worked-example-body">',
-        f'<div class="b-worked-example-problem"><strong>Problem.</strong>{_esc(problem)}</div>',
+        f'<div class="b-worked-example-problem"><strong>Problem.</strong>{_block_md(problem)}</div>',
         '<ol>',
     ]
     for s in steps:
-        action = _esc(s.get("action", ""))
+        action = _block_md(s.get("action", ""))
         math = s.get("math")
         reasoning = s.get("reasoning")
         item = [f'<li><div class="b-step-action">{action}</div>']
         if math:
             item.append(f'<div>{_block_math(math)}</div>')
         if reasoning:
-            item.append(f'<div class="b-step-reasoning">{_esc(reasoning)}</div>')
+            item.append(f'<div class="b-step-reasoning">{_block_md(reasoning)}</div>')
         item.append("</li>")
         parts.append("".join(item))
     parts.append("</ol>")
@@ -267,7 +304,7 @@ def worked_example(
         parts.append(
             f'<div class="b-answer">'
             f'<span class="b-answer-label">Answer</span>'
-            f'<span class="b-answer-text">{_esc(answer)}</span>'
+            f'<span class="b-answer-text">{_block_md(answer)}</span>'
             f'</div>'
         )
     if cite:
@@ -335,7 +372,7 @@ def trap_callout(*, kind: str = "trap", title: str = "", body: str) -> str:
         f'<span class="b-trap-callout-icon">{_esc(icon)}</span>'
         f'<div class="b-trap-callout-body">'
         f'<div class="b-trap-callout-title">{_esc(label)}</div>'
-        f'<div class="b-trap-callout-content">{_inline_md(body)}</div>'
+        f'<div class="b-trap-callout-content">{_block_md(body)}</div>'
         f'</div></div>'
     )
 
@@ -386,7 +423,7 @@ def concept_build(
             f'<div class="b-concept-rung-label">{label}</div>',
         ]
         if prose:
-            rung_parts.append(f'<div class="b-concept-rung-body">{_inline_md(prose)}</div>')
+            rung_parts.append(f'<div class="b-concept-rung-body">{_block_md(prose)}</div>')
         if tex:
             rung_parts.append(f'<div class="b-concept-rung-math">{_block_math(tex)}</div>')
         rung_parts.append("</div>")
@@ -404,7 +441,7 @@ def why_it_matters(body: str, *, bart_svg: str = "") -> str:
         '<div class="b-why-it-matters">'
         f'{bart_html}'
         '<div class="b-why-it-matters-eyebrow">Why this matters</div>'
-        f'<div class="b-why-it-matters-content">{_inline_md(body)}</div>'
+        f'<div class="b-why-it-matters-content">{_block_md(body)}</div>'
         '</div>'
     )
 
@@ -458,19 +495,19 @@ def quick_check(
         f'<details class="b-quick-check-hint-wrap">'
         f'<summary class="b-qc-button">Need a hint?</summary>'
         f'<div class="b-quick-check-hint">'
-        f'<strong>Hint. </strong>{_esc(hint)}'
+        f'<strong>Hint. </strong>{_block_md(hint)}'
         f'</div></details>'
         if hint else ""
     )
     return (
         '<div class="b-quick-check">'
         f'<div class="b-quick-check-label">{_esc(label)}</div>'
-        f'<div class="b-quick-check-question">{_esc(question)}</div>'
+        f'<div class="b-quick-check-question">{_block_md(question)}</div>'
         f'<div style="display:flex;gap:8px;flex-wrap:wrap">'
         f'{hint_block}'
         f'<details class="b-quick-check-answer-wrap">'
         f'<summary class="b-qc-button">Reveal answer</summary>'
-        f'<div class="b-quick-check-answer">{_esc(answer)}</div>'
+        f'<div class="b-quick-check-answer">{_block_md(answer)}</div>'
         f'</details>'
         f'</div></div>'
     )
@@ -491,12 +528,12 @@ def multi_step_problem(
     """
     parts: list[str] = ['<div class="b-multi-step">']
     parts.append(f'<div class="b-multi-step-label">{_esc(label)}</div>')
-    parts.append(f'<div class="b-multi-step-problem">{_inline_md(problem)}</div>')
+    parts.append(f'<div class="b-multi-step-problem">{_block_md(problem)}</div>')
     for i, h in enumerate(hints):
         parts.append(
             f'<details class="b-multi-step-hint">'
             f'<summary class="b-multi-step-hint-label">Hint {i+1} of {len(hints)}</summary>'
-            f'<div class="b-multi-step-hint-body">{_inline_md(h)}</div>'
+            f'<div class="b-multi-step-hint-body">{_block_md(h)}</div>'
             f'</details>'
         )
     parts.append(
@@ -504,7 +541,7 @@ def multi_step_problem(
         f'<summary class="b-qc-button" style="margin-top:14px">Show full solution</summary>'
         f'<div class="b-multi-step-solution">'
         f'<div class="b-multi-step-solution-label">Solution</div>'
-        f'{_inline_md(solution)}'
+        f'{_block_md(solution)}'
         f'</div></details>'
     )
     parts.append("</div>")
@@ -524,7 +561,7 @@ def multiple_choice(
     """
     parts: list[str] = ['<div class="b-mc" data-mc>']
     parts.append(f'<div class="b-mc-label">{_esc(label)}</div>')
-    parts.append(f'<div class="b-mc-question">{_esc(question)}</div>')
+    parts.append(f'<div class="b-mc-question">{_block_md(question)}</div>')
     parts.append('<div class="b-mc-choices">')
     for i, c in enumerate(choices):
         correct = "true" if c.get("correct") else "false"

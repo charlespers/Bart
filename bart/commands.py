@@ -299,13 +299,10 @@ def render_packet(run_id: str | None) -> int:
         console.print("[red]✗[/red] no runs in output/. nothing to render.")
         return 1
     if run_id:
-        target = OUTPUT / run_id
-        if not target.exists():
-            console.print(f"[red]✗[/red] run '{run_id}' not found.")
-            console.print("[dim]available:[/dim]")
-            for r in runs:
-                console.print(f"  - {r.name}")
+        resolved = _resolve_run_dir(run_id)
+        if resolved is None:
             return 1
+        target = resolved
     else:
         target = runs[-1]
         console.print(f"[dim]rendering most recent run:[/dim] [cyan]{target.name}[/cyan]")
@@ -378,7 +375,11 @@ def render_packet(run_id: str | None) -> int:
 def _resolve_run_dir(run_id: str | None) -> Path | None:
     """Locate the target run dir by id, or fall back to the most recent.
     Returns None and prints to console if nothing matches; the caller
-    should treat that as a fatal CLI error."""
+    should treat that as a fatal CLI error.
+
+    Matching: exact run-id wins; otherwise a unique substring match
+    (typing just `155802` picks `run_2026-05-11_155802`). Ambiguous or
+    missing tokens print the available runs and return None."""
     console = Console()
     if not OUTPUT.exists():
         console.print("[red]✗[/red] output/ does not exist yet — generate a run first.")
@@ -389,13 +390,24 @@ def _resolve_run_dir(run_id: str | None) -> Path | None:
         return None
     if run_id:
         target = OUTPUT / run_id
-        if not target.exists():
-            console.print(f"[red]✗[/red] run '{run_id}' not found.")
-            console.print("[dim]available:[/dim]")
-            for r in runs:
+        if target.exists():
+            return target
+        candidates = [r for r in runs if run_id in r.name]
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            console.print(
+                f"[red]✗[/red] '{run_id}' is ambiguous, matches "
+                f"{len(candidates)} runs:"
+            )
+            for r in candidates:
                 console.print(f"  - {r.name}")
             return None
-        return target
+        console.print(f"[red]✗[/red] run '{run_id}' not found.")
+        console.print("[dim]available:[/dim]")
+        for r in runs:
+            console.print(f"  - {r.name}")
+        return None
     return runs[-1]
 
 
