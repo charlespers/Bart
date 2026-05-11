@@ -21,7 +21,11 @@ CONFIG_PATH = ROOT / ".bart_config.json"
 
 
 class Config(BaseModel):
-    auth_mode: str = "api"  # "api" | "claude-code" | "ollama-local"
+    # auth_mode "local" runs an open-weight model (Qwen3 family) via mlx-lm
+    # on Apple Silicon or llama-cpp-python elsewhere. The legacy
+    # "ollama-local" Gemma path was removed — old configs auto-migrate via
+    # `load_config()` below.
+    auth_mode: str = "api"  # "api" | "claude-code" | "local"
     api_key: str = ""        # required when auth_mode == "api"
     exam_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     subject: str = Field(min_length=1, max_length=200)
@@ -33,6 +37,11 @@ class Config(BaseModel):
     daily_model: str = "claude-sonnet-4-6"
     fast_model: str = "claude-haiku-4-5-20251001"
     deep_research: bool = False
+    # auth_mode == "local" only — the model_key from bart.local_runtime.models.
+    # Empty string means "auto-detect at run start". Stored so successive runs
+    # don't re-pick (and re-download) just because the user has freed memory
+    # since first setup.
+    local_model_key: str = ""
 
     @field_validator("exam_date")
     @classmethod
@@ -45,8 +54,10 @@ class Config(BaseModel):
     @field_validator("auth_mode")
     @classmethod
     def valid_auth_mode(cls, v: str) -> str:
-        if v not in ("api", "claude-code", "ollama-local"):
-            raise ValueError("auth_mode must be 'api' | 'claude-code' | 'ollama-local'")
+        if v not in ("api", "claude-code", "local"):
+            raise ValueError(
+                "auth_mode must be 'api' | 'claude-code' | 'local'"
+            )
         return v
 
     @property
@@ -65,33 +76,21 @@ def load_config() -> Optional[Config]:
         data = json.loads(CONFIG_PATH.read_text())
     except json.JSONDecodeError:
         return None
-    # Auto-migrate stale local-mode model names. Earlier builds preselected
-    # `gemma4:1b/4b/12b/27b` as future-proof placeholders before Ollama
-    # actually published Gemma 4. Those tags are still 404 in the registry
-    # — Gemma 4's real published tags are e2b / e4b / 26b / 31b — so rewrite
-    # the placeholders to the closest real Gemma 4 tag (preferred) so users
-    # who saved a config with the bad placeholder heal automatically.
-    # Valid tags (gemma4:e2b, gemma4:e4b, gemma4:26b, gemma4:31b,
-    # gemma4:latest, and any gemma3:*) are left untouched.
+    # Migrate ollama-local configs from older builds. The Gemma+Ollama path
+    # is gone; flip them to "local" with an empty model_key so the next
+    # `./run` re-detects hardware and picks an appropriate Qwen3 variant.
     if data.get("auth_mode") == "ollama-local":
-        rewrites = {
-            # Old placeholders → closest real Gemma 4 tag.
-            "gemma4:1b":  "gemma4:e2b",
-            "gemma4:4b":  "gemma4:e4b",
-            "gemma4:12b": "gemma4:26b",
-            "gemma4:27b": "gemma4:31b",
-        }
-        changed = False
+        data["auth_mode"] = "local"
+        data["local_model_key"] = ""
+        # Clear the legacy gemma3/gemma4 tags from primary/fast — they
+        # reference Ollama-only model names that no longer mean anything.
         for key in ("primary_model", "fast_model"):
-            v = data.get(key)
-            if v in rewrites:
-                data[key] = rewrites[v]
-                changed = True
-        if changed:
-            try:
-                CONFIG_PATH.write_text(json.dumps(data, indent=2))
-            except OSError:
-                pass
+            if str(data.get(key, "")).startswith(("gemma3:", "gemma4:")):
+                data[key] = ""
+        try:
+            CONFIG_PATH.write_text(json.dumps(data, indent=2))
+        except OSError:
+            pass
     try:
         return Config(**data)
     except ValidationError:
@@ -150,8 +149,8 @@ def run_setup_wizard(force: bool = False) -> Config:
         else:
             auth_mode = ""
             api_key = ""
-    elif not force and saved_mode == "ollama-local":
-        if Confirm.ask("[1/6] Use saved auth mode (local Gemma via Ollama)?", default=True):
+    elif not force and saved_mode == "local":
+        if Confirm.ask("[1/6] Use saved auth mode (local open-weight model)?", default=True):
             pass
         else:
             auth_mode = ""
@@ -180,10 +179,11 @@ def run_setup_wizard(force: bool = False) -> Config:
         choice_map[str(choice_num)] = "api"
         choice_num += 1
         choices_lines.append(
-            f"  [{ACCENT}]{choice_num}[/{ACCENT}]  Local Gemma (Ollama)   "
-            f"[dim](free, runs offline; ~Sonnet-class quality, not Opus)[/dim]"
+            f"  [{ACCENT}]{choice_num}[/{ACCENT}]  Local open-weight model "
+            f"[dim](free, offline; Qwen3 via MLX on Apple Silicon or "
+            f"llama.cpp elsewhere; bart auto-installs everything)[/dim]"
         )
-        choice_map[str(choice_num)] = "ollama-local"
+        choice_map[str(choice_num)] = "local"
 
         console.print(
             "\n[bold][1/6] How do you want bart to talk to a model?[/bold]\n"
@@ -211,101 +211,75 @@ def run_setup_wizard(force: bool = False) -> Config:
     elif auth_mode == "claude-code":
         api_key = ""  # not needed; clear any stale value
 
-    # ─── 1b/6  Local-mode setup (Ollama detect, install, model tier pick) ───
+    # ─── 1b/6  Local-mode setup ───
     local_primary = defaults.get("primary_model", "claude-opus-4-7")
     local_fast = defaults.get("fast_model", "claude-haiku-4-5-20251001")
-    if auth_mode == "ollama-local":
+    local_model_key = defaults.get("local_model_key", "")
+    if auth_mode == "local":
         api_key = ""  # not used in local mode
-        from . import local_setup as _ls
-        if not _ls.ollama_installed():
-            console.print(
-                "\n[yellow]ollama isn't installed.[/yellow] bart can install it for you, "
-                "or you can install it yourself.\n"
-            )
-            ok = _ls.install_with_consent(
-                lambda q: Confirm.ask(f"[bold]{q}[/bold]", default=True)
-            )
-            if not ok:
-                console.print(
-                    "\n[dim]skipping auto-install. install ollama yourself, then re-run "
-                    "[white]./run setup[/white] and pick local mode again.[/dim]\n"
-                )
-                console.print(_ls.manual_install_message())
-                sys.exit(1)
-            console.print("  [green]✓[/green] ollama installed")
+        from .local_runtime.hardware import detect, recommended_tier
+        from .local_runtime.models import pick
 
-        mem_gb, source = _ls.probe_memory_gb()
-        primary, fast, label = _ls.pick_tier(mem_gb)
-        cpu_warn = ""
-        if not _ls.has_gpu_or_unified():
-            cpu_warn = (
-                "\n  [yellow]⚠ no GPU detected — generation will run on CPU "
-                "and may be very slow (~1 token/sec on big models). "
-                "we'll pre-pick the 1B variant to keep things usable.[/yellow]"
-            )
-            primary, fast, label = "gemma3:1b", "gemma3:1b", "Gemma 3 1B (CPU-only fallback)"
+        platform = detect()
+        tier = recommended_tier(platform)
+        model = pick(platform, tier)
+
+        accel_label = {
+            "metal": "Apple Silicon (Metal)",
+            "cuda":  "NVIDIA GPU (CUDA)",
+            "cpu":   "CPU only",
+        }.get(platform.accelerator, platform.accelerator)
         console.print(
-            f"\n  detected [cyan]{mem_gb:.1f} GB[/cyan] available {source} "
-            f"memory → preselecting [bold]{label}[/bold]"
-            + cpu_warn
+            f"\n  detected [cyan]{accel_label}[/cyan], "
+            f"[cyan]{platform.usable_gb:.0f} GB[/cyan] usable memory"
         )
-        # Loud warning when the picker chose 1B: that variant is genuinely
-        # too small for bart's daily-lesson prompts and produces empty or
-        # prompt-echo output. We let it through, but the user should know.
-        if primary == "gemma3:1b":
+        console.print(
+            f"  → preselecting [bold]{model.display_name}[/bold] "
+            f"[dim]({model.bytes_on_disk/1024**3:.1f} GB on disk, "
+            f"{model.context_window//1024}K context)[/dim]"
+        )
+        if platform.accelerator == "cpu":
             console.print(
-                "\n  [yellow]⚠ Gemma 3 1B is very small. Daily lessons may "
-                "come back empty or unstructured because the prompts exceed "
-                "what a 1B model can reason over. Practice exam and short "
-                "guide work better, but quality is far below Sonnet-class.\n"
-                "  If you have ≥6 GB free, prefer gemma3:4b. For real "
-                "Sonnet-class output, switch to API or subscription mode.[/yellow]"
+                "\n  [yellow]⚠ no GPU/Metal detected — generation will be "
+                "slow (~1-3 tok/s on big models). Daily lessons may take "
+                "20-40 minutes each. Consider switching to API or "
+                "subscription mode if generation time matters.[/yellow]"
             )
+
         if Confirm.ask("\n  use this preselection?", default=True):
-            local_primary = primary
-            local_fast = fast
+            local_model_key = model.key
         else:
             console.print(
-                "\n  available variants (Ollama-published):\n"
-                "  [bold]Gemma 4[/bold] [dim](newer; 128K–256K context, native system-role support)[/dim]\n"
-                "    [bold]gemma4:31b[/bold]   ~20GB  (dense, highest quality)\n"
-                "    [bold]gemma4:26b[/bold]   ~18GB  (MoE — 3.8B active, faster than 31b)\n"
-                "    [bold]gemma4:e4b[/bold]   ~9.6GB (mid-range edge model)\n"
-                "    [bold]gemma4:e2b[/bold]   ~7.2GB (smallest Gemma 4 — laptop-friendly)\n"
-                "  [bold]Gemma 3[/bold] [dim](older; smaller variants still useful as fast model)[/dim]\n"
-                "    [bold]gemma3:27b[/bold]  ~40GB\n"
-                "    [bold]gemma3:12b[/bold]  ~18GB\n"
-                "    [bold]gemma3:4b[/bold]   ~6GB\n"
-                "    [bold]gemma3:1b[/bold]   ~2GB (works on CPU; recommended fast_model)\n"
+                "\n  available variants:\n"
+                "    [bold]qwen3-32b-mlx-4bit[/bold]      ~18 GB  (huge tier, ≥22 GB)\n"
+                "    [bold]qwen3-30b-a3b-mlx-4bit[/bold]  ~17 GB  (large MoE, ≥16 GB, 3.3B active — fast)\n"
+                "    [bold]qwen3-14b-mlx-4bit[/bold]      ~8.5 GB (mid tier, ≥11 GB)\n"
+                "    [bold]qwen3-8b-mlx-4bit[/bold]       ~4.6 GB (small tier, ≥7 GB)\n"
+                "    [bold]qwen3-4b-mlx-4bit[/bold]       ~2.4 GB (tiny tier, ≥4 GB)\n"
+                "  [dim]on non-Apple platforms swap `mlx-4bit` → `gguf-q4km`[/dim]\n"
             )
-            local_primary = Prompt.ask(
-                "  primary model (long-form Author)",
-                default=primary,
+            picked = Prompt.ask(
+                "  model_key", default=model.key,
             )
-            local_fast = Prompt.ask(
-                "  fast model (Distiller / Researcher / sidecars)",
-                default=fast,
-            )
-        # Validate the chosen models exist in the Ollama registry BEFORE
-        # saving config. Cheaper than a failed pull at run time.
-        for m in {local_primary, local_fast}:
-            if not _ls.model_exists_in_registry(m):
-                console.print(
-                    f"\n[red]✗ model `{m}` is not in Ollama's registry.[/red]\n"
-                    f"  Pick one of: gemma3:27b / gemma3:12b / gemma3:4b / "
-                    f"gemma3:1b (the currently published variants).\n"
-                )
-                sys.exit(1)
-        console.print(
-            f"\n  [dim]models will be pulled at run start (10–30 min on first run; "
-            f"cached for 24 hours so back-to-back runs are fast).[/dim]"
-        )
-        console.print(
-            f"  [dim]quality note: local Gemma produces ~Sonnet-class lessons. "
-            f"For Opus-class quality on long structured artifacts, switch to "
-            f"`./run setup` and pick option 1 or 2.[/dim]\n"
-        )
+            local_model_key = picked.strip() or model.key
 
+        # Set primary/daily/fast all to the same local key — the local
+        # backend ignores the `model` arg and uses the runtime-bound model
+        # for every call. Storing the key here is informational.
+        local_primary = local_model_key
+        local_fast = local_model_key
+
+        console.print(
+            f"\n  [dim]bart will install the inference engine and download "
+            f"weights on first run (~{model.bytes_on_disk/1024**3:.1f} GB; "
+            f"cached 24h between runs).[/dim]"
+        )
+        console.print(
+            f"  [dim]quality note: Qwen3 has native tool calling and JSON "
+            f"mode, so structured artifacts (problem index, exam pattern, "
+            f"diagrams) are dramatically more reliable than the legacy "
+            f"Gemma path.[/dim]\n"
+        )
     # Exam date
     while True:
         exam_date = Prompt.ask(
@@ -377,7 +351,7 @@ def run_setup_wizard(force: bool = False) -> Config:
         lines.append(line)
     guidance = "\n".join(lines).strip() or "(no extra guidance)"
 
-    if auth_mode == "ollama-local":
+    if auth_mode == "local":
         primary_model_for_cfg = local_primary
         fast_model_for_cfg = local_fast
     else:
@@ -394,6 +368,7 @@ def run_setup_wizard(force: bool = False) -> Config:
         daily_hours=daily_hours,
         primary_model=primary_model_for_cfg,
         fast_model=fast_model_for_cfg,
+        local_model_key=local_model_key if auth_mode == "local" else "",
     )
     save_config(cfg)
     console.print("\n[green]✓[/green] config saved to [cyan].bart_config.json[/cyan]\n")

@@ -17,3 +17,9 @@ pdf2image>=1.17
 # Optional secondary text extractor — handles broken font maps better
 # than pypdf. We try it before falling all the way down to OCR.
 pdfplumber>=0.11
+# Local-mode runtime: huggingface_hub fetches open-weight models on demand.
+# The actual inference engine (mlx-lm on Apple Silicon, llama-cpp-python
+# elsewhere) is installed at first run by bart/local_runtime/installer.py
+# so users on API/subscription mode don't pay for unused dependencies.
+huggingface_hub>=0.24
+psutil>=5.9

@@ -16,19 +16,17 @@ PRICING = {
     },
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30},
     "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0, "cache_write": 1.0, "cache_read": 0.08},
-    # Local Gemma — runs on the user's machine via Ollama, $0 per token.
-    "gemma3:1b":  {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
-    "gemma3:4b":  {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
-    "gemma3:12b": {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
-    "gemma3:27b": {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
-    # Gemma 4 — Ollama's published tags (e2b/e4b/26b/31b/latest). Local
-    # inference, $0/token. The tag scheme differs from Gemma 3 (no 1b/4b/
-    # 12b/27b suffixes); see backends._WEIGHTS_BYTES for size details.
-    "gemma4:e2b":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
-    "gemma4:e4b":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
-    "gemma4:26b":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
-    "gemma4:31b":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
-    "gemma4:latest": {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    # Local stack: Qwen3 family via mlx-lm or llama-cpp-python. $0/token.
+    "qwen3-32b-mlx-4bit":     {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-32b-gguf-q4km":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-30b-a3b-mlx-4bit": {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-30b-a3b-gguf-q4km": {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-14b-mlx-4bit":     {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-14b-gguf-q4km":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-8b-mlx-4bit":      {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-8b-gguf-q4km":     {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-4b-mlx-4bit":      {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "qwen3-4b-gguf-q4km":     {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
 }
 
 

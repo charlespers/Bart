@@ -85,7 +85,7 @@ from .backends import (
     AnthropicAPIBackend,
     ClaudeCodeBackend,
     LLMContextTooLongError,
-    OllamaBackend,
+    LocalBackend,
 )
 from .paths import RunPaths
 from .telemetry import Telemetry
@@ -123,6 +123,9 @@ class Orchestrator:
         self.days_override = days_override
         self.telemetry = Telemetry()
         self.logger = setup_run_logger(paths.log_path)
+        # Populated when auth_mode == "local". The finally block in run()
+        # tears it down so the inference server stops cleanly even on Ctrl-C.
+        self._local_runtime = None
 
     # ------------------------------------------------------------------
     def run(self) -> int:
@@ -151,24 +154,37 @@ class Orchestrator:
                     cache_dir=self.paths.cache_dir,
                     on_event=self._on_llm_event,
                 )
-            elif self.cfg.auth_mode == "ollama-local":
-                # Pull (or reuse cached) Gemma weights before the run starts.
-                # The cleanup (VRAM unload + 24h cache touch) happens in the
-                # outer try/finally so Ctrl-C still leaves the system tidy.
-                from . import local_setup as _ls
+            elif self.cfg.auth_mode == "local":
+                # New local stack: detect hardware → install engine → download
+                # weights → start mlx-lm/llama-cpp-python server → return a
+                # RuntimeHandle wrapping an OpenAI-compatible client.
+                from . import local_runtime as _lr
                 self.console.print(
                     "\n[bold #c96442]▸ Local model setup[/bold #c96442]"
                 )
-                _ls.ensure_ready(
-                    primary_model=self.cfg.primary_model,
-                    fast_model=self.cfg.fast_model,
+                self._local_runtime = _lr.prepare(
                     console=self.console,
+                    model_key=self.cfg.local_model_key or None,
+                    on_event=self._on_llm_event,
                 )
-                llm = OllamaBackend(
+                llm = LocalBackend(
+                    runtime=self._local_runtime,
                     telemetry=self.telemetry,
                     cache_dir=self.paths.cache_dir,
                     on_event=self._on_llm_event,
                 )
+                # Local server is single-slot by default — collapse parallel
+                # fan-out so the orchestrator doesn't queue 4 calls behind
+                # the same server slot. Without this, ThreadPoolExecutor(4)
+                # silently serializes and wall-clock balloons.
+                if self.max_parallel > self._local_runtime.parallel_slots:
+                    self.console.print(
+                        f"  [dim]capping max_parallel from "
+                        f"{self.max_parallel} to "
+                        f"{self._local_runtime.parallel_slots} "
+                        f"(local server slot count)[/dim]"
+                    )
+                    self.max_parallel = self._local_runtime.parallel_slots
             else:
                 llm = AnthropicAPIBackend(
                     api_key=self.cfg.api_key,
@@ -207,16 +223,19 @@ class Orchestrator:
                 raise
 
             # Build the full-corpus context (used only by Distiller + Researcher).
-            # In ollama-local mode this `full_corpus_block` is *deliberately
+            # In local mode this `full_corpus_block` is *deliberately
             # never used* — the chunked agents in `local_chunked.py` walk
             # `corpus.files` directly so no single LLM call ever sees the
             # whole corpus. We still build it so a misrouted call would fail
-            # loud (the OllamaBackend num_ctx ceiling will refuse the call)
-            # rather than silently OOM the daemon.
+            # loud (the LocalBackend num_ctx cap will refuse the call) rather
+            # than silently OOM the daemon.
             full_corpus_block = self._make_corpus_block(corpus.body)
             full_ctx = AgentContext(cfg=self.cfg, llm=llm, corpus_block=full_corpus_block)
 
-            is_local = self.cfg.auth_mode == "ollama-local"
+            # In local mode a single LLM call must never receive the whole
+            # corpus — even Qwen3's 128K context fills up fast at 4-bit KV
+            # cache rates on consumer hardware.
+            is_local = self.cfg.auth_mode == "local"
 
             # ── Distill the corpus to a tight brief ONCE, with the fast model.
             # All downstream agents (Planner, Author, Reviewer) use the brief
@@ -398,8 +417,8 @@ class Orchestrator:
                     f"  [{RICH_OK}]✓[/{RICH_OK}] {len(research_by_day)} study card(s) generated"
                 )
                 # If the batched call missed any days, fall back to per-day Researchers.
-                # In local mode the per-day Researcher would hit the OllamaBackend
-                # hard num_ctx cap (full-corpus call), so we substitute an empty
+                # In local mode a per-day Researcher would hit the LocalBackend's
+                # n_ctx cap (full-corpus call), so we substitute an empty
                 # research slice — the Author still has the brief + day entry to
                 # work from, which is enough on local models.
                 missing = [d for d in day_entries if d["day"] not in research_by_day]
@@ -498,24 +517,34 @@ class Orchestrator:
                                f"[cyan]{self.paths.run_id}[/cyan] [red]to continue.[/red]")
             return 130
         except Exception as e:
+            # `LocalRuntimeError` carries a hand-written, user-friendly
+            # message + remediation hint — print just that, no traceback.
+            # Everything else gets the developer-style failure card.
+            from .local_runtime.errors import LocalRuntimeError
             self.logger.error("Orchestrator failed: %s\n%s", e, traceback.format_exc())
-            err_type = type(e).__name__
-            self.console.print(f"\n[red]✗ Run failed:[/red] [bold]{err_type}[/bold]: {e}")
-            self.console.print(f"[dim]Full traceback in {self.paths.log_path}[/dim]")
-            self.console.print(f"[dim]Resume with:[/dim] [white]./run --resume {self.paths.run_id}[/white]")
+            if isinstance(e, LocalRuntimeError):
+                self.console.print(f"\n[red]✗ {e}[/red]")
+                self.console.print(
+                    f"\n[dim]Full log at {self.paths.log_path} · "
+                    f"diagnose with[/dim] [white]./run doctor[/white]"
+                )
+            else:
+                err_type = type(e).__name__
+                self.console.print(f"\n[red]✗ Run failed:[/red] [bold]{err_type}[/bold]: {e}")
+                self.console.print(f"[dim]Full traceback in {self.paths.log_path}[/dim]")
+                self.console.print(f"[dim]Resume with:[/dim] [white]./run --resume {self.paths.run_id}[/white]")
             return 1
         finally:
             # Local-mode cleanup runs even on Ctrl-C / exception. Touches the
             # 24h cache so the next run within a day reuses the model, and
             # force-unloads from VRAM so the user's machine isn't still
             # holding 12-40 GB after the packet is done.
-            if self.cfg.auth_mode == "ollama-local":
+            if self.cfg.auth_mode == "local" and self._local_runtime is not None:
                 try:
-                    from . import local_setup as _ls
-                    _ls.end_of_run(
-                        primary_model=self.cfg.primary_model,
-                        fast_model=self.cfg.fast_model,
-                        console=self.console,
+                    self._local_runtime.shutdown()
+                    self.console.print(
+                        "  [dim]✓ stopped local inference server "
+                        "(weights cached 24h for fast next run)[/dim]"
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -584,7 +613,7 @@ class Orchestrator:
 
         Each line item is computed by replicating the orchestrator's call
         graph with conservative-but-realistic token budgets. Subscription
-        and ollama-local are zero-cost; only API mode produces non-zero
+        and local are zero-cost; only API mode produces non-zero
         items here. The returned dict always includes a ``total`` key.
         """
         from .telemetry import PRICING
@@ -689,7 +718,7 @@ class Orchestrator:
                 or _os.environ.get("BART_RUN_FULL_RESEARCHER") == "1"
             )
             and _os.environ.get("BART_SKIP_RESEARCHER") != "1"
-            and self.cfg.auth_mode != "ollama-local"
+            and self.cfg.auth_mode != "local"
         )
         if run_full_researcher:
             _line(
@@ -700,8 +729,8 @@ class Orchestrator:
         # 10. Solver (practice exam Part B answer key).
         _line("solver", opus, in_=brief_tokens + artifact_out_tokens, out=4_000)
 
-        # Subscription and ollama-local are operationally $0 — zero out.
-        if self.cfg.auth_mode in ("claude-code", "ollama-local"):
+        # Subscription and local modes are operationally $0 — zero out.
+        if self.cfg.auth_mode in ("claude-code", "local"):
             for k in items:
                 items[k] = 0.0
 
@@ -720,13 +749,14 @@ class Orchestrator:
         if self.cfg.auth_mode == "claude-code":
             cost_line = f"  cost:       [{ACCENT_HI}]covered by your Claude subscription[/{ACCENT_HI}]"
             footer = "[dim]subscription rate limits apply.[/dim]"
-        elif self.cfg.auth_mode == "ollama-local":
+        elif self.cfg.auth_mode == "local":
             cost_line = (
-                f"  cost:       [{ACCENT_HI}]$0.00 (local — Gemma via Ollama)[/{ACCENT_HI}]"
+                f"  cost:       [{ACCENT_HI}]$0.00 (local — Qwen3 via "
+                f"mlx-lm/llama.cpp)[/{ACCENT_HI}]"
             )
             footer = (
-                "[dim]first run pulls the model (~10-30 min); cached for 24h. "
-                "no API calls; no internet needed after the pull.[/dim]"
+                "[dim]first run downloads the model "
+                "(~3-20 GB depending on tier); cached for 24h.[/dim]"
             )
         else:
             bd = self.cost_breakdown(corpus_chars, days)

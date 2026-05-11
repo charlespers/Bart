@@ -50,6 +50,109 @@ def list_runs() -> int:
     return 0
 
 
+def _doctor_check_local(cfg, console) -> bool:
+    """Local-mode diagnostics. Each step is self-contained, prints pass/fail
+    with a remediation hint, and never raises (so a failed step doesn't
+    prevent later steps from running). Returns True iff every step passes.
+    """
+    from .local_runtime import cache as _cache
+    from .local_runtime import installer as _installer
+    from .local_runtime.errors import LocalRuntimeError
+    from .local_runtime.hardware import detect, recommended_tier
+    from .local_runtime.models import get as get_model, pick
+
+    ok = True
+
+    # 1. Hardware probe.
+    try:
+        platform = detect()
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]✗[/red] hardware detection failed: {e}")
+        return False
+    console.print(
+        f"[green]✓[/green] hardware: {platform.os}/{platform.arch} "
+        f"[dim]{platform.accelerator}, {platform.usable_gb:.1f} GB usable[/dim]"
+    )
+
+    # 2. Model resolved.
+    try:
+        if cfg.local_model_key:
+            model = get_model(cfg.local_model_key)
+        else:
+            model = pick(platform, recommended_tier(platform))
+        console.print(
+            f"[green]✓[/green] model: [cyan]{model.display_name}[/cyan] "
+            f"[dim]({model.bytes_on_disk/1024**3:.1f} GB on disk)[/dim]"
+        )
+    except KeyError:
+        console.print(
+            f"[red]✗[/red] config references unknown model "
+            f"`{cfg.local_model_key}`. Run `./run setup` to pick a valid one."
+        )
+        return False
+
+    # 3. Engine package importable.
+    if _installer.is_engine_installed(platform):
+        console.print(
+            f"[green]✓[/green] inference engine "
+            f"[cyan]{_installer.engine_package(platform)}[/cyan] importable"
+        )
+    else:
+        console.print(
+            f"[yellow]⊘[/yellow] inference engine "
+            f"[cyan]{_installer.engine_package(platform)}[/cyan] not installed yet "
+            f"[dim](will install on first ./run)[/dim]"
+        )
+
+    # 4. Hugging Face reachability for the chosen model.
+    try:
+        _installer.validate_repo_reachable(model)
+        console.print(
+            f"[green]✓[/green] Hugging Face repo reachable "
+            f"[dim]({model.hf_repo})[/dim]"
+        )
+    except LocalRuntimeError as e:
+        console.print(f"[red]✗[/red] {e}")
+        ok = False
+
+    # 5. Cache dir writable.
+    try:
+        d = _cache.models_dir()
+        probe = d / ".bart_write_probe"
+        probe.write_text("ok")
+        probe.unlink()
+        console.print(f"[green]✓[/green] cache dir writable [dim]({d})[/dim]")
+    except OSError as e:
+        console.print(
+            f"[red]✗[/red] cache dir not writable ({d}): {e}\n"
+            f"  [dim]→ set BART_CACHE_DIR or fix ~/.cache/ permissions[/dim]"
+        )
+        ok = False
+
+    # 6. Disk space for the chosen model.
+    free_gb = _installer._disk_free_gb(_cache.models_dir())
+    needed_gb = (model.bytes_on_disk * 1.10 + 1 * 1024**3) / (1024**3)
+    if _cache.is_downloaded(model):
+        console.print(
+            f"[green]✓[/green] weights already downloaded "
+            f"[dim]({model.bytes_on_disk/1024**3:.1f} GB cached)[/dim]"
+        )
+    elif free_gb < needed_gb:
+        console.print(
+            f"[red]✗[/red] not enough free disk space: need "
+            f"~{needed_gb:.1f} GB, only {free_gb:.1f} GB free.\n"
+            f"  [dim]→ free up space or set BART_CACHE_DIR to a larger volume[/dim]"
+        )
+        ok = False
+    else:
+        console.print(
+            f"[green]✓[/green] {free_gb:.0f} GB free disk "
+            f"[dim](need ~{needed_gb:.1f} GB for first download)[/dim]"
+        )
+
+    return ok
+
+
 def doctor() -> int:
     console = Console()
     ok = True
@@ -106,7 +209,9 @@ def doctor() -> int:
 
     # Auth-mode-specific connectivity
     if cfg:
-        if cfg.auth_mode == "claude-code":
+        if cfg.auth_mode == "local":
+            ok = _doctor_check_local(cfg, console) and ok
+        elif cfg.auth_mode == "claude-code":
             import shutil as _sh
             cli = _sh.which("claude")
             if not cli:

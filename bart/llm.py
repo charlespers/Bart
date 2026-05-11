@@ -9,9 +9,13 @@ from .backends import (
     AnthropicAPIBackend,
     ClaudeCodeBackend,
     LLMError,
+    LocalBackend,
 )
 
 # Back-compat alias — the orchestrator type-hints against this name.
 LLMClient = AnthropicAPIBackend
 
-__all__ = ["LLMClient", "LLMError", "AnthropicAPIBackend", "ClaudeCodeBackend"]
+__all__ = [
+    "LLMClient", "LLMError",
+    "AnthropicAPIBackend", "ClaudeCodeBackend", "LocalBackend",
+]

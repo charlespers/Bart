@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="Verify environment, dependencies, and API key.")
     sub.add_parser(
         "cleanup",
-        help="Local-mode only: force-delete every cached Gemma model and "
+        help="Local-mode only: delete every cached open-weight model and "
              "clear the 24h cache file. Use when you want to reclaim disk.",
     )
 
@@ -180,14 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         return doctor()
 
     if cmd == "cleanup":
-        from . import local_setup as _ls
-        if not _ls.ollama_running():
-            console.print(
-                "[yellow]ollama daemon isn't running, so there's nothing to clean up.[/yellow] "
-                "[dim]start it with[/dim] [white]ollama serve[/white] [dim]and re-run.[/dim]"
-            )
-            return 0
-        removed = _ls.purge_all_cached()
+        from .local_runtime import cache as _cache
+        removed = _cache.purge_all()
         if removed:
             console.print(
                 f"[green]✓[/green] removed {len(removed)} cached model(s):"
@@ -195,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             for m in removed:
                 console.print(f"    [cyan]{m}[/cyan]")
             console.print(
-                "[dim]disk reclaimed; next run will re-pull on demand.[/dim]"
+                "[dim]disk reclaimed; next run will re-download on demand.[/dim]"
             )
         else:
             console.print("[dim]no cached models to remove.[/dim]")

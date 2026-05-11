@@ -155,7 +155,12 @@ class AuthorAgent(Agent):
             try:
                 add = self.ctx.llm.complete(
                     model=cfg.fast_model,  # Haiku is plenty for emitting blocks
-                    system=self.system_prompt,
+                    # IMPORTANT: pass the kind-augmented system prompt, not the
+                    # base system_prompt. Without the kind catalog the
+                    # continuation has no schema example for the bart-* fences
+                    # and emits plain text — which gets dropped at the
+                    # `if "```bart-" in add` gate below.
+                    system=system_for_kind,
                     user=[{
                         "type": "text",
                         "text": (

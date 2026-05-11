@@ -10,10 +10,10 @@ Three paths to run bart:
      (covered by the subscription), no prompt caching at the API layer (we
      fall back to disk cache), no usage telemetry.
 
-  3. OllamaBackend        - runs Gemma 4 (or any Ollama-hosted model) on the
-     local machine. No per-token cost, no Anthropic dependency. Models are
-     pulled at run start and cached for 24h between runs. See `local_setup`
-     for lifecycle management.
+  3. LocalBackend         - runs an open-weight model (Qwen3 family) on the
+     local machine via mlx-lm (Apple Silicon) or llama-cpp-python (CUDA /
+     CPU). Zero per-token cost, no API dependency. See
+     `bart/local_runtime/SPEC.md` for the lifecycle contract.
 
 All three classes expose the same `complete(...)` method so the orchestrator
 does not care which one is in use.
@@ -173,18 +173,18 @@ MODEL_CTX_WINDOW: dict[str, int] = {
     "claude-sonnet-4-6": 200_000,
     "claude-opus-4-7": 200_000,
     "claude-opus-4-7-1m": 1_000_000,
-    # Gemma 3 (Ollama) — published limits
-    "gemma3:1b": 32_000,
-    "gemma3:4b": 128_000,
-    "gemma3:12b": 128_000,
-    "gemma3:27b": 128_000,
-    # Gemma 4 (Ollama) — Edge variants 128K, MoE / dense large 256K.
-    # Tag names match Ollama's real registry (e2b / e4b / 26b / 31b / latest).
-    "gemma4:e2b":    128_000,
-    "gemma4:e4b":    128_000,
-    "gemma4:26b":    256_000,
-    "gemma4:31b":    256_000,
-    "gemma4:latest": 128_000,  # currently aliases e4b
+    # Local Qwen3 family — canonical limits. Mirrors
+    # bart/local_runtime/models.py's per-model `context_window`.
+    "qwen3-4b-mlx-4bit":      131_072,
+    "qwen3-4b-gguf-q4km":     131_072,
+    "qwen3-8b-mlx-4bit":      131_072,
+    "qwen3-8b-gguf-q4km":     131_072,
+    "qwen3-14b-mlx-4bit":     131_072,
+    "qwen3-14b-gguf-q4km":    131_072,
+    "qwen3-30b-a3b-mlx-4bit": 262_144,
+    "qwen3-30b-a3b-gguf-q4km": 262_144,
+    "qwen3-32b-mlx-4bit":     131_072,
+    "qwen3-32b-gguf-q4km":    131_072,
 }
 
 
@@ -385,85 +385,6 @@ def _sanitize_local_output(text: str, response_format: str | None = None) -> str
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Memory-aware num_ctx ceiling for local Gemma models
-# ─────────────────────────────────────────────────────────────────────
-#
-# Per-token KV cache size (bytes, FP16) for the Gemma 3 family. These are
-# rough — actual numbers depend on group-query head count and sliding-window
-# layers — but they are correct to within ~30%, which is what we need for
-# a conservative ceiling.
-_KV_BYTES_PER_TOKEN = {
-    "gemma3:1b":  36_000,
-    "gemma3:4b":  80_000,
-    "gemma3:12b": 196_000,
-    "gemma3:27b": 432_000,
-    # Gemma 4 — actual published tags. e2b/e4b are "edge" variants
-    # (small effective param count, similar KV footprint to gemma3:4b).
-    # 26b is MoE (3.8B active of 25.2B total) — KV cache scales with the
-    # FULL model, not active params, so use a 12b-like footprint.
-    # 31b is dense, similar to gemma3:27b.
-    "gemma4:e2b":    50_000,
-    "gemma4:e4b":    80_000,
-    "gemma4:26b":   240_000,
-    "gemma4:31b":   480_000,
-    "gemma4:latest": 80_000,  # aliases e4b
-}
-
-# Approximate Q4-quantized model weight footprint (bytes). Matches the
-# advertised on-disk sizes shown in Ollama's library listing.
-_WEIGHTS_BYTES = {
-    "gemma3:1b":   700 * 1024 * 1024,
-    "gemma3:4b":  2_500 * 1024 * 1024,
-    "gemma3:12b": 7_500 * 1024 * 1024,
-    "gemma3:27b": 16_000 * 1024 * 1024,
-    # Gemma 4 — real published sizes (Q4-quantized, in bytes).
-    "gemma4:e2b":     7_200 * 1024 * 1024,   #  7.2 GB on disk
-    "gemma4:e4b":     9_600 * 1024 * 1024,   #  9.6 GB on disk
-    "gemma4:26b":    18_000 * 1024 * 1024,   #   18 GB on disk (MoE)
-    "gemma4:31b":    20_000 * 1024 * 1024,   #   20 GB on disk
-    "gemma4:latest":  9_600 * 1024 * 1024,   # aliases e4b
-}
-
-# Inference workspace overhead (activations, scratch, daemon process).
-_WORKSPACE_BYTES = 1_200 * 1024 * 1024
-
-
-def _hard_num_ctx_cap(model: str) -> int:
-    """Largest num_ctx that fits weights + KV cache + workspace in RAM.
-
-    Local-mode lifesaver: Ollama silently allocates the full num_ctx-sized
-    KV cache up front, and on a small machine that allocation can OOM-kill
-    the daemon mid-call. The orchestrator surfaces the kill as a hung
-    `call_start` with no `call_done`. Bound num_ctx to what the machine
-    can actually carry, then raise a clean LLMError if a caller asks for
-    more.
-
-    Returns the largest power-of-two num_ctx for which:
-        weights + workspace + num_ctx * kv_bytes_per_token <= 0.70 * available_ram
-
-    Falls back to 8192 if probing fails — that's enough for chunked
-    per-file agents without being so small that a daily-lesson Author gets
-    refused. Operators can always raise via `BART_OLLAMA_NUM_CTX`.
-    """
-    try:
-        from .local_setup import probe_memory_gb
-        avail_gb, _ = probe_memory_gb()
-        avail_bytes = avail_gb * (1024 ** 3)
-    except Exception:  # noqa: BLE001
-        return 8192
-    weights = _WEIGHTS_BYTES.get(model, 2_500 * 1024 * 1024)
-    kv_per_tok = _KV_BYTES_PER_TOKEN.get(model, 80_000)
-    budget = (avail_bytes * 0.70) - weights - _WORKSPACE_BYTES
-    if budget <= 0:
-        return 4096  # machine is dangerously full; smallest viable window
-    max_tokens_fit = int(budget / kv_per_tok)
-    for cap in (131072, 65536, 32768, 16384, 8192, 4096):
-        if max_tokens_fit >= cap:
-            return cap
-    return 4096
-
-
-# ─────────────────────────────────────────────────────────────────────
 # Disk-cache helpers shared by both backends
 # ─────────────────────────────────────────────────────────────────────
 
@@ -548,7 +469,7 @@ class AnthropicAPIBackend:
         label: str = "",
         use_disk_cache: bool = True,
         temperature: float = 1.0,
-        response_format: str | None = None,  # "json" honored by OllamaBackend; ignored here
+        response_format: str | None = None,  # "json" honored by LocalBackend; ignored here
     ) -> str:
         sys_blocks = self._cacheable_system(system) if isinstance(system, str) else list(system)
         usr_blocks = [{"type": "text", "text": user}] if isinstance(user, str) else list(user)
@@ -978,51 +899,64 @@ class ClaudeCodeBackend:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Ollama (local-model) backend — Gemma 4 default, free, offline
+# Local backend — runs Qwen3 (or other open-weight model) via mlx-lm
+# (Apple Silicon) or llama-cpp-python (CUDA / CPU). Talks the
+# OpenAI-compatible HTTP API exposed by those servers, with sampler-level
+# JSON via GBNF grammars on llama.cpp.
+#
+# Architectural wins:
+#   - Streaming + heartbeat (fixes "looks hung" + "partial loss on timeout")
+#   - Retry+backoff with Retry-After honoring (fixes "blip kills the run")
+#   - num_predict capped against n_ctx (fixes "truncated mid-sentence")
+#   - System role passed as system message (fixes Gemma 3 system-prompt drop)
+#   - Grammar-constrained JSON when schema is in scope (fixes "garbage JSON")
 # ─────────────────────────────────────────────────────────────────────
 
 
-class OllamaBackend:
-    """Talks to a local Ollama daemon over its HTTP API. Suitable for users
-    who don't have a Claude subscription or API key.
+class LocalBackend:
+    """OpenAI-compatible client for a locally-hosted open-weight model.
 
-    Strips Anthropic-only `cache_control` blocks before serializing — Ollama
-    doesn't have an equivalent. Falls back to bart's disk cache for repeat-
-    call savings. Cost is always $0 (PRICING table has zero entries for
-    the Gemma model names below).
+    Construct via `LocalBackend(runtime=..., telemetry=...)` where `runtime`
+    is a `bart.local_runtime.RuntimeHandle` (the orchestrator builds and
+    owns the handle; this class is a thin protocol-adapter on top).
+
+    Implements the same `complete(...)` shape as `AnthropicAPIBackend` so
+    the orchestrator and agents do not need to know which backend is in
+    use. The `model` argument is accepted for protocol compatibility but
+    ignored — the runtime is bound to a single served model.
     """
 
-    name = "ollama-local"
+    name = "local"
 
     def __init__(
         self,
+        runtime,
         telemetry: Telemetry,
         cache_dir: Path | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
-        host: str | None = None,
-        timeout_s: int = 3600,  # 1 hour — small models on CPU can be slow per call
     ):
-        from .local_setup import OLLAMA_HOST
-        self._host = (host or OLLAMA_HOST).rstrip("/")
+        self._runtime = runtime
         self._tel = telemetry
         self._cache_dir = cache_dir
         self._on_event = on_event or (lambda evt, payload: None)
-        self._timeout_s = timeout_s
+        # Re-bind the client's event handler so heartbeats route through us.
+        self._runtime.client.on_event = self._on_event
 
     @staticmethod
-    def _flatten(blocks: str | list[dict[str, Any]]) -> str:
-        """Concatenate `[{type:'text', text:'...'}, ...]` (the Anthropic
-        block shape) into a single string. `cache_control` blocks are
-        ignored — Ollama has no equivalent."""
-        if isinstance(blocks, str):
-            return blocks
+    def _flatten_blocks(content) -> str:
+        """Anthropic-style content is `str | list[{"type":"text","text":...}]`.
+        Flatten to plain text — local servers don't understand block content."""
+        if isinstance(content, str):
+            return content
         out: list[str] = []
-        for b in blocks:
-            if isinstance(b, dict) and b.get("type") == "text":
-                txt = b.get("text", "")
-                if txt:
-                    out.append(txt)
-        return "\n\n".join(out)
+        for b in content or ():
+            if isinstance(b, dict):
+                t = b.get("text")
+                if isinstance(t, str):
+                    out.append(t)
+            elif isinstance(b, str):
+                out.append(b)
+        return "\n".join(out)
 
     def complete(
         self,
@@ -1033,226 +967,67 @@ class OllamaBackend:
         max_tokens: int = 8000,
         label: str = "",
         use_disk_cache: bool = True,
-        temperature: float = 1.0,
+        temperature: float = 0.7,
         response_format: str | None = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> str:
-        sys_text = self._flatten(system)
-        usr_text = self._flatten(user)
+        sys_text = self._flatten_blocks(system)
+        usr_text = self._flatten_blocks(user)
 
+        # Disk-cache key uses the runtime's model key (not the caller's
+        # `model` arg) so cache hits are correct across role labels.
         sys_blocks = [{"type": "text", "text": sys_text}]
         usr_blocks = [{"type": "text", "text": usr_text}]
-        key = _cache_key(model, sys_blocks, [{"role": "user", "content": usr_blocks}], max_tokens)
+        cache_model = self._runtime.model.key
+        key = _cache_key(cache_model, sys_blocks,
+                         [{"role": "user", "content": usr_blocks}],
+                         max_tokens)
         if use_disk_cache:
             cached = _read_disk_cache(self._cache_dir, key)
             if cached is not None:
                 self._on_event("cache_hit", {"label": label, "key": key})
                 return cached
 
-        import urllib.error
-        import urllib.request
-
-        # CRITICAL: set num_ctx explicitly. Ollama defaults to 2048 tokens —
-        # which is far too small for bart's prompts. But the OPPOSITE failure
-        # is also catastrophic: oversizing num_ctx allocates an O(num_ctx)
-        # KV cache on top of the model weights, and on the small machines
-        # that pick gemma3:1b/4b that allocation OOM-kills Ollama mid-call.
-        # The orchestrator never gets a clean error — the call_done event
-        # simply never arrives.
-        #
-        # Defense: a hard memory-aware ceiling. Approximate KV-cache cost
-        # per token for the Gemma 3 family (FP16, group-query attention),
-        # then cap so weights + KV + workspace fit in ~70% of probed RAM.
-        approx_input_tokens = (len(sys_text) + len(usr_text)) // 4
-        ctx_budget = approx_input_tokens + max_tokens + 1024  # tight headroom
-        hard_cap = _hard_num_ctx_cap(model)
-        for ceiling in (4096, 8192, 16384, 32768, 65536, 131072):
-            if ctx_budget <= ceiling:
-                num_ctx = ceiling
-                break
-        else:
-            num_ctx = 131072
-        if num_ctx > hard_cap:
-            # Refuse the call rather than OOM the daemon. The orchestrator
-            # routes full-corpus work through chunked agents in local mode,
-            # so a hit here means an agent tried to send something it
-            # shouldn't have — give a precise error so the caller can fix.
-            raise LLMError(
-                f"ollama call '{label}' would need num_ctx={num_ctx} "
-                f"but the hard ceiling for `{model}` on this machine is "
-                f"{hard_cap} (KV cache + weights wouldn't fit in RAM). "
-                f"Approx input: {approx_input_tokens} tokens. "
-                f"Either chunk the input upstream, raise BART_OLLAMA_NUM_CTX "
-                f"manually if you know your machine has the headroom, or "
-                f"switch to a smaller corpus path."
-            )
-        env_override = os.environ.get("BART_OLLAMA_NUM_CTX")
-        if env_override and env_override.isdigit():
-            num_ctx = int(env_override)
-
-        # Gemma 4 has its own recommended sampling (temp=1.0, top_p=0.95,
-        # top_k=64) AND native `system` role support — the system message
-        # we send is honored as a real system turn rather than spliced into
-        # the first user message like in Gemma 3. We pass top_p / top_k for
-        # Gemma 4 only; for Gemma 3 we keep the existing default behavior so
-        # we don't change anything that already works for the user.
-        is_gemma4 = model.startswith("gemma4:")
-        options: dict[str, Any] = {
-            "num_predict": max_tokens,
-            "num_ctx": num_ctx,
-            "temperature": temperature,
-        }
-        if is_gemma4:
-            # Recommended Gemma 4 sampling. Only override when the caller
-            # didn't already set a non-default temperature.
-            options["top_p"] = 0.95
-            options["top_k"] = 64
-            # Disable Gemma 4's optional thinking mode by default — bart's
-            # local-mode primer asks for "no chain-of-thought" and we
-            # already strip thinking-tag artifacts in the sanitizer. Ollama
-            # honors `think: False` for models that expose a thinking knob.
-            options["think"] = False
-
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": sys_text},
-                {"role": "user", "content": usr_text},
-            ],
-            "stream": False,
-            "options": options,
-            # Keep weights in VRAM between calls within a run — much faster
-            # than reloading per call. Orchestrator force-unloads at end.
-            "keep_alive": "30m",
-        }
-        # Ollama's structured-output mode. When the caller asks for "json",
-        # the model is forced to emit syntactically valid JSON — dramatically
-        # improves JSON-emitting agents (problem_indexer, exam_pattern,
-        # topic_distiller, whimsy_indexer, reviewer-grade) on small models
-        # that otherwise wrap JSON in code fences or chatty preambles.
-        if response_format == "json":
-            payload["format"] = "json"
-        req = urllib.request.Request(
-            f"{self._host}/api/chat",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        messages = [
+            {"role": "system", "content": sys_text},
+            {"role": "user", "content": usr_text},
+        ]
         t0 = time.time()
-        self._on_event("call_start", {"label": label, "model": model, "backend": "ollama"})
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
-                body = resp.read().decode()
-        except urllib.error.HTTPError as e:
-            err_body = ""
-            try:
-                err_body = e.read().decode()[:400]
-            except Exception:
-                pass
-            raise LLMError(
-                f"ollama HTTP {e.code} on '{label}' (model={model}): "
-                f"{e.reason}. {err_body}"
-            ) from e
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
-            raise LLMError(
-                f"ollama not reachable at {self._host} on '{label}': {e}. "
-                "Run `ollama serve` to start the daemon."
-            ) from e
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError as e:
-            raise LLMError(f"ollama returned non-JSON on '{label}': {body[:200]}") from e
-
-        text = (data.get("message") or {}).get("content", "") or ""
-        if not text.strip():
-            raise LLMError(
-                f"ollama returned empty content on '{label}' (model={model}). "
-                f"raw response: {body[:300]}"
+            text, usage = self._runtime.client.complete(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_format=response_format,
+                json_schema=json_schema,
+                is_llama_cpp=self._runtime.is_llama_cpp,
+                label=label,
             )
-        # Strip Gemma's common chatter: leading "Here is the lesson:" /
-        # "Sure! Here's…" preambles, trailing "Hope this helps!" /
-        # "Let me know if…" postambles, and outer markdown code fences
-        # that the orchestrator does NOT want written into the .md file.
-        text = _sanitize_local_output(text, response_format=response_format)
-
-        # Echo-detection: small models occasionally regurgitate the prompt
-        # when overwhelmed. We detect this by measuring the literal byte
-        # overlap between the model's output and the actual input — much
-        # more accurate than hardcoded anchor strings, which produced
-        # false positives on agents whose legitimate output happens to
-        # mention "Subject:" or "OBJECTIVES" once.
-        echo_ratio = _input_overlap_ratio(text, sys_text + "\n" + usr_text)
-        is_echo = echo_ratio >= 0.40 and len(text) < max(400, len(usr_text) // 4)
-        if is_echo:
-            # One-shot retry with a stripped-down prompt. We drop the
-            # system prompt addendum (the LOCAL MODE PRIMER + base prompt)
-            # to its essentials, raise the output budget so the model has
-            # more room to think, and disable json-mode if it was on (the
-            # constraint can compound with context pressure).
-            self._on_event("echo_retry", {"label": label, "model": model})
-            retry_payload = dict(payload)
-            retry_payload["messages"] = [
-                {"role": "system", "content": (
-                    "Produce ONLY the requested artifact. No preamble, no "
-                    "postamble, no code-fence wrapper around the whole "
-                    "output. Start with the artifact's first character."
-                )},
-                {"role": "user", "content": usr_text},
-            ]
-            retry_payload["options"] = dict(payload["options"])
-            retry_payload["options"]["num_predict"] = max(max_tokens, 2000)
-            retry_payload["options"]["temperature"] = max(temperature, 0.6)
-            retry_payload.pop("format", None)
-            retry_req = urllib.request.Request(
-                f"{self._host}/api/chat",
-                data=json.dumps(retry_payload).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(retry_req, timeout=self._timeout_s) as r2:
-                    retry_body = r2.read().decode()
-                retry_data = json.loads(retry_body)
-                retry_text = (retry_data.get("message") or {}).get("content", "") or ""
-                retry_text = _sanitize_local_output(retry_text, response_format=None)
-                retry_overlap = _input_overlap_ratio(retry_text, sys_text + "\n" + usr_text)
-                if retry_text.strip() and retry_overlap < 0.40:
-                    text = retry_text
-                    is_echo = False
-            except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError):
-                pass  # fall through to the LLMError below
-
-        if is_echo:
-            raise LLMError(
-                f"ollama model `{model}` is echoing the prompt on "
-                f"'{label}' (output {len(text)} chars, "
-                f"{int(echo_ratio*100)}% overlap with input). Retry "
-                f"with a stripped prompt also failed.\n\n"
-                "  This means the model can't actually do this task. "
-                "Options:\n"
-                "    1. Pick a larger Gemma variant: `./run setup` → option 3 "
-                "→ gemma3:4b or gemma3:12b.\n"
-                "    2. Override the context window: "
-                "BART_OLLAMA_NUM_CTX=32768 ./run\n"
-                "    3. Switch to API or subscription mode."
-            )
+        except Exception as e:  # noqa: BLE001
+            # Translate context-too-long from the local client into our
+            # shared LLMContextTooLongError so existing catch sites work.
+            from .local_runtime.client import LocalClientContextTooLong
+            if isinstance(e, LocalClientContextTooLong):
+                raise LLMContextTooLongError(str(e)) from e
+            raise LLMError(f"local backend error on '{label}': {e}") from e
 
         dt = time.time() - t0
-        in_tok = int(data.get("prompt_eval_count", 0) or 0)
-        out_tok = int(data.get("eval_count", 0) or 0)
-        self._tel.record(CallRecord(
+        text = _sanitize_local_output(text, response_format=response_format)
+        rec = CallRecord(
             label=label,
-            model=model,
-            input_tokens=in_tok,
-            output_tokens=out_tok,
+            model=cache_model,
+            input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+            output_tokens=int(usage.get("completion_tokens", 0) or 0),
             cache_creation_input_tokens=0,
             cache_read_input_tokens=0,
             duration_s=dt,
-            cost_usd=0.0,
-        ))
+        )
+        self._tel.record(rec)
         self._on_event("call_done", {
-            "label": label, "duration_s": dt, "chars": len(text),
-            "backend": "ollama", "input_tokens": in_tok, "output_tokens": out_tok,
+            "label": label, "duration_s": round(dt, 2),
+            "output_tokens": rec.output_tokens, "chars": len(text),
         })
         if use_disk_cache:
             _write_disk_cache(self._cache_dir, key, text)
         return text
+

@@ -108,13 +108,7 @@ class Agent:
 
     @property
     def system_prompt(self) -> str:
-        base = load_prompt(self.prompt_file)
-        # Local-mode addendum: small open-source models need explicit
-        # examples of bart-block syntax + a "no preamble/postamble" rule
-        # to produce usable output. Prepended (not appended) so the rules
-        # are read first.
-        if getattr(self.ctx.cfg, "auth_mode", "") == "ollama-local":
-            primer = load_prompt("local_mode_primer.md")
-            if primer and primer != base:
-                return primer + "\n\n---\n\n" + base
-        return base
+        # All supported backends (Anthropic API, Claude Code subscription,
+        # local Qwen3) handle system role + structured output natively, so
+        # no per-mode prompt prepend is needed.
+        return load_prompt(self.prompt_file)

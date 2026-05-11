@@ -26,6 +26,10 @@ from ..paths import MATERIALS
 # the LLM even sees the request.
 DEFAULT_BUDGET_API = 400_000
 DEFAULT_BUDGET_SUBSCRIPTION = 300_000
+# Local modes (Qwen3 / Gemma): KV cache cost grows with input. Cap the corpus
+# at 200K chars (~50K tokens) so the chunked-corpus path never asks for more
+# than the n_ctx the server was started with.
+DEFAULT_BUDGET_LOCAL = 200_000
 
 
 def default_char_budget(auth_mode: str) -> int:
@@ -34,6 +38,8 @@ def default_char_budget(auth_mode: str) -> int:
     env = os.environ.get("BART_CORPUS_BUDGET", "").strip()
     if env.isdigit() and int(env) > 0:
         return int(env)
+    if auth_mode == "local":
+        return DEFAULT_BUDGET_LOCAL
     if auth_mode == "claude-code":
         return DEFAULT_BUDGET_SUBSCRIPTION
     return DEFAULT_BUDGET_API

@@ -21,7 +21,7 @@ inside an 8K-token window. Results are merged in plain Python — no
 second LLM merge call is needed because the outputs all have stable
 schemas (markdown sections / JSON arrays / JSON dicts).
 
-Net effect for ollama-local:
+Net effect for local mode:
   - No call ever sees more than one file's worth of text (~6K chars
     typical, capped at ~16K).
   - num_ctx stays at 8192, comfortable on a 6GB-available machine.
@@ -32,7 +32,7 @@ Net effect for ollama-local:
 This module is deliberately stateless free functions, not Agent classes.
 Agent classes presume a single `corpus_block` in their context — the
 exact shape we're trying to avoid here. The orchestrator branches on
-`cfg.auth_mode == "ollama-local"` and calls these helpers instead of
+`cfg.auth_mode == "local"` and calls these helpers instead of
 constructing the corresponding Agent instances.
 """
 from __future__ import annotations
