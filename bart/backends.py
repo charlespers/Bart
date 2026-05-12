@@ -19,13 +19,15 @@ All three classes expose the same `complete(...)` method so the orchestrator
 does not care which one is in use.
 
 Hanging vs slow: the Claude Code CLI is invoked with `--print --output-format
-stream-json`, so it emits one JSON event per line as the response is produced.
-We parse those events for live progress; a read-loop watchdog kills the
-subprocess and raises if it goes silent for `_CLI_IDLE_TIMEOUT_S` (so a wedged
-connection doesn't hang the run). A heartbeat thread also fires `heartbeat`
-events every 15s while the subprocess is alive — long lessons can still take
-4-6 min on Opus, and the orchestrator surfaces these so the user knows it's
-progressing rather than hung.
+stream-json --include-partial-messages`, so it emits one JSON event per line —
+including text-delta `stream_event`s as the response is produced — instead of
+buffering the whole reply into a single trailing `assistant` event. We parse
+those events for live progress (a real, climbing char count); a read-loop
+watchdog kills the subprocess and raises if it goes silent for
+`_CLI_IDLE_TIMEOUT_S` (so a wedged connection doesn't hang the run). A
+heartbeat thread also fires `heartbeat` events every 15s while the subprocess
+is alive — long lessons can still take 4-6 min on Opus, and the orchestrator
+surfaces these so the user knows it's progressing rather than hung.
 """
 from __future__ import annotations
 
@@ -705,6 +707,7 @@ class ClaudeCodeBackend:
         t_err.start()
 
         accumulated_text: list[str] = []
+        saw_text_delta = False  # did this stream use --include-partial-messages?
         last_emit_chars = 0
         last_emit_time = time.time()
 
@@ -747,16 +750,45 @@ class ClaudeCodeBackend:
                 accumulated_text.append(line)
                 continue
             # stream-json event shapes (Anthropic Messages API style):
+            #   {"type": "stream_event", "event": {"type": "content_block_delta",
+            #       "index": 0, "delta": {"type": "text_delta", "text": "foo"}}}
+            #     ↑ emitted with --include-partial-messages, as text is produced
             #   {"type": "assistant", "message": {"content": [{"type":"text","text":"..."}]}}
+            #     ↑ a full-message snapshot — older CLI / non-partial fallback
             #   {"type": "result", "subtype": "success", "result": "<full text>", ...}
+            #     ↑ final, authoritative — overrides whatever we accumulated
             etype = event.get("type", "")
-            if etype == "assistant":
-                msg = event.get("message", {}) or {}
-                for block in (msg.get("content") or []):
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        txt = block.get("text", "")
+            if etype == "stream_event":
+                # Text deltas from --include-partial-messages. Be defensive
+                # about the nested shape — ping/message_start/content_block_*
+                # events and non-text deltas (input_json_delta, thinking) all
+                # arrive here too and must be ignored, not crash the loop.
+                inner = event.get("event") or {}
+                if isinstance(inner, dict) and inner.get("type") == "content_block_delta":
+                    delta = inner.get("delta") or {}
+                    if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                        txt = delta.get("text", "")
                         if txt:
                             accumulated_text.append(txt)
+                            saw_text_delta = True
+            elif etype == "assistant":
+                # Full-message snapshot. With --include-partial-messages the CLI
+                # still emits this at end-of-turn carrying the *complete* text —
+                # which we've already built from deltas — so treat it as a
+                # replacement, not an addition (otherwise the text doubles).
+                # Without deltas (older CLI / non-partial path) it's the only
+                # source of text, so append as before.
+                msg = event.get("message", {}) or {}
+                snapshot = [
+                    block.get("text", "")
+                    for block in (msg.get("content") or [])
+                    if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "")
+                ]
+                if snapshot:
+                    if saw_text_delta:
+                        accumulated_text = list(snapshot)
+                    else:
+                        accumulated_text.extend(snapshot)
             elif etype == "result":
                 # Final event — `result` field contains the complete text
                 # (or the error message, when subtype indicates failure
@@ -858,7 +890,14 @@ class ClaudeCodeBackend:
             "--system-prompt", system_prompt_arg,
         ])
         if use_streaming:
-            cmd.extend(["--output-format", "stream-json", "--verbose"])
+            # `--include-partial-messages` makes the CLI emit `stream_event`
+            # content-block deltas as text is produced, instead of buffering
+            # the whole reply into one trailing `assistant` snapshot — so the
+            # run shows a real, climbing char count and stops looking hung.
+            cmd.extend([
+                "--output-format", "stream-json", "--verbose",
+                "--include-partial-messages",
+            ])
 
         # CRITICAL: strip auth env vars that would force the CLI into API-key mode
         # instead of using the user's claude.ai subscription. If ANTHROPIC_API_KEY
