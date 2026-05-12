@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Callable
 
 from .base import Agent
@@ -10,9 +11,115 @@ from . import block_density
 
 logger = logging.getLogger(__name__)
 
+# Match a ```bart-<name>\n<body>``` fence (mirrors block_expand._FENCE_RE).
+_FENCE_RE = re.compile(r"(?ms)^```bart-([a-z0-9-]+)[^\n]*\n.*?```\s*$")
+
+# Hard cap on block-fix re-ask iterations.
+_MAX_BLOCK_FIX_PASSES = 2
+
 
 def _noop_warning(detail: str) -> None:  # default on_warning callback
     return None
+
+
+def _fence_spans(text: str) -> list[tuple[int, str, int, int]]:
+    """Return ``(index, name, start, end)`` for every bart-fence in ``text``."""
+    return [
+        (i, m.group(1), m.start(), m.end())
+        for i, m in enumerate(_FENCE_RE.finditer(text))
+    ]
+
+
+def _extract_fences(text: str) -> list[tuple[str, str]]:
+    """Return ``(name, whole_fence_text)`` for every bart-fence in ``text``."""
+    return [(m.group(1), m.group(0)) for m in _FENCE_RE.finditer(text)]
+
+
+def _build_reask_message(errs: list, broken_indices: list[int], n_too_few: int) -> str:
+    """Compose the targeted re-ask body naming each problem."""
+    lines = ["Your previous output had these problems with its `bart-*` blocks:"]
+    # Group errors by block index for readability.
+    by_index: dict[int, list] = {}
+    for e in errs:
+        by_index.setdefault(e.block_index, []).append(e)
+    for idx in sorted(i for i in by_index if i >= 0):
+        for e in by_index[idx]:
+            lines.append(f"- block {idx} (bart-{e.fence_name}): {e.kind} — {e.detail}")
+    for e in by_index.get(-1, []):
+        lines.append(f"- too few bart-{e.fence_name}: {e.detail}")
+    lines.append("")
+    parts = []
+    if broken_indices:
+        parts.append(
+            f"re-emit the {len(broken_indices)} corrected block(s) above, "
+            f"in that order (block {', then block '.join(str(i) for i in broken_indices)})"
+        )
+    if n_too_few:
+        parts.append(f"then emit the {n_too_few} missing block(s)")
+    lines.append(
+        "Output ONLY " + (" and ".join(parts) if parts else "the corrected blocks")
+        + " — each as a complete ```bart-<name>``` fenced JSON block, nothing "
+        "else: no prose, no headings, no preamble. Math delimiters are "
+        r"\(...\) / \[...\] (never $...$); inside math write \lt / \gt, never "
+        "bare < or >; never \\uXXXX escapes."
+    )
+    return "\n".join(lines)
+
+
+def _splice_block_fixes(text: str, errs: list, reask_response: str) -> str:
+    """Splice the re-ask's corrected fences back into ``text``.
+
+    Corrections for ``block_index >= 0`` errors replace the fence at that
+    position (matched by name when possible, else positionally in order).
+    Fences corresponding to ``too_few`` errors are appended at the end.
+    Returns ``text`` unchanged if the re-ask yielded no usable fences.
+    """
+    returned = _extract_fences(reask_response)
+    if not returned:
+        return text
+
+    broken_indices = sorted({e.block_index for e in errs if e.block_index >= 0})
+    n_too_few = len({(e.fence_name, e.detail) for e in errs if e.block_index == -1})
+
+    spans = _fence_spans(text)
+    span_by_index = {idx: (name, s, e) for idx, name, s, e in spans}
+
+    used = [False] * len(returned)
+    # 1. Replacements for broken blocks — by name first.
+    replacements: dict[int, str] = {}  # text-fence-index → new fence text
+    for bi in broken_indices:
+        if bi not in span_by_index:
+            continue
+        want_name = span_by_index[bi][0]
+        pick = next(
+            (k for k, (nm, _) in enumerate(returned) if nm == want_name and not used[k]),
+            None,
+        )
+        if pick is None:
+            # Fall back to the next unused returned fence regardless of name.
+            pick = next((k for k in range(len(returned)) if not used[k]), None)
+        if pick is None:
+            continue
+        used[pick] = True
+        replacements[bi] = returned[pick][1]
+
+    # Apply replacements right-to-left so earlier spans' offsets stay valid.
+    if replacements:
+        out = text
+        for bi in sorted(replacements, reverse=True):
+            _, s, e = span_by_index[bi]
+            out = out[:s] + replacements[bi] + out[e:]
+        text = out
+
+    # 2. Append the leftover returned fences (the `too_few` additions, plus
+    #    anything extra the model emitted) — capped at the count we asked for
+    #    when we know it, else just take whatever's left.
+    leftovers = [returned[k][1] for k in range(len(returned)) if not used[k]]
+    if n_too_few:
+        leftovers = leftovers[:n_too_few] if leftovers else leftovers
+    if leftovers:
+        text = text.rstrip() + "\n\n" + "\n\n".join(leftovers).lstrip() + "\n"
+    return text
 
 
 class AuthorAgent(Agent):
@@ -146,55 +253,78 @@ class AuthorAgent(Agent):
                 )
                 on_warning(f"truncation-fix continuation failed for {label}: {e}")
 
-        # ── Quality-floor (block-density) continuation ───────────────
-        # If the output is missing required design blocks, fire ONE
-        # focused correction call asking only for the missing blocks.
-        # The continuation prompt does NOT re-send the original brief or
-        # the corpus — those are already established context. We send
-        # just the artifact summary + the correction prompt.
-        report = block_density.evaluate(artifact_kind, text)
+        # ── Block validation + targeted re-ask ───────────────────────
+        # Validate every bart-* fence the model emitted (broken JSON,
+        # missing required field, wrong field type, HTML-unsafe math,
+        # unknown block name) AND fold in the block-*density* floor
+        # (too few of a required block-type). On any errors, do up to
+        # `_MAX_BLOCK_FIX_PASSES` targeted re-asks against `cfg.fast_model`
+        # naming each problem and asking for ONLY the corrected/missing
+        # fences; splice them back in by index; re-validate. Whatever
+        # stays broken after the loop is kept (the post-render autofix
+        # pass is the safety net) but surfaced via `on_warning` so it
+        # shows up in the run-record warnings panel — instead of being
+        # silently rendered broken.
+        #
+        # `on_density` (a legacy telemetry hook) still gets the density
+        # report. `BART_SKIP_BLOCK_FIX=1` disables the re-ask loop
+        # entirely (used by --turbo).
+        from ..render.blocks_validate import validate_blocks
+
         if on_density is not None:
             try:
-                on_density(report)
+                on_density(block_density.evaluate(artifact_kind, text))
             except Exception:  # noqa: BLE001
                 pass
-        # `BART_SKIP_BLOCK_FIX=1` disables this entirely (used by --turbo).
-        if (
-            not report.healthy
-            and report.missing
-            and os.environ.get("BART_SKIP_BLOCK_FIX") != "1"
-        ):
-            correction = report.correction_prompt()
-            try:
-                add = self.ctx.llm.complete(
-                    model=cfg.fast_model,  # Haiku is plenty for emitting blocks
-                    # IMPORTANT: pass the kind-augmented system prompt, not the
-                    # base system_prompt. Without the kind catalog the
-                    # continuation has no schema example for the bart-* fences
-                    # and emits plain text — which gets dropped at the
-                    # `if "```bart-" in add` gate below.
-                    system=system_for_kind,
-                    user=[{
-                        "type": "text",
-                        "text": (
-                            f"Artifact: {artifact_kind} (subject {cfg.subject})\n\n"
-                            f"{correction}"
-                        ),
-                    }],
-                    max_tokens=1500,  # tight: only the missing blocks
-                    label=label + ":block_fix",
-                    temperature=0.4,
-                )
-                # Only graft on if the addition contains actual fences
-                if add and "```bart-" in add:
-                    text = text.rstrip() + "\n\n" + add.lstrip()
-            except Exception as e:  # noqa: BLE001 — best-effort, but surface it
-                # NOTE: this block-fix continuation gets rewritten in Phase A
-                # (task A2) into a validate_blocks-driven targeted re-ask;
-                # for now it just stops swallowing failures silently.
-                logger.warning(
-                    "block-fix continuation failed for %s: %s", label, e
-                )
-                on_warning(f"block-fix continuation failed for {label}: {e}")
+
+        errs = validate_blocks(text, artifact_kind, cfg.subject)
+        if errs and os.environ.get("BART_SKIP_BLOCK_FIX") == "1":
+            # --turbo opted out of the fix loop — say so once, loudly, instead
+            # of either flooding the panel or going silent.
+            on_warning(
+                f"{len(errs)} bart-block issue(s) — block-fix re-ask skipped "
+                f"(BART_SKIP_BLOCK_FIX=1); post-render autofix is the only net"
+            )
+            errs = []
+        if errs:
+            for _pass in range(_MAX_BLOCK_FIX_PASSES):
+                if not errs:
+                    break
+                broken_indices = sorted({e.block_index for e in errs if e.block_index >= 0})
+                n_too_few = len({(e.fence_name, e.detail) for e in errs if e.block_index == -1})
+                reask = _build_reask_message(errs, broken_indices, n_too_few)
+                try:
+                    add = self.ctx.llm.complete(
+                        model=cfg.fast_model,  # Haiku is plenty for re-emitting blocks
+                        # Pass the kind-augmented system prompt so the re-ask
+                        # has the bart-* schema examples (otherwise it emits
+                        # plain text we'd discard).
+                        system=system_for_kind,
+                        user=[{
+                            "type": "text",
+                            "text": (
+                                f"Artifact: {artifact_kind} (subject {cfg.subject})\n\n"
+                                f"{reask}"
+                            ),
+                        }],
+                        max_tokens=2500,  # enough for a few re-emitted blocks
+                        label=f"{label}:block_fix:{_pass + 1}",
+                        temperature=0.3,
+                    )
+                except Exception as e:  # noqa: BLE001 — best-effort, surface it
+                    logger.warning("block-fix re-ask failed for %s: %s", label, e)
+                    on_warning(f"block-fix re-ask failed for {label}: {e}")
+                    break
+                if not add or "```bart-" not in add:
+                    # No usable fences came back — stop retrying.
+                    break
+                text = _splice_block_fixes(text, errs, add)
+                errs = validate_blocks(text, artifact_kind, cfg.subject)
+
+        # Whatever's still wrong after the loop: keep `text`, but surface it.
+        for e in errs:
+            on_warning(
+                f"block {e.block_index} (bart-{e.fence_name}): {e.kind} — {e.detail}"
+            )
 
         return text

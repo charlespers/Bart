@@ -137,6 +137,82 @@ _FENCE_RE = re.compile(
 )
 
 
+# ─── Lenient JSON parsing for block bodies ─────────────────────────
+# The model occasionally emits JSON with a trailing comma after the last
+# element of an object/array (`{"a": 1,}` / `[1, 2,]`). `json.loads`
+# rejects it; we tolerate it here so a block isn't dropped over a comma.
+# We strip those commas with a tiny state machine (NOT a regex) so we
+# never touch a `,}` / `,]` that lives inside a string literal.
+
+def _strip_trailing_commas(s: str) -> str:
+    out: list[str] = []
+    in_str = False
+    escaped = False
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if in_str:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            # Look ahead past whitespace: if the next non-space char closes
+            # an object/array, this comma is trailing — drop it.
+            j = i + 1
+            while j < n and s[j] in " \t\r\n":
+                j += 1
+            if j < n and s[j] in "}]":
+                # Skip the comma (and keep the intervening whitespace so
+                # line/col reporting on a *subsequent* error stays sane).
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_block_json(body: str) -> Any:
+    """Parse a block body's JSON, tolerating trailing commas.
+
+    Raises `json.JSONDecodeError` (from the *original* attempt — most
+    informative) if even the lenient parse fails.
+    """
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as first_err:
+        repaired = _strip_trailing_commas(body)
+        if repaired != body:
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
+        raise first_err
+
+
+def iter_block_fences(markdown_text: str):
+    """Yield ``(index, name, body)`` for every ``bart-<name>`` fence, in order.
+
+    ``index`` is the 0-based positional index of the fence; ``body`` is the
+    stripped JSON text (may be empty for zero-arg blocks). Shared by
+    ``expand_blocks`` (implicitly, via ``_FENCE_RE``) and
+    ``blocks_validate.validate_blocks`` so they enumerate identically.
+    """
+    for i, m in enumerate(_FENCE_RE.finditer(markdown_text)):
+        yield i, m.group(1), m.group(2).strip()
+
+
 def expand_blocks(markdown_text: str) -> ExpansionResult:
     """Scan `markdown_text` for `bart-*` fences and replace them with HTML.
 
@@ -162,7 +238,7 @@ def expand_blocks(markdown_text: str) -> ExpansionResult:
             payload: dict[str, Any] = {}
         else:
             try:
-                payload = json.loads(body)
+                payload = _loads_block_json(body)
             except json.JSONDecodeError as e:
                 warnings.append(ExpansionWarning(
                     "bad_json", f"bart-{name}: {e.msg} at line {e.lineno}", name,
