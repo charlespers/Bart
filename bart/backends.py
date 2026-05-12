@@ -565,6 +565,20 @@ class AnthropicAPIBackend:
 # Claude Code subscription backend (no API key required)
 # ─────────────────────────────────────────────────────────────────────
 
+# The `claude --print` subprocess must NOT inherit the user's global
+# ~/.claude/settings.json. That file commonly carries `effortLevel` (a value
+# like "xhigh"/"max" makes the model spend *minutes* on hidden "thinking"
+# before emitting a single character of each artifact — the classic "every
+# artifact takes 15-20 min then times out" bug), plus `enabledPlugins` whose
+# SessionStart hooks / skills push the subprocess into an agentic loop instead
+# of one-shotting the artifact. We pin every relevant knob explicitly on the
+# command line. Regression test: tests/test_claude_cli_isolation.py.
+_VALID_CLAUDE_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+_CLAUDE_EFFORT = os.environ.get("BART_CLAUDE_EFFORT", "medium").strip().lower()
+if _CLAUDE_EFFORT not in _VALID_CLAUDE_EFFORTS:
+    _CLAUDE_EFFORT = "medium"
+
+
 class ClaudeCodeBackend:
     """Shells out to the `claude` CLI installed by Claude Code subscribers.
 
@@ -725,17 +739,39 @@ class ClaudeCodeBackend:
                 self._on_event("cache_hit", {"label": label, "key": key})
                 return cached
 
-        # Combined message: system goes inside an explicit wrapper so the model
-        # respects it, then the user request.
-        combined = f"<system_instructions>\n{sys_text}\n</system_instructions>\n\n{usr_text}"
+        # bart's prompt rides on --system-prompt (verbatim — no agentic default
+        # framing from the CLI). A batch-mode preamble keeps the model one-shot.
+        batch_preamble = (
+            "NON-INTERACTIVE BATCH MODE. There is no human available to answer "
+            "questions. Output ONLY the requested artifact, complete and "
+            "self-contained, in this single response. Do NOT ask clarifying "
+            "questions. Do NOT use tools. Do NOT describe what you are about to "
+            "do, or summarize what you did. Do NOT add any preamble, sign-off, "
+            "or meta-commentary. If something is ambiguous, make a sensible "
+            "assumption and proceed. Begin with the artifact's very first line "
+            "and end with its last."
+        )
+        system_prompt_arg = f"{batch_preamble}\n\n{sys_text}"
+        stdin_payload = usr_text  # user message only; system goes via --system-prompt
 
-        # Build the command. We pass `--model` only if the caller specified one;
-        # otherwise let the CLI use the user's default. Try stream-json mode for
-        # live progress; fall back to plain text if the CLI rejects it.
+        # Build the command. Try stream-json mode for live progress.
         use_streaming = os.environ.get("BART_DISABLE_STREAMING", "") != "1"
         cmd = [self._cli, "--print"]
         if model:
             cmd.extend(["--model", model])
+        # Isolation (see _CLAUDE_EFFORT note above): don't load the user's
+        # global settings (effortLevel / plugins / hooks / skills), pin the
+        # effort level, and turn off MCP, slash commands, and built-in tools —
+        # an artifact author needs none of them, and inheriting them is what
+        # made every artifact "hang" for 10+ minutes.
+        cmd.extend([
+            "--setting-sources", "project,local",
+            "--effort", _CLAUDE_EFFORT,
+            "--disable-slash-commands",
+            "--strict-mcp-config",
+            "--tools", "",
+            "--system-prompt", system_prompt_arg,
+        ])
         if use_streaming:
             cmd.extend(["--output-format", "stream-json", "--verbose"])
 
@@ -785,10 +821,10 @@ class ClaudeCodeBackend:
         try:
             with self._guard.acquire(model, label=label):
                 if use_streaming:
-                    stdout, stderr, returncode = self._run_streaming(cmd, combined, label, scrubbed_env)
+                    stdout, stderr, returncode = self._run_streaming(cmd, stdin_payload, label, scrubbed_env)
                 else:
                     proc = subprocess.run(
-                        cmd, input=combined, capture_output=True, text=True,
+                        cmd, input=stdin_payload, capture_output=True, text=True,
                         timeout=self._timeout_s, check=False, env=scrubbed_env,
                     )
                     stdout, stderr, returncode = proc.stdout or "", proc.stderr or "", proc.returncode
@@ -878,7 +914,7 @@ class ClaudeCodeBackend:
         text = stdout
 
         # Approximate telemetry: chars-as-tokens proxy, no cost.
-        approx_in = len(combined) // 4
+        approx_in = (len(stdin_payload) + len(system_prompt_arg)) // 4
         approx_out = len(text) // 4
         self._tel.record(CallRecord(
             label=label,
