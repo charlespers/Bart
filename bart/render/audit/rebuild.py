@@ -35,6 +35,16 @@ from .fixes import _FIXES
 # ─── Driver ──────────────────────────────────────────────────────
 
 
+# Defense-in-depth tripwire: the autofix pass is the *last* line of defense, not
+# the first. Source-level block/math validation (validate_blocks, make_math_html_safe)
+# should be catching malformed output at generation time; a clean run should need
+# only a handful of post-hoc repairs. If the autofix pass ever applies more than
+# this many fixes, that's a regression in the source-level validation — flag it
+# loudly (a `warn` `autofix_overrun` entry in format_audit.json) rather than
+# papering over it.
+AUTOFIX_WARN_THRESHOLD = 20
+
+
 def _iter_html_files(run_dir: Path) -> list[Path]:
     """Every HTML page under run_dir, sorted for determinism."""
     return sorted(p for p in run_dir.rglob("*.html") if p.is_file())
@@ -217,6 +227,20 @@ def audit(run_dir: Path, *, apply_fixes: bool = False) -> AuditResult:
                 path.write_text(html, encoding="utf-8")
             except Exception as e:  # noqa: BLE001
                 result.issues.append(AuditIssue(rel, "write_error", str(e), "error"))
+
+    # ── Autofix-overrun tripwire ──────────────────────────────────
+    # The autofix pass is defense-in-depth — a clean run should need only a few
+    # repairs (source-level block/math validation catches the rest at generation
+    # time). An unusual number of repairs means that validation has a gap; flag
+    # it loudly so the regression is visible rather than silently absorbed.
+    if apply_fixes and result.fixes_applied > AUTOFIX_WARN_THRESHOLD:
+        result.issues.append(AuditIssue(
+            "<run>", "autofix_overrun",
+            f"autofix applied {result.fixes_applied} repairs "
+            f"(threshold {AUTOFIX_WARN_THRESHOLD}) — the source-level block/math "
+            f"validation has a gap; check render_warnings.json",
+            "warn",
+        ))
 
     return result
 

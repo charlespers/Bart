@@ -28,7 +28,7 @@ Implementation, in three focused modules:
 from __future__ import annotations
 
 from ._shared import AuditIssue, AuditResult
-from .rebuild import audit, render_report
+from .rebuild import AUTOFIX_WARN_THRESHOLD, audit, render_report
 from .fixes import (
     _fix_math_html_leak,
     _fix_double_escaped_entities,
@@ -51,7 +51,7 @@ from .fixes import (
 
 
 __all__ = [
-    "audit", "render_report", "AuditIssue", "AuditResult",
+    "audit", "render_report", "AuditIssue", "AuditResult", "AUTOFIX_WARN_THRESHOLD",
     "_fix_math_html_leak",
     "_fix_double_escaped_entities",
     "_fix_json_unicode_escape",

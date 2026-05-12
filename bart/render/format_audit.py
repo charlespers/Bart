@@ -14,7 +14,7 @@ New code should import from ``bart.render.audit`` (public surface) or
 from __future__ import annotations
 
 # Public surface.
-from .audit import AuditIssue, AuditResult, audit, render_report  # noqa: F401
+from .audit import AUTOFIX_WARN_THRESHOLD, AuditIssue, AuditResult, audit, render_report  # noqa: F401
 
 # Internals that external modules / tests historically imported by name.
 # (`import *` skips leading-underscore names, so these are listed explicitly.)
