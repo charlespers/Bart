@@ -417,7 +417,15 @@ class Orchestrator:
                     f"  [{ACCENT_HI}]→[/{ACCENT_HI}] one batched call for all {len(day_entries)} days "
                     f"[dim](haiku · replaces 36 separate researcher calls)[/dim]"
                 )
-                research_by_day = topic_distiller.distill_per_day(day_entries)
+                # Sidecar: on failure, fall back to an empty mapping — the
+                # `missing` logic just below then routes every day through the
+                # per-day researcher (or empty slices in local mode), so the
+                # run continues rather than aborting.
+                research_by_day = self._run_sidecar(
+                    "topic_distiller",
+                    lambda: topic_distiller.distill_per_day(day_entries),
+                    fallback={}, record=self.run_record, logger=self.logger,
+                )
                 # Persist for resumes
                 cards_path.write_text(json.dumps({str(k): v for k, v in research_by_day.items()}))
                 self.console.print(
@@ -804,6 +812,27 @@ class Orchestrator:
         return Confirm.ask("\nproceed?", default=True)
 
     # ── Sidecar primitives — cached to disk so resumes skip them.
+    def _run_sidecar(self, name, fn, *, fallback, record, logger):
+        """Run a sidecar (a corpus-derived index/card the main pipeline can
+        live without). On *any* exception: log a warning, record an
+        `outcome=fallback` artifact + a `warn` entry on the run record, and
+        return `fallback` instead of letting the error abort the run. On
+        success: record `ok` and return the value.
+
+        This is the uniform replacement for the sidecars' previous mix of
+        ad-hoc try/except fallbacks and (worse) no handling at all — a
+        failing notation or whimsy index used to take the whole packet down.
+        """
+        try:
+            value = fn()
+        except Exception as e:  # noqa: BLE001 — sidecars degrade, never abort
+            logger.warning("sidecar %s failed — using fallback: %s", name, e)
+            record.record_warning("warn", name, f"fell back to empty ({type(e).__name__}: {e})")
+            record.record_artifact(name, "fallback")
+            return fallback
+        record.record_artifact(name, "ok")
+        return value
+
     def _extract_notation_card(self, corpus_brief: str, brief_ctx: AgentContext) -> str:
         path = self.paths.checkpoints_dir / "notation_card.md"
         if path.exists() and path.stat().st_size > 50:
@@ -813,9 +842,13 @@ class Orchestrator:
             f"  [{ACCENT_HI}]→[/{ACCENT_HI}] extracting notation card "
             f"[dim](haiku · cached for the rest of the run)[/dim]"
         )
-        agent = NotationExtractorAgent(brief_ctx)
-        text = agent.extract(corpus_brief)
-        path.write_text(text)
+        text = self._run_sidecar(
+            "notation",
+            lambda: NotationExtractorAgent(brief_ctx).extract(corpus_brief),
+            fallback="", record=self.run_record, logger=self.logger,
+        )
+        if text:
+            path.write_text(text)
         return text
 
     def _extract_problem_index(self, full_ctx: AgentContext) -> list[dict[str, Any]]:
@@ -834,16 +867,22 @@ class Orchestrator:
         # Side-car. If the corpus overflows the fast-model window we'd
         # rather emit an empty index than crash the whole run — daily
         # lessons can re-derive problems on the fly when this is empty.
-        try:
-            agent = ProblemIndexerAgent(full_ctx)
-            index = agent.index()
-        except LLMContextTooLongError as e:
-            self.logger.warning("problem_indexer skipped (context too long): %s", e)
-            self.console.print(
-                "  [yellow]⚠[/yellow] problem index skipped — corpus exceeds "
-                "fast-model window; daily lessons will derive problems inline"
-            )
-            index = []
+        # The context-too-long case keeps its own precise message; every
+        # other error degrades through `_run_sidecar`.
+        def _do_index():
+            try:
+                return ProblemIndexerAgent(full_ctx).index()
+            except LLMContextTooLongError as e:
+                self.logger.warning("problem_indexer skipped (context too long): %s", e)
+                self.console.print(
+                    "  [yellow]⚠[/yellow] problem index skipped — corpus exceeds "
+                    "fast-model window; daily lessons will derive problems inline"
+                )
+                return []
+        index = self._run_sidecar(
+            "problem_indexer", _do_index,
+            fallback=[], record=self.run_record, logger=self.logger,
+        )
         atomic_write_json(path, index)
         return index
 
@@ -867,7 +906,11 @@ class Orchestrator:
             f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing corpus problems "
             f"[dim](local · per-file chunked)[/dim]"
         )
-        index = chunked_problem_index(llm, self.cfg, files)
+        index = self._run_sidecar(
+            "problem_indexer",
+            lambda: chunked_problem_index(llm, self.cfg, files),
+            fallback=[], record=self.run_record, logger=self.logger,
+        )
         atomic_write_json(path, index)
         return index
 
@@ -889,16 +932,16 @@ class Orchestrator:
             from .agents.exam_pattern import EMPTY_PATTERNS
             return dict(EMPTY_PATTERNS)
         from .agents.local_chunked import chunked_exam_pattern
+        from .agents.exam_pattern import EMPTY_PATTERNS
         self.console.print(
             f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing past-exam patterns "
             f"[dim](local · per-file chunked)[/dim]"
         )
-        try:
-            patterns = chunked_exam_pattern(llm, self.cfg, files)
-        except Exception as e:  # noqa: BLE001
-            self.logger.warning("exam_pattern (local) extraction failed: %s", e)
-            from .agents.exam_pattern import EMPTY_PATTERNS
-            patterns = dict(EMPTY_PATTERNS)
+        patterns = self._run_sidecar(
+            "exam_pattern",
+            lambda: chunked_exam_pattern(llm, self.cfg, files),
+            fallback=dict(EMPTY_PATTERNS), record=self.run_record, logger=self.logger,
+        )
         atomic_write_json(path, patterns)
         return patterns
 
@@ -923,12 +966,11 @@ class Orchestrator:
             f"[dim](haiku · cached for the rest of the run)[/dim]"
         )
         from .agents.exam_pattern import ExamPatternAgent, EMPTY_PATTERNS
-        try:
-            agent = ExamPatternAgent(full_ctx)
-            patterns = agent.extract()
-        except Exception as e:  # noqa: BLE001
-            self.logger.warning("exam_pattern extraction failed: %s", e)
-            patterns = dict(EMPTY_PATTERNS)
+        patterns = self._run_sidecar(
+            "exam_pattern",
+            lambda: ExamPatternAgent(full_ctx).extract(),
+            fallback=dict(EMPTY_PATTERNS), record=self.run_record, logger=self.logger,
+        )
         atomic_write_json(path, patterns)
         return patterns
 
@@ -948,9 +990,13 @@ class Orchestrator:
             f"  [{ACCENT_HI}]→[/{ACCENT_HI}] indexing whimsy by topic "
             f"[dim](haiku · cached for the rest of the run)[/dim]"
         )
-        agent = WhimsyIndexerAgent(brief_ctx)
-        index = agent.index(whimsy_path.read_text())
-        atomic_write_json(path, index)
+        index = self._run_sidecar(
+            "whimsy",
+            lambda: WhimsyIndexerAgent(brief_ctx).index(whimsy_path.read_text()),
+            fallback={}, record=self.run_record, logger=self.logger,
+        )
+        if index:
+            atomic_write_json(path, index)
         return index
 
     def _make_corpus_block(self, corpus: str) -> list[dict]:
