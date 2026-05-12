@@ -88,6 +88,7 @@ from .backends import (
     LocalBackend,
 )
 from .paths import RunPaths
+from .runrecord import RunRecord
 from .telemetry import Telemetry
 
 
@@ -123,6 +124,12 @@ class Orchestrator:
         self.days_override = days_override
         self.telemetry = Telemetry()
         self.logger = setup_run_logger(paths.log_path)
+        # Structured record of what went sideways this run — artifact
+        # outcomes (ok/failed/recovered/skipped/fallback) and warnings.
+        # Threaded through the artifact + sidecar paths; read by
+        # `_finalize()` for the incomplete-packet banner and returned from
+        # `run()` so the caller can set an exit code.
+        self.run_record = RunRecord()
         # Populated when auth_mode == "local". The finally block in run()
         # tears it down so the inference server stops cleanly even on Ctrl-C.
         self._local_runtime = None
@@ -509,8 +516,9 @@ class Orchestrator:
             with self._stage("tools"):
                 self._run_tools()
 
+            self._finalize()
             self._print_summary()
-            return 0
+            return self.run_record
 
         except KeyboardInterrupt:
             self.console.print("\n[red]✗ Interrupted. Run is preserved — re-run with --resume[/red] "
@@ -972,7 +980,7 @@ class Orchestrator:
             target = self.paths.root / filename
             if is_complete(target):
                 self.logger.info("artifact %s already complete — skipping", filename)
-                return kind, target.read_text()
+                return kind, target.read_text(), "skipped"
             model_short = self._model_short(self.cfg.primary_model)
             self.console.print(
                 f"  [{ACCENT_HI}]→[/{ACCENT_HI}] starting [white]{filename}[/white] "
@@ -1005,7 +1013,7 @@ class Orchestrator:
                 # Skip the heuristic+reviewer pass for the split exam — each
                 # half was already written within scope.
                 atomic_write_text(target, text)
-                return kind, text
+                return kind, text, "ok"
             text = author.write(kind, brief, max_tokens=max_tokens, label_suffix="initial", on_density=_on_density)
 
             if self.use_critic:
@@ -1040,7 +1048,7 @@ class Orchestrator:
                         )
 
             atomic_write_text(target, text)
-            return kind, text
+            return kind, text, "ok"
 
         with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
             tasks = {
@@ -1053,10 +1061,12 @@ class Orchestrator:
                 kind, filename = tasks[fut]
                 done_count += 1
                 try:
-                    k, txt = fut.result()
+                    k, txt, status = fut.result()
                     results[k] = txt
+                    self.run_record.record_artifact(filename, status)
                     self.console.print(f"  [{RICH_OK}]✓[/{RICH_OK}] [{done_count}/{total}] {filename}")
                 except Exception as e:  # noqa: BLE001
+                    self.run_record.record_artifact(filename, "failed")
                     self.logger.error("artifact %s failed: %s", kind, e)
                     self.console.print(f"  [red]✗[/red] [{done_count}/{total}] {filename} — {e}")
 
@@ -1204,6 +1214,12 @@ class Orchestrator:
             atomic_write_text(target, text)
             return day_num, filename, "written"
 
+        def _day_artifact_name(entry: dict[str, Any]) -> str:
+            try:
+                return f"Day_{int(entry.get('day')):02d}_{entry.get('date', '')}.md"
+            except (TypeError, ValueError):
+                return f"Day_{entry.get('day')}"
+
         total_days = len(day_entries)
         failed_entries: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
@@ -1218,6 +1234,9 @@ class Orchestrator:
                 done_count += 1
                 try:
                     day_num, filename, status = fut.result()
+                    self.run_record.record_artifact(
+                        filename, "skipped" if status == "cached" else "ok"
+                    )
                     icon = f"[dim]●[/dim]" if status == "cached" else f"[{RICH_OK}]✓[/{RICH_OK}]"
                     self.console.print(f"  {icon} [{done_count}/{total_days}] Day {day_num:02d} — {filename}")
                 except Exception as e:  # noqa: BLE001
@@ -1244,10 +1263,12 @@ class Orchestrator:
             for entry in failed_entries:
                 try:
                     day_num, filename, status = _gen_day(entry)
+                    self.run_record.record_artifact(filename, "recovered")
                     self.console.print(
                         f"  [{RICH_OK}]✓[/{RICH_OK}] Day {day_num:02d} — {filename} [dim](recovered)[/dim]"
                     )
                 except Exception as e:  # noqa: BLE001
+                    self.run_record.record_artifact(_day_artifact_name(entry), "failed")
                     self.logger.error("day %s failed on retry: %s", entry.get("day"), e)
                     self.console.print(
                         f"  [red]✗[/red] Day {entry.get('day')} — {e} [dim](still failing)[/dim]"
@@ -1343,6 +1364,26 @@ class Orchestrator:
             readme_lines.extend(["", "## Skipped"])
             readme_lines.extend(f"- {f['path']} — {f['reason']}" for f in manifest['corpus']['skipped'])
         atomic_write_text(self.paths.root / "README.md", "\n".join(readme_lines))
+
+    def _finalize(self) -> None:
+        """End-of-run accounting. If any artifact is `failed`, print a loud
+        'PACKET INCOMPLETE' banner with the missing artifacts + the resume
+        command. Reads `self.run_record`; populated by the artifact + sidecar
+        paths over the run."""
+        missing = self.run_record.failed_artifacts()
+        if not missing:
+            return
+        listed = ", ".join(missing)
+        self.console.print(
+            Panel.fit(
+                f"[bold red]⚠ PACKET INCOMPLETE[/bold red] — "
+                f"{len(missing)} artifact(s) missing:\n"
+                f"  [white]{listed}[/white]\n\n"
+                f"[dim]Recover with:[/dim] "
+                f"[bold white]./run --resume {self.paths.run_id}[/bold white]",
+                border_style="red",
+            )
+        )
 
     def _print_summary(self):
         import subprocess

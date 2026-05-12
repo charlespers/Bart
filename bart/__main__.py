@@ -312,7 +312,15 @@ def main(argv: list[str] | None = None) -> int:
             max_parallel=max_parallel,
             days_override=days_override,
         )
-        return orch.run()
+        result = orch.run()
+        # `run()` returns a RunRecord on the normal completion path (and an
+        # int for the early-exit / interrupted paths). Phase C wires the full
+        # 0/1/2 exit-code scheme; for now: non-zero if the packet came out
+        # incomplete or with an error-level finding.
+        from .runrecord import RunRecord
+        if isinstance(result, RunRecord):
+            return 1 if result.has_errors() else 0
+        return result
 
     return 1
 
