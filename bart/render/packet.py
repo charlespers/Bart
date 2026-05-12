@@ -38,7 +38,9 @@ from .blocks import (
 )
 from .compose import Page
 from .block_expand import expand_blocks
+from .blocks_validate import validate_blocks
 from .markdown import RenderWarning, render
+from .math_safety import check_math_html_safe, make_math_html_safe
 from .optimize import has_chem, has_math, minify_html
 from .page import assemble_page
 from .sanitize import SanitizeWarning, normalize_md
@@ -65,18 +67,25 @@ _INFO_KINDS = {
 # Artifact discovery — what's in the run dir?
 # ─────────────────────────────────────────────────────────────────
 
-# Top-level artifacts in the order they appear on the index page.
+# Top-level artifacts in the order they appear on the index page. `kind` is
+# the artifact-kind name used by the block catalog / density thresholds /
+# validate_blocks (matches what orchestrator.py passes to the Author).
 _TOP_ARTIFACTS = [
     {"file": "00_MASTER_PLAN.md",       "html": "00_master_plan.html",
-     "label": "Master Plan",            "blurb": "Topic allocation and pacing strategy."},
+     "label": "Master Plan",            "kind": "master_plan",
+     "blurb": "Topic allocation and pacing strategy."},
     {"file": "01_SCHEMATICS.md",        "html": "01_schematics.html",
-     "label": "Schematics",             "blurb": "Diagrams, formula tables, common traps."},
+     "label": "Schematics",             "kind": "schematics",
+     "blurb": "Diagrams, formula tables, common traps."},
     {"file": "02_WHIMSICAL_NOTES.md",   "html": "02_whimsical_notes.html",
-     "label": "Whimsical Notes",        "blurb": "Mnemonics and analogies for sticky recall."},
+     "label": "Whimsical Notes",        "kind": "whimsical_notes",
+     "blurb": "Mnemonics and analogies for sticky recall."},
     {"file": "03_SHORT_STUDY_GUIDE.md", "html": "03_short_guide.html",
-     "label": "Short Study Guide",      "blurb": "The 60-minute panoramic version."},
+     "label": "Short Study Guide",      "kind": "short_study_guide",
+     "blurb": "The 60-minute panoramic version."},
     {"file": "04_PRACTICE_EXAM.md",     "html": "04_practice_exam.html",
-     "label": "Practice Exam",          "blurb": "Full mock exam with answer key."},
+     "label": "Practice Exam",          "kind": "practice_exam_part_a",
+     "blurb": "Full mock exam with answer key."},
 ]
 
 
@@ -221,10 +230,16 @@ def _build_index_page(
 # Public entry point
 # ─────────────────────────────────────────────────────────────────
 
-def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
+def build_packet(run_dir: Path, manifest: dict, *, run_record=None) -> List[Warning]:
     """Render every markdown artifact in `run_dir` into a polished HTML packet.
 
     Idempotent: safe to re-run. Returns the accumulated list of warnings.
+
+    `run_record`: an optional `bart.runrecord.RunRecord`. When provided, every
+    warning written to `render_warnings.json` is mirrored onto it (same
+    severities) so the run summary / exit code see render-quality problems
+    too — math conversions that succeeded are `info`, residual unsafe math is
+    `error`, residual broken blocks are `warn`.
     """
     warnings: List[Warning] = []
 
@@ -305,6 +320,7 @@ def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
             rel_root=".",
             title=f"{art['label']} · {subject}",
             subject=subject,
+            artifact_kind=art.get("kind", ""),
             packet_nav=_resolve_nav(packet_nav, "."),
             current_url=art["html"],
             search_index=search_index,
@@ -343,6 +359,7 @@ def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
             rel_root="..",
             title=f"{title_short} · {subject}",
             subject=subject,
+            artifact_kind="daily_lesson",
             packet_nav=_resolve_nav(packet_nav, ".."),
             current_url=f"lessons/{d['html_name']}",
             search_index=search_index,
@@ -396,6 +413,14 @@ def build_packet(run_dir: Path, manifest: dict) -> List[Warning]:
         if wf.exists():
             wf.unlink()
 
+    # ── Mirror render warnings onto the run record (if one was passed) so the
+    # run summary + exit code see render-quality problems, not just the
+    # machine-readable JSON. Severities carry over verbatim.
+    if run_record is not None:
+        for w in warnings:
+            sev = w.severity if w.severity in ("info", "warn", "error") else "warn"
+            run_record.record_warning(sev, f"render:{w.file}", f"{w.kind}: {w.detail}")
+
     return warnings
 
 
@@ -418,6 +443,7 @@ def _render_one(
     rel_root: str,
     title: str,
     subject: str,
+    artifact_kind: str = "",
     packet_nav: list[dict],
     current_url: str,
     search_index: list[dict],
@@ -429,10 +455,44 @@ def _render_one(
     warnings: list[Warning] = []
     raw = src.read_text(encoding="utf-8")
 
+    # ── Math safety FIRST — make math HTML-safe before anything else touches
+    # it: any $...$/$$...$$ → \(...\)/\[...\]; bare `<`/`>` adjacent to an
+    # alphanumeric inside math → \lt/\gt; \uXXXX literals inside math → the
+    # actual char. Running this ahead of normalize_md means the downstream
+    # passes see only safe math — the `\(q>0\)` HTML-leak class becomes
+    # structurally impossible (it's `\(q \gt 0\)` by the time the renderer
+    # sees it, or it's flagged loudly by check_math_html_safe).
+    before = raw
+    raw = make_math_html_safe(raw)
+    if raw != before:
+        warnings.append(Warning(
+            src.name, "math_made_html_safe",
+            "made math HTML-safe (\\(...\\) delims, \\lt/\\gt for <>, decoded "
+            "\\uXXXX) before render", "info",
+        ))
+    for w in check_math_html_safe(raw):
+        warnings.append(Warning(src.name, "math_unsafe_residue", w.detail, "error"))
+
     sanitized, sanitize_warns = normalize_md(raw)
     for w in sanitize_warns:
         sev = "info" if w.kind in _INFO_KINDS else "warn"
         warnings.append(Warning(src.name, w.kind, w.detail, sev))
+
+    # ── Validate every bart-* fence at source — broken JSON, missing/wrong
+    # field, HTML-unsafe math in a string, unknown block, or too few of a
+    # required block-type. The Author already did a re-ask loop on these at
+    # generation time; anything still here is genuine residue. Surface it as
+    # `warn` (loud, in the panel — but a single bad block shouldn't fail the
+    # whole packet; the post-render autofix pass is still the last net, and
+    # block-fence-internal unsafe math gets fixed by the post-expansion
+    # make_math_html_safe pass below regardless).
+    if artifact_kind != "master_plan":  # the master plan carries no bart blocks
+        for e in validate_blocks(sanitized, artifact_kind, subject):
+            warnings.append(Warning(
+                src.name, f"block_{e.kind}",
+                f"block {e.block_index} (bart-{e.fence_name}): {e.detail}",
+                "warn",
+            ))
 
     # Expand bart-* fences into design-library HTML BEFORE markdown render.
     # This is what turns the agent's structured output (formula cards,
@@ -441,6 +501,22 @@ def _render_one(
     sanitized = expanded.text
     for w in expanded.warnings:
         warnings.append(Warning(src.name, w.kind, w.detail, "warn"))
+
+    # ── Math safety (post-expansion) — blocks emit math (\(...\)) into prose,
+    # so re-run the inequality/\uXXXX parts on the expanded markdown
+    # (convert_dollars=False: a literal `$` in a code-block's HTML must not be
+    # mistaken for inline math, and there's nothing to convert anyway — the
+    # pre-expansion pass already did it). The loud residue `check` runs
+    # pre-expansion only (above) — by here we're working over raw HTML blobs
+    # where a stray `$` is far more likely to be a false positive than
+    # genuine $-math.
+    before = sanitized
+    sanitized = make_math_html_safe(sanitized, convert_dollars=False)
+    if sanitized != before:
+        warnings.append(Warning(
+            src.name, "math_made_html_safe",
+            "made block-emitted math HTML-safe after expansion", "info",
+        ))
 
     # Re-run the heading/HR padding now that bart fences have been replaced
     # with raw HTML. The pre-expansion pass can only see `\`\`\`bart-*` fences

@@ -228,38 +228,49 @@ def _decode_unicode_escapes_in_math(text: str) -> str:
 # Public — aggressive sanitizer + loud checker
 # ─────────────────────────────────────────────────────────────────
 
-def make_math_html_safe(md: str) -> str:
+def make_math_html_safe(md: str, *, convert_dollars: bool = True) -> str:
     """Return ``md`` with math made HTML-safe. Idempotent.
 
-    1. ``$...$``→``\\(...\\)``, ``$$...$$``→``\\[...\\]`` (display gets blank
-       lines around it).
+    1. (when ``convert_dollars``) ``$...$``→``\\(...\\)``, ``$$...$$``→
+       ``\\[...\\]`` (display gets blank lines around it).
     2. Bare ``<``/``>`` adjacent to an alphanumeric inside ``\\(...\\)`` /
        ``\\[...\\]`` → ``\\lt``/``\\gt``.
     3. ``\\uXXXX`` literals inside math spans → the actual character.
 
-    Fenced/inline code is never touched.
+    Fenced/inline code is never touched. Pass ``convert_dollars=False`` when
+    running over already-block-expanded content (raw HTML blobs may contain a
+    literal ``$`` — e.g. shell code in a ``bart-code-block`` — that must not
+    be misread as inline math); blocks emit their math as ``\\(...\\)`` so
+    only steps 2 and 3 are relevant there.
     """
     if not md:
         return md
-    md, _, _ = convert_dollar_math(md)
+    if convert_dollars:
+        md, _, _ = convert_dollar_math(md)
     md = _safe_inequalities_in_math(md)
     md = _decode_unicode_escapes_in_math(md)
     return md
 
 
-# What HTML treats as the start of a tag: `<` followed by a letter, `!`,
-# `/`, or `?`. That's the genuinely dangerous shape inside a math span.
+# What HTML treats as the start of a tag: `<` *immediately* followed by a
+# letter, `!`, `/`, or `?`. That — and only that — is the genuinely
+# dangerous shape inside a math span (`<T_2` eats the next close-tag);
+# `q>0`, `\Delta P < 0` (space-separated `<`), etc. are HTML-harmless even
+# though `make_math_html_safe` rewrites them for tidiness/robustness.
 _HTML_TAGISH = re.compile(r"<[A-Za-z!/?]")
 
 
 def check_math_html_safe(md: str) -> List[Warning]:
-    """Defense-in-depth: return one Warning per residual HTML-unsafe math
-    construct that ``make_math_html_safe`` somehow didn't fix.
+    """Defense-in-depth: return one ``error``-severity Warning per residual
+    *genuinely* HTML-unsafe math construct that ``make_math_html_safe``
+    somehow didn't fix.
 
     Flags: a surviving ``$...$``/``$$...$$`` span (in prose, not code); a
-    ``<tag``-shaped sequence or a bare ``>`` adjacent to an alphanumeric
-    inside a ``\\(...\\)``/``\\[...\\]`` span; a leftover ``\\uXXXX`` literal
-    inside a math span. Source is ``"math"`` so callers can route it.
+    ``<tag``-shaped sequence (``<`` immediately followed by a letter / ``!``
+    / ``/`` / ``?``) inside a ``\\(...\\)``/``\\[...\\]`` span; a leftover
+    ``\\uXXXX`` literal inside a math span. Does **not** flag a space-padded
+    ``<`` or any ``>`` — those are HTML-harmless. Source is ``"math"`` so
+    callers can route it.
     """
     warns: List[Warning] = []
     prose = "".join(c for k, c in _split_segments(md) if k == "prose")
@@ -280,15 +291,14 @@ def check_math_html_safe(md: str) -> List[Warning]:
             f"{_snippet(m.group(0))}",
         ))
 
-    # Residual HTML-unsafe `<`/`>` inside math spans.
+    # Residual HTML-tag-shaped `<` inside math spans.
     for span_re, kind_label in ((_MATH_INLINE_RE, "inline"), (_MATH_BLOCK_RE, "block")):
         for m in span_re.finditer(prose):
             inner = m.group(1)
-            if _HTML_TAGISH.search(inner) or re.search(r"[A-Za-z0-9]\s*>\s*[A-Za-z0-9{\(]", inner) \
-                    or re.search(r"[A-Za-z0-9]\s*<\s*[A-Za-z0-9{\(]", inner):
+            if _HTML_TAGISH.search(inner):
                 warns.append(Warning(
                     "error", "math",
-                    f"HTML-unsafe '<'/'>' inside {kind_label} math span "
+                    f"HTML-tag-shaped '<' inside {kind_label} math span "
                     f"survived the sanitizer: {_snippet(m.group(0))}",
                 ))
             if _UNICODE_ESCAPE_RE.search(inner):

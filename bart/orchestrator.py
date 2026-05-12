@@ -1555,7 +1555,7 @@ class Orchestrator:
         try:
             from .render.packet import build_packet
             manifest = json.loads((self.paths.manifest_path).read_text())
-            warnings = build_packet(self.paths.root, manifest)
+            warnings = build_packet(self.paths.root, manifest, run_record=self.run_record)
         except Exception as e:  # noqa: BLE001
             self.logger.error("HTML packet build failed: %s\n%s", e, traceback.format_exc())
             self.console.print(f"  [yellow]⚠[/yellow] HTML build failed: {e}")
