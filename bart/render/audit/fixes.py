@@ -564,10 +564,10 @@ def _ensure_katex_loaded(html: str) -> tuple[str, int]:
     m = re.search(r'data-rel-root="([^"]*)"', html)
     rel = m.group(1) if m else "."
     needs_chem = "\\ce{" in body or "\\pu{" in body
-    from .assets import (
+    from ..assets import (
         KATEX_CSS_CDN, KATEX_JS_CDN, KATEX_AUTORENDER_CDN, KATEX_MHCHEM_CDN,
     )
-    from .page import _KATEX_AUTORENDER_CONFIG
+    from ..page import _KATEX_AUTORENDER_CONFIG
     chem_script = (
         f'<script defer src="{rel}/lib/katex/mhchem.min.js" '
         f'onerror="(function(){{var s=document.createElement(\'script\');'

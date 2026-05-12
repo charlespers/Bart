@@ -255,7 +255,7 @@ def _ensure_sandbox_present(run_dir: Path) -> int:
     feature without requiring a full re-render. Returns the count of
     files actually copied.
     """
-    from .assets import copy_template_assets
+    from ..assets import copy_template_assets
     n = 0
     for fname in ("sandbox.html", "sandbox.js"):
         if not (run_dir / fname).exists():
@@ -516,7 +516,7 @@ def _rebuild_packet_from_markdown(run_dir: Path) -> bool:
     """
     try:
         import json as _json
-        from .packet import build_packet
+        from ..packet import build_packet
         _strip_llm_wrapper_fence_in_sources(run_dir)
         _repair_unclosed_fences_in_sources(run_dir)
         manifest_path = run_dir / "manifest.json"
