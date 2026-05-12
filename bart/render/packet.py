@@ -503,15 +503,18 @@ def _render_one(
         warnings.append(Warning(src.name, w.kind, w.detail, "warn"))
 
     # ── Math safety (post-expansion) — blocks emit math (\(...\)) into prose,
-    # so re-run the inequality/\uXXXX parts on the expanded markdown
-    # (convert_dollars=False: a literal `$` in a code-block's HTML must not be
-    # mistaken for inline math, and there's nothing to convert anyway — the
-    # pre-expansion pass already did it). The loud residue `check` runs
-    # pre-expansion only (above) — by here we're working over raw HTML blobs
-    # where a stray `$` is far more likely to be a false positive than
-    # genuine $-math.
+    # so re-run the inequality/\uXXXX parts on the expanded markdown.
+    # convert_dollars=False: a literal `$` in a code-block's HTML must not be
+    # mistaken for inline math, and there's nothing to convert anyway (the
+    # pre-expansion pass already did it). prose_unicode=False: by here a
+    # `bart-code-block` has expanded to raw `<pre>` HTML that `_split_segments`
+    # can't see into, and a `\uXXXX` shown there is an intentional code
+    # example — only decode `\uXXXX` inside `\(...\)`/`\[...\]` here. The loud
+    # residue `check` runs pre-expansion only (above) — by here we're working
+    # over raw HTML blobs where a stray `$` is far more likely to be a false
+    # positive than genuine $-math.
     before = sanitized
-    sanitized = make_math_html_safe(sanitized, convert_dollars=False)
+    sanitized = make_math_html_safe(sanitized, convert_dollars=False, prose_unicode=False)
     if sanitized != before:
         warnings.append(Warning(
             src.name, "math_made_html_safe",

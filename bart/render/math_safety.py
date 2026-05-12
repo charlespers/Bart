@@ -197,12 +197,48 @@ def _safe_inequalities_in_math(text: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────
-# 3. Decode `\uXXXX` literals to the actual character (inside math spans).
-# A re-emitted JSON string sometimes carries a literal backslash-u-hex
-# that never went through a JSON decoder — it reaches the page as text.
+# 3. Decode `\uXXXX` literals to the actual character.
+# A `bart-*` block's JSON string field that reached the page un-decoded —
+# or a model that simply typed the escape instead of the glyph — leaves a
+# literal backslash-u-hex sitting in the text (`τ` where it meant `τ`,
+# `—` where it meant `—`). We decode it.
+#
+# Two scopes:
+#   * `_in_prose` — decode it *anywhere* in prose (markdown text outside
+#     ``` fences and `…` spans). This is the right default pre-expansion:
+#     a literal `\uXXXX` in a study guide's prose is a mistake 100% of the
+#     time. Conservative on which codepoints, though — only ≥ U+00A0
+#     (non-ASCII): a stray `#` might be a fumbled `#`, and turning that
+#     into a real heading would be worse than leaving it for the post-render
+#     autofix to surface as plain text. Surrogates (D800–DFFF) are left
+#     literal — `chr()` takes them but they break UTF-8 round-trips.
+#   * `_in_math` — decode it only inside `\(...\)` / `\[...\]` math spans.
+#     The right choice *post-expansion*, where bart-fences have become raw
+#     HTML blobs `_split_segments` can't see into: a `α` inside an
+#     expanded `<pre>` is an intentional code example, but one inside a math
+#     span is the double-escape bug. Decodes all codepoints there — nobody
+#     writes `A` for `A` inside `\(...\)`.
 # ─────────────────────────────────────────────────────────────────
 
 _UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _is_decodable_prose_escape(hex4: str) -> bool:
+    cp = int(hex4, 16)
+    return cp >= 0x00A0 and not (0xD800 <= cp <= 0xDFFF)
+
+
+def _decode_unicode_escapes_in_prose(text: str) -> str:
+    def _sub(m: "re.Match[str]") -> str:
+        return chr(int(m.group(1), 16)) if _is_decodable_prose_escape(m.group(1)) else m.group(0)
+
+    out_parts: List[str] = []
+    for kind, content in _split_segments(text):
+        if kind == "code":
+            out_parts.append(content)
+            continue
+        out_parts.append(_UNICODE_ESCAPE_RE.sub(_sub, content))
+    return "".join(out_parts)
 
 
 def _decode_unicode_escapes_in_math(text: str) -> str:
@@ -228,27 +264,35 @@ def _decode_unicode_escapes_in_math(text: str) -> str:
 # Public — aggressive sanitizer + loud checker
 # ─────────────────────────────────────────────────────────────────
 
-def make_math_html_safe(md: str, *, convert_dollars: bool = True) -> str:
+def make_math_html_safe(
+    md: str, *, convert_dollars: bool = True, prose_unicode: bool = True
+) -> str:
     """Return ``md`` with math made HTML-safe. Idempotent.
 
     1. (when ``convert_dollars``) ``$...$``→``\\(...\\)``, ``$$...$$``→
        ``\\[...\\]`` (display gets blank lines around it).
     2. Bare ``<``/``>`` adjacent to an alphanumeric inside ``\\(...\\)`` /
        ``\\[...\\]`` → ``\\lt``/``\\gt``.
-    3. ``\\uXXXX`` literals inside math spans → the actual character.
+    3. ``\\uXXXX`` literals → the actual character. When ``prose_unicode``
+       (the default, for raw markdown): anywhere in prose, non-ASCII
+       codepoints only. When not (for already-block-expanded content):
+       only inside ``\\(...\\)`` / ``\\[...\\]`` math spans — an
+       expanded ``<pre>`` may legitimately *show* a ``\\uXXXX`` code example.
 
-    Fenced/inline code is never touched. Pass ``convert_dollars=False`` when
-    running over already-block-expanded content (raw HTML blobs may contain a
-    literal ``$`` — e.g. shell code in a ``bart-code-block`` — that must not
-    be misread as inline math); blocks emit their math as ``\\(...\\)`` so
-    only steps 2 and 3 are relevant there.
+    Fenced/inline code is never touched. Pass ``convert_dollars=False,
+    prose_unicode=False`` when running over already-block-expanded content
+    (raw HTML blobs may contain a literal ``$`` — e.g. shell code in a
+    ``bart-code-block`` — that must not be misread as inline math, and a
+    ``\\uXXXX`` inside an expanded code block must survive verbatim); blocks
+    emit their math as ``\\(...\\)`` so only steps 2 and the math-span part
+    of 3 are relevant there.
     """
     if not md:
         return md
     if convert_dollars:
         md, _, _ = convert_dollar_math(md)
     md = _safe_inequalities_in_math(md)
-    md = _decode_unicode_escapes_in_math(md)
+    md = _decode_unicode_escapes_in_prose(md) if prose_unicode else _decode_unicode_escapes_in_math(md)
     return md
 
 
