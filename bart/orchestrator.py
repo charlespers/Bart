@@ -1046,6 +1046,8 @@ class Orchestrator:
             # Practice exam splits: Author writes Part A only (problems),
             # Solver fills Part B (answer key). Each call is shorter than the
             # combined call would be, and Solver is corpus-free.
+            def _on_warning(detail, _k=kind):
+                self.run_record.record_warning("warn", f"author:{_k}", detail)
             if kind == "practice_exam" and solver is not None:
                 from .agents import exam_pattern as _exam_pattern
                 exam_patterns_full = _exam_pattern.format_for_practice_exam(exam_patterns)
@@ -1053,6 +1055,7 @@ class Orchestrator:
                     "practice_exam_part_a", brief, max_tokens=max_tokens,
                     label_suffix="part_a", on_density=_on_density,
                     exam_patterns_block=exam_patterns_full,
+                    on_warning=_on_warning,
                 )
                 part_b = solver.solve(part_a, notation_card, max_tokens=max_tokens)
                 text = part_a.rstrip() + "\n\n---\n\n" + part_b.lstrip()
@@ -1060,7 +1063,10 @@ class Orchestrator:
                 # half was already written within scope.
                 atomic_write_text(target, text)
                 return kind, text, "ok"
-            text = author.write(kind, brief, max_tokens=max_tokens, label_suffix="initial", on_density=_on_density)
+            text = author.write(
+                kind, brief, max_tokens=max_tokens, label_suffix="initial",
+                on_density=_on_density, on_warning=_on_warning,
+            )
 
             if self.use_critic:
                 hc = health_check(kind, text)
@@ -1232,6 +1238,9 @@ class Orchestrator:
                 on_density=_on_density,
                 research_slice=day_research_full,
                 exam_patterns_block=exam_patterns_drill,
+                on_warning=lambda detail, _d=day_num: self.run_record.record_warning(
+                    "warn", f"author:day{_d}", detail
+                ),
             )
 
             if self.use_critic:

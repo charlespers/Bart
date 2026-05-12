@@ -1,11 +1,18 @@
 """AuthorAgent — generates a long-form artifact from a brief."""
 from __future__ import annotations
 
+import logging
 import os
-from typing import Any
+from typing import Any, Callable
 
 from .base import Agent
 from . import block_density
+
+logger = logging.getLogger(__name__)
+
+
+def _noop_warning(detail: str) -> None:  # default on_warning callback
+    return None
 
 
 class AuthorAgent(Agent):
@@ -26,8 +33,11 @@ class AuthorAgent(Agent):
         on_density: callable = None,  # type: ignore[valid-type]
         research_slice: str = "",
         exam_patterns_block: str = "",
+        on_warning: Callable[[str], None] = _noop_warning,
     ) -> str:
         cfg = self.ctx.cfg
+        if on_warning is None:
+            on_warning = _noop_warning
 
         # Build a kind-augmented system prompt: base author.md + the slim
         # per-artifact catalog. This goes in the SYSTEM payload so prompt
@@ -130,8 +140,11 @@ class AuthorAgent(Agent):
                 )
                 if continuation and len(continuation) > 200:
                     text = text.rstrip() + "\n\n" + continuation.lstrip()
-            except Exception:  # noqa: BLE001
-                pass  # Best-effort.
+            except Exception as e:  # noqa: BLE001 — best-effort, but surface it
+                logger.warning(
+                    "truncation-fix continuation failed for %s: %s", label, e
+                )
+                on_warning(f"truncation-fix continuation failed for {label}: {e}")
 
         # ── Quality-floor (block-density) continuation ───────────────
         # If the output is missing required design blocks, fire ONE
@@ -175,7 +188,13 @@ class AuthorAgent(Agent):
                 # Only graft on if the addition contains actual fences
                 if add and "```bart-" in add:
                     text = text.rstrip() + "\n\n" + add.lstrip()
-            except Exception:  # noqa: BLE001
-                pass  # Best-effort.
+            except Exception as e:  # noqa: BLE001 — best-effort, but surface it
+                # NOTE: this block-fix continuation gets rewritten in Phase A
+                # (task A2) into a validate_blocks-driven targeted re-ask;
+                # for now it just stops swallowing failures silently.
+                logger.warning(
+                    "block-fix continuation failed for %s: %s", label, e
+                )
+                on_warning(f"block-fix continuation failed for {label}: {e}")
 
         return text
