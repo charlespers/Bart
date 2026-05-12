@@ -1463,6 +1463,11 @@ class Orchestrator:
         self.console.print()
         self.console.print(table)
 
+        # Everything that went sideways — sidecars that fell back, artifacts
+        # that needed re-asks, days that stayed broken, error-level findings.
+        # Distinct (amber) from the red PACKET INCOMPLETE banner in _finalize().
+        self._print_warnings_panel()
+
         rel = self.paths.root.relative_to(self.paths.root.parent.parent)
         readme = self.paths.root / "README.md"
         self.console.print(
@@ -1487,6 +1492,29 @@ class Orchestrator:
             pass
 
         self.console.print()
+
+    def _print_warnings_panel(self) -> None:
+        """If anything went sideways this run (a sidecar fell back, an artifact
+        needed a re-ask, a day stayed broken, an autofix did a lot, unsafe math
+        survived…), print an amber 'warnings & fallbacks' panel listing each
+        item. Reads `self.run_record.summary_lines()`; on a fully clean run it
+        prints nothing. Distinct from the red 'PACKET INCOMPLETE' banner in
+        `_finalize()` — that one means "a hole in the packet"; this one is the
+        full punch-list including non-fatal degradations."""
+        lines = self.run_record.summary_lines()
+        if not lines:
+            return
+        body = "\n".join(f"[white]•[/white] {line}" for line in lines)
+        self.console.print()
+        self.console.print(
+            Panel.fit(
+                f"[bold yellow]⚠ warnings & fallbacks[/bold yellow] — "
+                f"{len(lines)} item(s) this run:\n\n{body}\n\n"
+                f"[dim]machine-readable detail: format_audit.json · "
+                f"render_warnings.json · run.log[/dim]",
+                border_style="yellow",
+            )
+        )
 
     # ------------------------------------------------------------------
     # Helpers
