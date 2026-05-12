@@ -1803,16 +1803,16 @@ def _daily_lesson_brief(
         f"WHIMSY HOOK (drop into the Whimsical hook section)\n{whimsy_hook}\n\n"
         if whimsy_hook else ""
     )
+    # The full teaching contract (the motivate→name→ground→connect→contrast→apply
+    # arc, voice rules, misconception-first framing) lives in the author system
+    # prompt — don't restate it here; point at it and add the per-day asks.
     teaching_contract = (
-        "TEACHING CONTRACT — this is a lesson, not an extraction. Before "
-        "writing, identify (a) the 1–3 THRESHOLD concepts where understanding "
-        "qualitatively shifts and (b) the wrong-but-natural MISCONCEPTION "
-        "students bring in for each. Use `bart-concept-build` for every "
-        "load-bearing concept (motivate → name → ground → connect → contrast "
-        "→ apply). Use `bart-trap-callout` (kind=trap) titled \"What students "
-        "usually think\" for each misconception. Voice: first-person present, "
-        "active-recall cues woven in (\"pause — what do you predict?\"), "
-        "concrete-to-abstract, never the reverse.\n\n"
+        "TEACHING CONTRACT — apply the teaching contract from your system "
+        "prompt for every load-bearing concept (`bart-concept-build` for each; "
+        "`bart-trap-callout` kind=trap titled \"What students usually think\" "
+        "for each misconception). For THIS day specifically: pick the 1–3 "
+        "THRESHOLD concepts where understanding qualitatively shifts, and name "
+        "the wrong-but-natural MISCONCEPTION students bring in for each.\n\n"
     )
     return (
         f"ARTIFACT: DAILY LESSON — Day {day_num} of {cfg.subject}.\n"
