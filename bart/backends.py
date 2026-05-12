@@ -18,11 +18,14 @@ Three paths to run bart:
 All three classes expose the same `complete(...)` method so the orchestrator
 does not care which one is in use.
 
-Hanging vs slow: the Claude Code CLI with `--print` is non-streaming. We get
-NO output until the model finishes generating. Long lessons can take 4-6 min
-on Opus. To distinguish 'slow' from 'hung', we run a heartbeat thread that
-fires `heartbeat` events every 30s while the subprocess is alive. The
-orchestrator surfaces these to the user.
+Hanging vs slow: the Claude Code CLI is invoked with `--print --output-format
+stream-json`, so it emits one JSON event per line as the response is produced.
+We parse those events for live progress; a read-loop watchdog kills the
+subprocess and raises if it goes silent for `_CLI_IDLE_TIMEOUT_S` (so a wedged
+connection doesn't hang the run). A heartbeat thread also fires `heartbeat`
+events every 15s while the subprocess is alive — long lessons can still take
+4-6 min on Opus, and the orchestrator surfaces these so the user knows it's
+progressing rather than hung.
 """
 from __future__ import annotations
 
@@ -250,6 +253,16 @@ def _retry_after_seconds(err: Exception) -> float | None:
 
 def _indent(text: str, prefix: str) -> str:
     return "\n".join(prefix + line for line in text.splitlines())
+
+
+def _jittered(seconds: float) -> float:
+    """Apply ±25% random jitter to a backoff/Retry-After wait.
+
+    When several threads hit a 429 at the same moment they otherwise back off
+    in lockstep and collide again on the retry; spreading the waits avoids
+    that synchronized thundering herd.
+    """
+    return seconds * random.uniform(0.75, 1.25)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -519,11 +532,11 @@ class AnthropicAPIBackend:
                 # 429 — honor server-supplied retry hint when present.
                 # Anthropic returns retry-after (seconds) and/or
                 # retry-after-ms; either header lets us back off precisely
-                # instead of guessing with 2^attempt. Cap at 60s so a
+                # instead of guessing with 2^attempt. ±25% jitter so
+                # concurrent threads don't retry in lockstep; cap at 60s so a
                 # misconfigured upstream can't deadlock the run.
                 last_err = e
-                wait = _retry_after_seconds(e) or (2 ** attempt)
-                wait = min(wait, 60.0)
+                wait = min(_jittered(_retry_after_seconds(e) or (2 ** attempt)), 60.0)
                 self._on_event("retry", {
                     "label": label, "attempt": attempt, "wait_s": wait,
                     "error": str(e), "reason": "rate_limit",
@@ -531,7 +544,7 @@ class AnthropicAPIBackend:
                 time.sleep(wait)
             except (anthropic.APIConnectionError, anthropic.APITimeoutError) as e:
                 last_err = e
-                wait = 2 ** attempt
+                wait = _jittered(2 ** attempt)
                 self._on_event("retry", {"label": label, "attempt": attempt, "wait_s": wait, "error": str(e)})
                 time.sleep(wait)
             except anthropic.BadRequestError as e:
@@ -548,7 +561,7 @@ class AnthropicAPIBackend:
             except anthropic.APIStatusError as e:
                 if e.status_code in (500, 502, 503, 529):
                     last_err = e
-                    wait = 2 ** attempt
+                    wait = _jittered(2 ** attempt)
                     self._on_event("retry", {"label": label, "attempt": attempt, "wait_s": wait, "error": str(e)})
                     time.sleep(wait)
                     continue
