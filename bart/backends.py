@@ -29,10 +29,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
+import random
 import shutil
 import subprocess
-import threading
-import os
 import threading
 import time
 from contextlib import contextmanager
@@ -578,6 +578,15 @@ _CLAUDE_EFFORT = os.environ.get("BART_CLAUDE_EFFORT", "medium").strip().lower()
 if _CLAUDE_EFFORT not in _VALID_CLAUDE_EFFORTS:
     _CLAUDE_EFFORT = "medium"
 
+# CLI timeouts (seconds). `_CLI_TIMEOUT_S` is the absolute deadline for one
+# `claude` call; `_CLI_IDLE_TIMEOUT_S` is the longest the stream-json read
+# loop will wait for the *next* line before deciding the subprocess is wedged
+# and killing it. The idle watchdog is the one that matters in practice — a
+# subprocess whose connection dies (laptop sleep, network blip) goes silent
+# but doesn't exit, so without it bart blocks for the full overall timeout.
+_CLI_TIMEOUT_S = int(os.environ.get("BART_CLI_TIMEOUT_S", "600"))
+_CLI_IDLE_TIMEOUT_S = int(os.environ.get("BART_CLI_IDLE_TIMEOUT_S", "150"))
+
 
 class ClaudeCodeBackend:
     """Shells out to the `claude` CLI installed by Claude Code subscribers.
@@ -625,6 +634,15 @@ class ClaudeCodeBackend:
 
         Returns (stdout_text, stderr, returncode) where stdout_text is the
         concatenated assistant text from the stream events.
+
+        A reader thread iterates `proc.stdout` line-by-line and pushes each
+        line onto a queue (a `None` sentinel on EOF); a second thread drains
+        `proc.stderr` into a list so it's available even if the subprocess
+        hangs. The main loop pulls from the queue with `_CLI_IDLE_TIMEOUT_S`
+        timeout — if the subprocess goes silent (its connection died, etc.)
+        we kill it and raise `LLMError` rather than blocking for the full
+        overall timeout. An absolute `_CLI_TIMEOUT_S` deadline is enforced
+        on top.
         """
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -638,69 +656,123 @@ class ClaudeCodeBackend:
         except (BrokenPipeError, OSError):
             pass
 
+        idle_timeout = _CLI_IDLE_TIMEOUT_S
+        deadline = time.monotonic() + _CLI_TIMEOUT_S
+
+        # ── Reader threads ───────────────────────────────────────────
+        # stdout: one line per queue item; a None sentinel marks EOF.
+        # stderr: collected into a list so it's readable on a hang
+        # (the old code only read stderr after `proc.wait()`, so a wedged
+        # subprocess's diagnostics were invisible).
+        line_q: "queue.Queue[str | None]" = queue.Queue()
+        stderr_chunks: list[str] = []
+
+        def _pump_stdout() -> None:
+            try:
+                if proc.stdout is not None:
+                    for raw in proc.stdout:
+                        line_q.put(raw)
+            except Exception:  # noqa: BLE001 — best-effort; EOF/closed pipe
+                pass
+            finally:
+                line_q.put(None)
+
+        def _pump_stderr() -> None:
+            try:
+                if proc.stderr is not None:
+                    data = proc.stderr.read()
+                    if data:
+                        stderr_chunks.append(data)
+            except Exception:  # noqa: BLE001
+                pass
+
+        t_out = threading.Thread(target=_pump_stdout, daemon=True)
+        t_err = threading.Thread(target=_pump_stderr, daemon=True)
+        t_out.start()
+        t_err.start()
+
         accumulated_text: list[str] = []
         last_emit_chars = 0
         last_emit_time = time.time()
 
-        # Read stdout line-by-line, parse stream-json events, accumulate text.
-        try:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    # Some CLI versions print preamble lines that aren't JSON;
-                    # treat as plain text and append.
-                    accumulated_text.append(line)
-                    continue
-                # stream-json event shapes (Anthropic Messages API style):
-                #   {"type": "assistant", "message": {"content": [{"type":"text","text":"..."}]}}
-                #   {"type": "result", "subtype": "success", "result": "<full text>", ...}
-                etype = event.get("type", "")
-                if etype == "assistant":
-                    msg = event.get("message", {}) or {}
-                    for block in (msg.get("content") or []):
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            txt = block.get("text", "")
-                            if txt:
-                                accumulated_text.append(txt)
-                elif etype == "result":
-                    # Final event — `result` field contains the complete text
-                    # (or the error message, when subtype indicates failure
-                    # like "error_max_tokens"). Capture it unconditionally so
-                    # downstream detection can match on the message; the
-                    # subprocess returncode tells us success vs. failure.
-                    full = event.get("result", "")
-                    if full:
-                        accumulated_text = [full]
-                # Periodic progress event so the orchestrator can show
-                # live char counts.
-                now = time.time()
-                cur_chars = sum(len(t) for t in accumulated_text)
-                if (cur_chars - last_emit_chars) >= 500 or (now - last_emit_time) >= 5:
-                    self._on_event("stream_progress", {
-                        "label": label, "chars": cur_chars,
-                    })
-                    last_emit_chars = cur_chars
-                    last_emit_time = now
-        except Exception as e:  # noqa: BLE001
-            self._on_event("stream_error", {"label": label, "error": str(e)})
+        def _stderr_text() -> str:
+            return "".join(stderr_chunks).strip()
+
+        while True:
+            # Absolute deadline guard — independent of per-line idleness.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                proc.kill()
+                t_out.join(timeout=2)
+                raise LLMError(
+                    f"`claude` exceeded its {_CLI_TIMEOUT_S}s overall timeout "
+                    f"on '{label}' (stderr: {_stderr_text()[:400] or 'empty'})"
+                )
+            try:
+                line = line_q.get(timeout=min(idle_timeout, max(0.1, remaining)))
+            except queue.Empty:
+                # The subprocess produced no output for `idle_timeout`
+                # seconds. It's wedged (dead connection, hung mid-think) —
+                # kill it and surface stderr.
+                proc.kill()
+                t_out.join(timeout=2)
+                raise LLMError(
+                    f"`claude` produced no output for {idle_timeout}s on "
+                    f"'{label}' (stderr: {_stderr_text()[:400] or 'empty'})"
+                )
+            if line is None:
+                # EOF — stdout closed.
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                # Some CLI versions print preamble lines that aren't JSON;
+                # treat as plain text and append.
+                accumulated_text.append(line)
+                continue
+            # stream-json event shapes (Anthropic Messages API style):
+            #   {"type": "assistant", "message": {"content": [{"type":"text","text":"..."}]}}
+            #   {"type": "result", "subtype": "success", "result": "<full text>", ...}
+            etype = event.get("type", "")
+            if etype == "assistant":
+                msg = event.get("message", {}) or {}
+                for block in (msg.get("content") or []):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        txt = block.get("text", "")
+                        if txt:
+                            accumulated_text.append(txt)
+            elif etype == "result":
+                # Final event — `result` field contains the complete text
+                # (or the error message, when subtype indicates failure
+                # like "error_max_tokens"). Capture it unconditionally so
+                # downstream detection can match on the message; the
+                # subprocess returncode tells us success vs. failure.
+                full = event.get("result", "")
+                if full:
+                    accumulated_text = [full]
+            # Periodic progress event so the orchestrator can show
+            # live char counts.
+            now = time.time()
+            cur_chars = sum(len(t) for t in accumulated_text)
+            if (cur_chars - last_emit_chars) >= 500 or (now - last_emit_time) >= 5:
+                self._on_event("stream_progress", {
+                    "label": label, "chars": cur_chars,
+                })
+                last_emit_chars = cur_chars
+                last_emit_time = now
 
         try:
-            proc.wait(timeout=self._timeout_s)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
             raise
 
-        stderr = ""
-        try:
-            if proc.stderr is not None:
-                stderr = proc.stderr.read() or ""
-        except Exception:  # noqa: BLE001
-            pass
+        # stderr reader thread should be done now that the process exited.
+        t_err.join(timeout=2)
+        stderr = _stderr_text()
 
         return "".join(accumulated_text), stderr, proc.returncode
 
