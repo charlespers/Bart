@@ -485,6 +485,7 @@ class AnthropicAPIBackend:
         use_disk_cache: bool = True,
         temperature: float = 1.0,
         response_format: str | None = None,  # "json" honored by LocalBackend; ignored here
+        effort: str | None = None,  # honored only by ClaudeCodeBackend; ignored here
     ) -> str:
         sys_blocks = self._cacheable_system(system) if isinstance(system, str) else list(system)
         usr_blocks = [{"type": "text", "text": user}] if isinstance(user, str) else list(user)
@@ -599,8 +600,19 @@ if _CLAUDE_EFFORT not in _VALID_CLAUDE_EFFORTS:
 # and killing it. The idle watchdog is the one that matters in practice — a
 # subprocess whose connection dies (laptop sleep, network blip) goes silent
 # but doesn't exit, so without it bart blocks for the full overall timeout.
+#
+# Why 300s and not less: the `claude` CLI does its *own* rate-limit backoff
+# on a 429 (subscription mode hits these readily under parallel fan-out), and
+# during that backoff it emits nothing on stdout — a perfectly healthy call
+# that will recover. At 150s the watchdog killed those mid-backoff and turned
+# a slow success into a hard failure (every daily lesson, observed). Any JSON
+# event (ping, thinking delta, text delta) resets the timer, so 300s of *true*
+# silence is still a strong "this connection is dead" signal — we just stopped
+# being trigger-happy about transient backoffs. Detecting a genuinely-dead
+# subprocess now takes up to 5 min instead of 2.5 — an acceptable trade for
+# not nuking working calls.
 _CLI_TIMEOUT_S = int(os.environ.get("BART_CLI_TIMEOUT_S", "600"))
-_CLI_IDLE_TIMEOUT_S = int(os.environ.get("BART_CLI_IDLE_TIMEOUT_S", "150"))
+_CLI_IDLE_TIMEOUT_S = int(os.environ.get("BART_CLI_IDLE_TIMEOUT_S", "300"))
 
 
 class ClaudeCodeBackend:
@@ -842,6 +854,7 @@ class ClaudeCodeBackend:
         use_disk_cache: bool = True,
         temperature: float = 1.0,  # unused — CLI doesn't expose
         response_format: str | None = None,  # ignored; CLI doesn't expose
+        effort: str | None = None,  # per-call override of the pinned --effort
     ) -> str:
         # The CLI doesn't expose cache_control, but flatten() reads either form.
         sys_text = self._flatten(system)
@@ -881,9 +894,17 @@ class ClaudeCodeBackend:
         # effort level, and turn off MCP, slash commands, and built-in tools —
         # an artifact author needs none of them, and inheriting them is what
         # made every artifact "hang" for 10+ minutes.
+        #
+        # `effort` lets a caller drop below the global default for one call —
+        # the long daily-lesson artifact is unusably slow at "medium" on the
+        # subscription backend (minutes of hidden thinking before any text),
+        # so the AuthorAgent passes "low" for it. Anything not in the valid
+        # set falls back to the pinned default.
+        eff = (effort or "").strip().lower()
+        effort_arg = eff if eff in _VALID_CLAUDE_EFFORTS else _CLAUDE_EFFORT
         cmd.extend([
             "--setting-sources", "project,local",
-            "--effort", _CLAUDE_EFFORT,
+            "--effort", effort_arg,
             "--disable-slash-commands",
             "--strict-mcp-config",
             "--tools", "",
@@ -1130,6 +1151,7 @@ class LocalBackend:
         temperature: float = 0.7,
         response_format: str | None = None,
         json_schema: dict[str, Any] | None = None,
+        effort: str | None = None,  # honored only by ClaudeCodeBackend; ignored here
     ) -> str:
         sys_text = self._flatten_blocks(system)
         usr_text = self._flatten_blocks(user)

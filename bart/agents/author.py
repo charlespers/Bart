@@ -210,6 +210,14 @@ class AuthorAgent(Agent):
         else:
             override = os.environ.get("BART_TOP_LEVEL_MODEL_OVERRIDE", "")
             model = override or cfg.primary_model
+        # The daily lesson is the longest artifact; at the default "medium"
+        # effort it's pathologically slow on the subscription backend (minutes
+        # of hidden thinking before any text → the idle watchdog used to kill
+        # it). Drop to "low" — the prompt scaffolds the structure heavily, so
+        # there's little to "reason" about; it just fills it in. Override with
+        # BART_DAILY_EFFORT if a richer lesson is worth the wait. Ignored by the
+        # API/local backends (only the `claude` CLI has an effort knob).
+        call_effort = os.environ.get("BART_DAILY_EFFORT", "low") if is_daily else None
         label = f"author:{artifact_kind}{':' + label_suffix if label_suffix else ''}"
 
         text = self.ctx.llm.complete(
@@ -219,6 +227,7 @@ class AuthorAgent(Agent):
             max_tokens=max_tokens,
             label=label,
             temperature=temperature,
+            effort=call_effort,
         )
 
         # ── Truncation continuation ──────────────────────────────────
@@ -244,6 +253,7 @@ class AuthorAgent(Agent):
                     max_tokens=remaining,
                     label=label + ":truncation_fix",
                     temperature=temperature,
+                    effort=call_effort,
                 )
                 if continuation and len(continuation) > 200:
                     text = text.rstrip() + "\n\n" + continuation.lstrip()

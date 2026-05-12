@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1198,10 +1199,19 @@ class Orchestrator:
                 self.logger.info("day %s already complete — skipping", day_num)
                 return day_num, filename, "cached"
 
+            # Daily lessons run on cfg.daily_model (Sonnet by default), NOT
+            # primary — and on the subscription backend at a lower effort
+            # ("low" unless BART_DAILY_EFFORT says otherwise). Label it
+            # honestly so a slow daily phase doesn't look like an Opus stall.
+            _daily_model = (
+                os.environ.get("BART_DAILY_MODEL_OVERRIDE", "")
+                or getattr(self.cfg, "daily_model", self.cfg.primary_model)
+            )
+            _daily_effort = os.environ.get("BART_DAILY_EFFORT", "low")
             self.console.print(
                 f"  [{ACCENT_HI}]→[/{ACCENT_HI}] starting Day {day_num:02d}"
                 f"{f' — {topic[:48]}' if topic else ''}"
-                f" [dim]({self._model_short(self.cfg.primary_model)})[/dim]"
+                f" [dim]({self._model_short(_daily_model)} · effort {_daily_effort})[/dim]"
             )
             research = research_by_day.get(day_num, "")
             # Filter the problem index for problems touching today's topic/chapters.
