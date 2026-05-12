@@ -303,20 +303,39 @@ def main(argv: list[str] | None = None) -> int:
             max_parallel = 2
 
         paths = RunPaths.create(resume=resume)
-        orch = Orchestrator(
-            cfg=cfg,
-            paths=paths,
-            console=console,
-            dry_run=dry_run,
-            use_critic=not no_critic,
-            max_parallel=max_parallel,
-            days_override=days_override,
-        )
-        result = orch.run()
-        # `run()` returns a RunRecord on the normal completion path (and an
-        # int for the early-exit / interrupted paths). Phase C wires the full
-        # 0/1/2 exit-code scheme; for now: non-zero if the packet came out
-        # incomplete or with an error-level finding.
+        # Exit-code contract (documented in README "## Exit codes"):
+        #   0   — clean run
+        #   1   — packet generated but incomplete, or has an error-level
+        #         finding (a `failed` artifact, or a severity=error warning)
+        #   2   — run failed entirely (an unhandled exception escaped) — no
+        #         packet
+        #   130 — interrupted (Ctrl-C)
+        # `Orchestrator.run()` returns a RunRecord on the normal completion
+        # path and an int on its own early-exit / interrupt / error paths
+        # (0 = dry-run/cancel, 130 = SIGINT, 1 = orchestrator error) — those
+        # pass straight through.
+        try:
+            orch = Orchestrator(
+                cfg=cfg,
+                paths=paths,
+                console=console,
+                dry_run=dry_run,
+                use_critic=not no_critic,
+                max_parallel=max_parallel,
+                days_override=days_override,
+            )
+            result = orch.run()
+        except KeyboardInterrupt:
+            console.print("\n[red]✗ Interrupted.[/red]")
+            return 130
+        except Exception as e:  # noqa: BLE001 — last-resort top-level guard
+            err_type = type(e).__name__
+            console.print(f"\n[red]✗ Run failed:[/red] [bold]{err_type}[/bold]: {e}")
+            console.print(
+                f"[dim]No packet produced. Full traceback in[/dim] "
+                f"[white]{getattr(paths, 'log_path', 'output/<run_id>/run.log')}[/white]"
+            )
+            return 2
         from .runrecord import RunRecord
         if isinstance(result, RunRecord):
             return 1 if result.has_errors() else 0

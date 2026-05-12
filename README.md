@@ -433,6 +433,17 @@ You can switch between modes anytime with `./run setup`.
 
 **Anything else.** `./run doctor` checks Python, deps, your API key, and the materials folder.
 
+### Exit codes
+
+`./run` exits with a meaningful status so you can script around it:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Clean run — packet generated, nothing went sideways. |
+| `1` | Packet generated but **incomplete or with errors** — one or more artifacts failed, or an error-level finding was recorded. Check the amber "warnings & fallbacks" panel at the end of the run, plus `output/<run_id>/format_audit.json` and `output/<run_id>/render_warnings.json`. Recover missing artifacts with `./run --resume <run_id>`. |
+| `2` | Run **failed entirely** — an unhandled error escaped before a packet was produced. See `output/<run_id>/run.log`. |
+| `130` | Interrupted (Ctrl-C). The run is preserved; resume with `./run --resume <run_id>`. |
+
 ---
 
 ## Configuration
