@@ -12,6 +12,15 @@ import re
 from dataclasses import dataclass
 from typing import List
 
+# The code-vs-prose splitter and the `$...$`→`\(...\)` conversion live in
+# `math_safety` now — the single implementation. We re-use them here.
+from .math_safety import (
+    _split_segments,
+    _split_inline,
+    _ensure_block_math_isolation,
+    convert_dollar_math,
+)
+
 
 @dataclass
 class SanitizeWarning:
@@ -20,48 +29,10 @@ class SanitizeWarning:
     file: str = ""      # set by caller
 
 
-# ─────────────────────────────────────────────────────────────────
-# Helpers — segment markdown into "code" and "non-code" regions so we
-# only touch math/prose, never code-fence content.
-# ─────────────────────────────────────────────────────────────────
-
-_FENCE_RE = re.compile(r"(?ms)(^```.*?(?:\n```\s*$|\Z))")
-_INLINE_CODE_RE = re.compile(r"(`[^`\n]+`)")
-
-
-def _split_segments(text: str) -> List[tuple[str, str]]:
-    """Split markdown into [(kind, content)] where kind is 'code' or 'prose'.
-
-    Code includes both fenced ``` blocks and inline `…` spans. Prose includes
-    everything else, including math delimiters.
-
-    Splitting is conservative: we err on the side of treating ambiguous text
-    as prose so transformations still apply if the agent forgot to close a
-    fence.
-    """
-    segments: List[tuple[str, str]] = []
-    cursor = 0
-    for m in _FENCE_RE.finditer(text):
-        if m.start() > cursor:
-            segments.extend(_split_inline(text[cursor : m.start()]))
-        segments.append(("code", m.group(0)))
-        cursor = m.end()
-    if cursor < len(text):
-        segments.extend(_split_inline(text[cursor:]))
-    return segments
-
-
-def _split_inline(text: str) -> List[tuple[str, str]]:
-    out: List[tuple[str, str]] = []
-    cursor = 0
-    for m in _INLINE_CODE_RE.finditer(text):
-        if m.start() > cursor:
-            out.append(("prose", text[cursor : m.start()]))
-        out.append(("code", m.group(0)))
-        cursor = m.end()
-    if cursor < len(text):
-        out.append(("prose", text[cursor:]))
-    return out
+# Helpers — `_split_segments` / `_split_inline` / `_ensure_block_math_isolation`
+# / `convert_dollar_math` are imported from `math_safety` (single copy).
+# `_split_segments` etc. stay importable from this module under their old
+# names because other modules (`packet.py`) import them from `sanitize`.
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -96,62 +67,26 @@ def _strip_ai_preamble(text: str) -> tuple[str, List[SanitizeWarning]]:
 # Transform 2 — Convert $...$ and $$...$$ to \(...\) and \[...\]
 #
 # We pick backslash delimiters because:
-#   - MathJax can be configured to recognize ONLY them, eliminating any
-#     conflict with literal $ in code blocks or prices.
+#   - MathJax/KaTeX can be configured to recognize ONLY them, eliminating
+#     any conflict with literal $ in code blocks or prices.
 #   - The conversion is unambiguous when done in non-code segments.
+#
+# The actual conversion lives in `math_safety.convert_dollar_math` (the
+# single implementation, also used by `make_math_html_safe`); this wrapper
+# just adapts it to the `(text, [SanitizeWarning])` contract.
 # ─────────────────────────────────────────────────────────────────
 
-# Display math first ($$...$$). Allow newlines inside.
-_DISPLAY_DOLLAR_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
-# Inline math ($...$). Disallow newlines, disallow the "$" being preceded by a
-# digit + letter (avoid catching prices like "$5 plus $7"). Require non-space
-# after opening and before closing.
-_INLINE_DOLLAR_RE = re.compile(
-    r"(?<![\\\w])\$(?!\s)([^$\n]+?)(?<!\s)\$(?![\w\d])"
-)
-
-
 def _convert_math_delimiters(text: str) -> tuple[str, List[SanitizeWarning]]:
-    warns: List[SanitizeWarning] = []
-    n_display = 0
-    n_inline = 0
-
-    out_parts: List[str] = []
-    for kind, content in _split_segments(text):
-        if kind == "code":
-            out_parts.append(content)
-            continue
-
-        # Display math: emit on its own line with blank lines around so the
-        # markdown parser treats it as a block (arithmatex recognition
-        # requires display math to be standalone).
-        def _disp_sub(m: re.Match) -> str:
-            nonlocal n_display
-            n_display += 1
-            inner = m.group(1).strip()
-            return f"\n\n\\[{inner}\\]\n\n"
-
-        def _inl_sub(m: re.Match) -> str:
-            nonlocal n_inline
-            n_inline += 1
-            return f"\\({m.group(1).strip()}\\)"
-
-        content = _DISPLAY_DOLLAR_RE.sub(_disp_sub, content)
-        content = _INLINE_DOLLAR_RE.sub(_inl_sub, content)
-        out_parts.append(content)
-
-    text = "".join(out_parts)
-
-    # Also ensure existing \[...\] display blocks have blank lines around them
+    text, n_display, n_inline = convert_dollar_math(text)
+    # Also ensure existing \[...\] display blocks have blank lines around them.
     text = _ensure_block_math_isolation(text)
-
+    warns: List[SanitizeWarning] = []
     if n_display or n_inline:
-        warns.append(
-            SanitizeWarning(
-                "math_delim_converted",
-                f"converted {n_display} display + {n_inline} inline $-style math to backslash delims",
-            )
-        )
+        warns.append(SanitizeWarning(
+            "math_delim_converted",
+            f"converted {n_display} display + {n_inline} inline $-style math "
+            f"to backslash delims",
+        ))
     return text, warns
 
 
@@ -319,27 +254,7 @@ def _pad_blocks_around_headings_and_rules(text: str) -> tuple[str, list["Sanitiz
     return "".join(out_parts), warns
 
 
-def _ensure_block_math_isolation(text: str) -> str:
-    """Surround \\[...\\] block math with blank lines if missing.
-
-    Markdown parsers treat \\[ as an escaped [ unless the block is on its
-    own line, separated by blank lines. This preprocessing makes recognition
-    deterministic regardless of how the agent indented the original.
-    """
-    out_parts: List[str] = []
-    for kind, content in _split_segments(text):
-        if kind == "code":
-            out_parts.append(content)
-        else:
-            # Find each \[...\] and ensure blank lines around it
-            def _wrap(m: re.Match) -> str:
-                inner = m.group(0)
-                return f"\n\n{inner}\n\n"
-            content = re.sub(r"\\\[(.+?)\\\]", _wrap, content, flags=re.DOTALL)
-            # Collapse runs of >2 blank lines back down to 2
-            content = re.sub(r"\n{3,}", "\n\n", content)
-            out_parts.append(content)
-    return "".join(out_parts)
+# `_ensure_block_math_isolation` moved to `math_safety` (imported above).
 
 
 # ─────────────────────────────────────────────────────────────────
