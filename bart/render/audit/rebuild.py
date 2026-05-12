@@ -587,34 +587,3 @@ def render_report(console: Console, result: AuditResult, run_dir: Path) -> None:
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     console.print(f"\n  [dim]full report:[/dim] {out_path}")
 
-
-_CORRUPTION_KINDS = frozenset({
-    "raw_md_hr_leak",
-    "raw_md_heading_leak",
-    "broken_class_attr",
-    "empty_tag",
-})
-
-
-def _markdown_sibling_for(html_path: Path, run_dir: Path) -> Path | None:
-    """Return the markdown file whose render produced this HTML page, or None.
-
-    bart's renderer pairs `01_schematics.html` with `01_SCHEMATICS.md`,
-    `lessons/day_03.html` with `daily_lessons/Day_03_<date>.md`, etc. We try
-    a few naming conventions and accept the first match we can verify.
-    """
-    name = html_path.stem
-    candidates: list[Path] = []
-    # Top-level artifacts (uppercase + same stem).
-    candidates.append(run_dir / f"{name.upper()}.md")
-    candidates.append(run_dir / f"{name}.md")
-    # Daily lessons: lessons/day_03.html → daily_lessons/Day_03_*.md
-    if html_path.parent.name == "lessons" and name.lower().startswith("day_"):
-        day_num = name.split("_", 1)[1]
-        for p in (run_dir / "daily_lessons").glob(f"Day_{day_num}_*.md"):
-            candidates.append(p)
-    for p in candidates:
-        if p.exists():
-            return p
-    return None
-
