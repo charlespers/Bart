@@ -349,93 +349,21 @@ def _placeholder_for(field_name: str, annotation: Any) -> Any:
 def render_block_catalog(only: list[str] | None = None) -> str:
     """Produce a compact markdown catalog of blocks + JSON schemas.
 
+    The catalog is *generated* from `block_schemas.BLOCK_SCHEMAS` — the single
+    source of truth — so the agent-facing text can never drift from what
+    `validate_blocks()` checks or what the renderers accept.
+
     `only`: if provided, restrict the catalog to that set of fence names.
-    Used to keep per-artifact briefs slim — sending all 31 schemas to a
+    Used to keep per-artifact briefs slim — sending all schemas to a
     daily-lesson Author is wasted tokens and wasted streaming time.
     """
-    # Hand-curated minimal schemas — keeps the prompt small. Each entry lists
-    # required fields first; optional fields shown in parens.
-    schemas = {
-        "concept-build":     '{"name": "<concept name>", "motivate?": "<why this needs to exist>", "define?": "<formal statement>", "define_tex?": "<latex>", "example?": "<concrete numerical example prose>", "example_tex?": "<latex>", "connect?": "<tie to prior concept>", "contrast?": "<vs the closest neighbor concept students confuse it with>", "apply?": "<use it on a corpus problem>", "threshold?": true}',
-        "formula-card":      '{"tex": "<latex>", "title?": "...", "legend?": [{"symbol":"x","meaning":"..."}], "note?": "...", "stamp_label?": "KEY", "cite?": "<corpus location, e.g. \'Lecture 4 §2\' or \'HW7 P3\'>"}',
-        "worked-example":    '{"problem": "...", "steps": [{"action":"...", "math?":"<latex>", "reasoning?":"..."}], "answer?": "...", "tag_label?": "Worked example", "cite?": "<corpus location>"}',
-        "quick-check":       '{"question": "...", "answer": "...", "hint?": "...", "label?": "Quick check"}',
-        "multi-step":        '{"problem": "...", "hints": ["...", "..."], "solution": "...", "label?": "Practice problem"}',
-        "multiple-choice":   '{"question": "...", "choices": [{"text":"...","correct":true,"explanation?":"..."}], "label?": "Multiple choice"}',
-        "hotspots":          '{"image_html": "<svg>...</svg>", "spots": [{"x":50,"y":50,"label":"...","body?":"..."}], "caption?": "..."}',
-        "checkpoint":        '{"cards": [{"front":"...","back":"..."}], "title?": "Checkpoint"}',
-        "mnemonic-card":     '{"acronym?": "...", "expansion?": [{"letter":"X","text":"..."}], "story?": "..."}',
-        "trap-callout":      '{"kind?": "trap|warn|note|ok", "title?": "...", "body": "..."}',
-        "why-it-matters":    '{"body": "..."}',
-        "flowchart":         '{"steps": [{"label":"...","body?":"...","tone?":"paper|accent"}], "title?": "..."}',
-        "timeline":          '{"events": [{"date":"...","label":"...","body?":"...","tone?":"ink|accent"}], "title?": "...", "unit?": "year"}',
-        "concept-map":       '{"nodes": [{"id":"a","x":50,"y":50,"label":"...","kind?":"hub"}], "edges": [{"from":"a","to":"b","label?":"...","curve?":0}], "title?": "...", "aspect_ratio?": "3/2"}',
-        "comparison-matrix": '{"cols": [{"id":"x","label":"X"}], "rows": [{"label":"...","cells":{"x":"yes|no|partial|star|<freeform>"}}], "title?": "...", "legend?": true}',
-        "process-ribbon":    '{"phases": [{"label":"...","beats?":["..."],"color?":"accent|warn|info|ok"}], "title?": "...", "outcome?": "..."}',
-        "anatomy-diagram":   '{"image_html": "<svg>...</svg>", "left_labels?": [{"y":50,"label":"...","body?":"..."}], "right_labels?": [...], "title?": "...", "caption?": "...", "height?": 360}',
-        "number-line":       '{"min": -2, "max": 4, "ticks?": [-2,0,2,4], "points?": [{"x":1.5,"label?":"x","color?":"..."}], "intervals?": [{"from":0,"to":3,"label?":"...","openLeft?":true,"openRight?":false}], "title?": "..."}',
-        "proof-ladder":      '{"steps": [{"statement":"...","justification":"...","kind?":"qed"}], "title?": "Proof", "given?": "...", "prove?": "..."}',
-        "annotated-quote":   '{"quote": "...", "annotations?": [{"phrase":"<exact substring>","note":"..."}], "source?": "..."}',
-        "drag-order":        '{"prompt": "...", "items": [{"id":"1","label":"..."}], "correct_order": ["1","2","3"]}',
-        "fill-in-blank":     '{"template": "...{{0}}... {{1}}...", "blanks": [{"accept":["x","X"],"placeholder?":"..."}], "hint?": "..."}',
-        "match-pairs":       '{"prompt": "...", "pairs": [{"id":"a","left":"...","right":"..."}]}',
-        "parameter-slider":  '{"label": "...", "min": 0, "max": 10, "step?": 0.1, "default?": 5, "formula_tex?": "<latex>", "expr?": "<JS expr in v>"}',
-        "build-equation":    '{"prompt": "...", "tokens": [{"id":"a","label":"a"},{"id":"b","math":"<latex>"}], "correct": ["a","b"]}',
-        "estimate-range":    '{"question": "...", "actual": 42, "min?": 0, "max?": 100, "unit?": "", "generous_width?": 10}',
-        "confidence-poll":   '{"question": "...", "options": [{"label":"guess","commentary?":"..."}], "commentary?": "..."}',
-        "stamp":             '{"label": "KEY", "tone?": "accent|warn|ok|info"}',
-        "tag":               '{"label": "...", "tone?": "mute|accent|warn|ok|info"}',
-        "paper-rule":        '{"glyph?": "§"}',
-        "marginalia":        '{"text": "..."}',
-        "fig-caption":       '{"text": "...", "number?": 3}',
-        # Chem visuals
-        "molecule-diagram":  '{"atoms": [{"id":"a1","x":0,"y":0,"el":"C","charge?":0,"lonePairs?":0}], "bonds?": [{"a":"a1","b":"a2","order?":1,"kind?":"wedge|dash"}], "highlights?": ["a1", 0], "arrows?": [{"from":"a1","to":"a2","kind?":"half","curve?":0.4}], "label?": "...", "caption?": "..."}',
-        "reaction-equation": '{"reactants": ["..."], "products": ["..."], "reagents?": "...", "conditions?": "...", "equilibrium?": false, "label?": "...", "caption?": "..."}',
-        "arrow-pushing":     '{"steps": [{"label":"...","body?":"...","diagram?":"<pre-rendered HTML>"}], "title?": "..."}',
-        "energy-diagram":    '{"nodes": [{"label":"reactants","energy":0,"kind?":"min|ts"}], "title?": "...", "delta_g?": "−3 kcal/mol", "delta_g_dagger?": "+5 kcal/mol", "caption?": "..."}',
-        "orbital-diagram":   '{"levels": [{"label":"1s","orbitals":[{"electrons":2}]}], "title?": "...", "caption?": "..."}',
-        "ph-scale":          '{"points?": [{"ph":1,"label":"Stomach"}], "title?": "..."}',
-        "periodic-snippet":  '{"highlight?": ["C","H","N","O","P","S"], "notes?": {"C":"4"}, "title?": "..."}',
-        # Chem interactives
-        "balance-equation":  '{"reactants": ["CH4","O2"], "products": ["CO2","H2O"], "correct?": [1,2,1,2]}',
-        "isomer-spotter":    '{"prompt": "...", "target?": "<HTML>", "candidates": [{"id":"a","label":"A","diagram":"<HTML>","isMatch":true,"reason?":"..."}]}',
-        "titration-curve":   '{"label?": "...", "acid_vol?": 25, "acid_conc?": 0.1, "base_conc?": 0.1, "pka?": 4.76, "max_base?": 50}',
-        "electron-config":   '{"element": "Carbon", "atomic_number": 6, "correct_config": [{"label":"1s","slots":1},{"label":"2s","slots":1},{"label":"2p","slots":3}]}',
-        # ML pack
-        "confusion-matrix":  '{"classes": ["neg","neu","pos"], "counts": [[82,12,6],[10,70,20],[4,14,82]], "title?": "...", "normalize?": false, "caption?": "..."}',
-        "loss-curve":        '{"series": [{"label":"train","data":[1.5,1.0,0.7,0.5]},{"label":"val","data":[1.4,1.1,0.9,0.85]}], "x_label?": "epoch", "y_label?": "loss", "title?": "...", "caption?": "..."}',
-        "neural-net-diagram":'{"layers": [{"label":"input · 4","units":4},{"label":"hidden · 8","units":8},{"label":"output · 3","units":3}], "title?": "...", "caption?": "..."}',
-        "attention-matrix":  '{"row_tokens": ["The","cat"], "col_tokens": ["The","cat"], "weights": [[0.5,0.3],[0.4,0.5]], "title?": "...", "caption?": "..."}',
-        "embedding-scatter": '{"points": [{"x":1.2,"y":2.1,"label":"cat","group":"A"}], "title?": "...", "caption?": "..."}',
-        # CS pack
-        "code-block":        '{"lines": ["def fib(n):","    return n if n<2 else fib(n-1)+fib(n-2)"], "language?": "python", "annotations?": [{"line":1,"text":"base case"}], "title?": "...", "caption?": "..."}',
-        "call-stack":        '{"frames": [{"fn":"main","args":[{"value":3}]},{"fn":"fib","args":[{"value":2}],"locals":[{"name":"n","value":2}]}], "title?": "...", "caption?": "..."}',
-        "memory-layout":     '{"regions": [{"name":"stack","items":[{"addr":"0x7ffe","label":"x","value":42}]},{"name":"heap","items":[{"addr":"0x6010","label":"buf"}]}], "title?": "...", "caption?": "..."}',
-        "binary-tree":       '{"root": {"value":5,"left":{"value":3},"right":{"value":7,"left":{"value":6},"right":{"value":9}}}, "title?": "...", "caption?": "..."}',
-        "process-timeline":  '{"processes": [{"name":"P1","segments":[{"start":0,"dur":3,"kind":"run"},{"start":3,"dur":2,"kind":"wait"}]}], "total_time?": 20, "title?": "...", "caption?": "..."}',
-        # Phil pack
-        "argument-map":      '{"premises": ["All men are mortal","Socrates is a man"], "conclusion": "Socrates is mortal", "title?": "...", "caption?": "..."}',
-        "truth-table":       '{"vars": ["P","Q"], "formula": "P → Q", "rows": [{"values":[true,true],"result":true},{"values":[true,false],"result":false}], "title?": "...", "caption?": "..."}',
-        "venn-logic":        '{"sets?": [{"label":"A","cx":130,"cy":110,"r":70},{"label":"B","cx":230,"cy":110,"r":70}], "shaded?": ["AB"], "title?": "...", "caption?": "..."}',
-        "dialectic-tree":    '{"thesis": "...", "antithesis": "...", "synthesis": "...", "title?": "...", "caption?": "..."}',
-        "quote-pull":        '{"quote": "...", "attribution?": "...", "work?": "...", "caption?": "..."}',
-        # Math pack
-        "proof-block":       '{"steps": [{"statement":"a²+b²=c²","justification":"Pythagoras"}], "given?": ["right triangle ABC"], "qed?": true, "title?": "...", "caption?": "..."}',
-        "matrix-view":       '{"rows": [[1,2],[3,4]], "label?": "A", "highlight?": {"cell":[0,1]}, "title?": "...", "caption?": "..."}',
-        "graph-plot":        '{"fns": [{"points":[[-2,4],[-1,1],[0,0],[1,1],[2,4]],"color?":"...","label?":"y=x²"}], "x_range?": [-5,5], "y_range?": [-5,5], "marks?": [{"x":0,"y":0,"label":"origin"}], "title?": "...", "caption?": "..."}',
-        "integral-area":     '{"points": [[0,0],[1,1],[2,4],[3,9]], "a": 0, "b": 3, "x_range?": [-1,5], "y_range?": [-1,10], "title?": "...", "caption?": "..."}',
-        # Lit pack
-        "passage-annotated": '{"passage": "Long passage text here.", "annotations?": [{"phrase":"passage","note":"meta-reference"}], "attribution?": "...", "title?": "...", "caption?": "..."}',
-        "character-graph":   '{"nodes": [{"id":"a","label":"Hamlet","x":120,"y":120}], "edges": [{"from":"a","to":"b","kind":"family","label":"son"}], "title?": "...", "caption?": "..."}',
-        "theme-weave":       '{"chapters": ["Ch.1","Ch.2","Ch.3"], "themes": ["guilt","exile"], "presence": [[0.2,0.6,0.9],[0.8,0.4,0.1]], "title?": "...", "caption?": "..."}',
-        "style-spectrum":    '{"axis_x": ["concrete","abstract"], "axis_y": ["sparse","dense"], "items": [{"label":"Hemingway","x":-0.7,"y":-0.4}], "title?": "...", "caption?": "..."}',
-    }
-    names = [n for n in BLOCK_NAMES if (only is None or n in only)]
-    lines = []
-    for name in names:
-        schema = schemas.get(name, "{}")
-        lines.append(f"- `bart-{name}`: {schema}")
-    return "\n".join(lines)
+    from .block_schemas import BLOCK_SCHEMAS, catalog_entry
+
+    names = [
+        n for n in BLOCK_NAMES
+        if n in BLOCK_SCHEMAS and (only is None or n in only)
+    ]
+    return "\n".join(catalog_entry(n) for n in names)
 
 
 # Per-artifact whitelists — keep briefs short.
