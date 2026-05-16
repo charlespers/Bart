@@ -1,13 +1,16 @@
 """Path resolution and run-directory layout."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MATERIALS = ROOT / "materials"
-OUTPUT = ROOT / "output"
+# BART_MATERIALS / BART_OUTPUT let the website server run bart with per-user
+# workspaces without forking the CLI. Defaults match the repo layout.
+MATERIALS = Path(os.environ["BART_MATERIALS"]).resolve() if os.environ.get("BART_MATERIALS") else ROOT / "materials"
+OUTPUT = Path(os.environ["BART_OUTPUT"]).resolve() if os.environ.get("BART_OUTPUT") else ROOT / "output"
 PROMPTS = ROOT / "prompts"
 LOGS = ROOT / "logs"
 

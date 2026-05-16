@@ -88,12 +88,14 @@ window.MathJax = {
 _TOPBAR_TMPL = """\
 <header class="topbar">
   <div class="topbar-crumbs">
-    <a href="{rel}/index.html">bart<span style="color:var(--accent)">.</span></a>
+    <a href="/app" title="back to bart">bart<span style="color:var(--accent)">.</span></a>
     <span class="sep">/</span>
     <span>{crumb_subject}</span>
     {extra_crumb}
   </div>
   <div class="topbar-actions">
+    <a class="btn" href="{rel}/index.html" title="This packet's dashboard">Dashboard</a>
+    <a class="btn" href="{rel}/download.zip" title="Download a copy of this packet as a zip" download>Download</a>
     <a class="btn btn-icon" href="{rel}/sandbox.html" id="sandbox-link" title="Sandbox — paste markdown, see live preview">⌗</a>
     <button class="btn btn-icon" id="search-btn" title="Search (⌘K)">⌕</button>
     <button class="btn btn-icon" id="theme-toggle" title="Theme">light</button>
@@ -104,7 +106,7 @@ _TOPBAR_TMPL = """\
 
 _SIDEBAR_TMPL = """\
 <aside class="sidebar">
-  <a class="sidebar-brand" href="{rel}/index.html">
+  <a class="sidebar-brand" href="/app" title="back to bart">
     <img src="{rel}/assets/bart-loaf.svg" alt="bart" />
     <span class="wordmark">bart<span class="dot">.</span></span>
   </a>
