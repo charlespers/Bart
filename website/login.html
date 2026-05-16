@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bart. — log in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,ital,wght@8..60,1,400;8..60,1,500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  body {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 1fr;
+    overflow: hidden;
+  }
+
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(900px 600px at 12% 8%,    rgba(255,255,255,0.55), transparent 60%),
+      radial-gradient(900px 700px at 88% 100%,  rgba(201,100,66,0.06), transparent 60%);
+  }
+
+  .page {
+    display: grid;
+    grid-template-columns: 1.05fr 1fr;
+    min-height: 100vh;
+    position: relative; z-index: 1;
+  }
+
+  /* ─── left: warm bart side ─── */
+  .left {
+    position: relative;
+    padding: 40px 56px 48px;
+    display: flex; flex-direction: column;
+    background:
+      radial-gradient(60% 60% at 30% 30%, rgba(201,100,66,0.07), transparent 70%),
+      var(--cream-hi);
+    border-right: 1px solid var(--cream-edge);
+    overflow: hidden;
+  }
+  .left .mark { font-size: 22px; }
+  .left .greeting {
+    margin: auto 0;
+    max-width: 480px;
+  }
+  .left .greeting .bart {
+    width: 140px; height: auto;
+    margin-bottom: 28px;
+    filter: drop-shadow(0 14px 30px rgba(154,70,40,0.10));
+    animation: bart-breathe 4.5s ease-in-out infinite;
+  }
+  .left .greeting h1 {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: clamp(36px, 4vw, 52px);
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    color: var(--ink);
+    margin: 0 0 18px;
+    text-wrap: balance;
+  }
+  .left .greeting h1 em {
+    font-family: var(--font-serif);
+    font-style: italic; color: var(--accent); font-weight: 500;
+  }
+  .left .greeting p {
+    color: var(--ink-mute);
+    font-size: 17px;
+    line-height: 1.55;
+    max-width: 420px;
+    text-wrap: pretty;
+  }
+  .left .greeting p em { font-style: normal; color: var(--accent); font-weight: 500; }
+
+  .left .quote {
+    margin-top: 36px;
+    padding: 20px 22px;
+    border-left: 3px solid var(--accent);
+    background: var(--cream);
+    border-radius: 6px;
+    font-family: var(--font-serif);
+    font-style: italic;
+    color: var(--ink-soft);
+    font-size: 15.5px;
+    line-height: 1.55;
+    max-width: 460px;
+  }
+  .left .quote .by {
+    display: block;
+    font-family: var(--font-mono); font-style: normal;
+    font-size: 11px; color: var(--ink-mute); letter-spacing: 0.08em;
+    margin-top: 10px; text-transform: uppercase;
+  }
+
+  .left .foot-tip {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    letter-spacing: 0.08em;
+    margin-top: 30px;
+  }
+
+  /* ─── right: form side ─── */
+  .right {
+    padding: 40px 56px 48px;
+    display: flex; flex-direction: column;
+    align-items: stretch;
+    background: var(--cream);
+  }
+  .right .top {
+    display: flex; justify-content: flex-end; align-items: center;
+    font-family: var(--font-mono); font-size: 13px; color: var(--ink-mute);
+    gap: 14px;
+  }
+  .right .top a {
+    color: var(--accent); text-decoration: none; font-weight: 500;
+  }
+  .right .top a:hover { color: var(--accent-lo); text-decoration: underline; }
+  .right .form-wrap {
+    margin: auto;
+    width: 100%;
+    max-width: 420px;
+    padding: 30px 0;
+  }
+  .right h2 {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 30px;
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    margin: 0 0 8px;
+  }
+  .right .sub {
+    color: var(--ink-mute);
+    font-size: 15px;
+    margin-bottom: 28px;
+  }
+
+  /* ─── form controls ─── */
+  .field { display: block; margin-bottom: 14px; }
+  .field label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.12em;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+  .field .input-wrap {
+    position: relative;
+    display: flex; align-items: center;
+  }
+  .field input {
+    appearance: none; width: 100%; box-sizing: border-box;
+    background: var(--cream-hi);
+    border: 0;
+    border-radius: 12px;
+    padding: 14px 16px;
+    font-family: var(--font-sans);
+    font-size: 15px;
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1.5px var(--cream-edge);
+    transition: box-shadow .14s ease, background .14s ease;
+  }
+  .field input::placeholder { color: var(--ink-faint); }
+  .field input:hover { box-shadow: inset 0 0 0 1.5px var(--ink-faint); }
+  .field input:focus {
+    outline: 0; background: var(--cream-hi);
+    box-shadow: inset 0 0 0 2px var(--accent), 0 0 0 4px var(--accent-tint);
+  }
+  .field .reveal-btn {
+    position: absolute; right: 10px;
+    background: transparent; border: 0; cursor: pointer;
+    color: var(--ink-mute); padding: 6px; border-radius: 6px;
+  }
+  .field .reveal-btn:hover { color: var(--accent); }
+  .field .help {
+    margin-top: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.04em;
+  }
+  .field .help.error { color: var(--accent-lo); }
+
+  .row-between {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 6px 0 18px;
+  }
+  .checkbox {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--font-sans); font-size: 13.5px; color: var(--ink-soft);
+    cursor: pointer; user-select: none;
+  }
+  .checkbox input {
+    appearance: none;
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    background: var(--cream-hi);
+    box-shadow: inset 0 0 0 1.5px var(--cream-edge);
+    display: inline-grid; place-content: center;
+    cursor: pointer;
+  }
+  .checkbox input::before {
+    content: ""; width: 9px; height: 9px;
+    border-radius: 2px; background: var(--accent);
+    transform: scale(0); transition: transform .12s ease;
+  }
+  .checkbox input:checked { box-shadow: inset 0 0 0 1.5px var(--accent); }
+  .checkbox input:checked::before { transform: scale(1); }
+  .forgot {
+    color: var(--accent); font-size: 13.5px; text-decoration: none; font-weight: 500;
+    font-family: var(--font-sans);
+  }
+  .forgot:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  .submit {
+    width: 100%;
+    border: 0;
+    background: var(--accent);
+    color: var(--cream-hi);
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 15.5px;
+    padding: 15px;
+    border-radius: 12px;
+    cursor: pointer;
+    margin-top: 6px;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.35) inset,
+      0 10px 24px rgba(201,100,66,0.28),
+      0 1px 2px rgba(154,70,40,0.4);
+    transition: transform .14s ease, background .14s ease;
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  }
+  .submit:hover { background: var(--accent-hi); transform: translateY(-1px); }
+  .submit:active { transform: translateY(0); }
+  .submit .arrow { width: 16px; height: 16px; transform: translateY(1px); }
+  .submit.loading { color: rgba(251,249,244,0.6); pointer-events: none; }
+  .submit.loading::after {
+    content: "";
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--cream-hi);
+    border-top-color: transparent;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* divider */
+  .divider {
+    display: flex; align-items: center; gap: 12px;
+    color: var(--ink-faint);
+    font-family: var(--font-mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.18em;
+    margin: 26px 0;
+  }
+  .divider::before, .divider::after {
+    content: ""; flex: 1; height: 1px; background: var(--cream-edge);
+  }
+
+  .google {
+    width: 100%;
+    appearance: none;
+    background: var(--cream-hi);
+    color: var(--ink);
+    border: 0;
+    border-radius: 12px;
+    padding: 14px;
+    font-family: var(--font-sans); font-weight: 600; font-size: 14.5px;
+    box-shadow: inset 0 0 0 1.5px var(--cream-edge);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+    transition: box-shadow .14s ease, background .14s ease;
+  }
+  .google:hover { box-shadow: inset 0 0 0 1.5px var(--ink-faint); }
+  .google svg { width: 18px; height: 18px; }
+
+  .switch-mode {
+    margin-top: 30px;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    color: var(--ink-mute);
+    text-align: center;
+  }
+  .switch-mode a {
+    color: var(--accent); text-decoration: none; font-weight: 600;
+    cursor: pointer;
+  }
+  .switch-mode a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  .legal {
+    margin-top: 24px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+    line-height: 1.6;
+    text-align: center;
+  }
+  .legal a { color: var(--ink-mute); text-decoration: underline; text-decoration-color: var(--cream-edge); text-underline-offset: 3px; }
+  .legal a:hover { color: var(--accent); }
+
+  /* ─── responsive ─── */
+  @media (max-width: 900px) {
+    .page { grid-template-columns: 1fr; }
+    .left { padding: 32px 24px 24px; border-right: 0; border-bottom: 1px solid var(--cream-edge); }
+    .left .greeting { margin: 8px 0 0; }
+    .left .greeting .bart { width: 96px; margin-bottom: 16px; }
+    .left .quote { display: none; }
+    .left .foot-tip { display: none; }
+    .right { padding: 32px 24px 40px; }
+    .right .top { justify-content: flex-start; margin-bottom: 14px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <aside class="left">
+    <a href="/" class="mark" style="text-decoration: none;">
+      bart<span class="dot">.</span>
+    </a>
+
+    <div class="greeting">
+      <svg class="bart" viewBox="0 0 220 200">
+        <defs>
+          <radialGradient id="lb-body" cx="36%" cy="28%" r="80%">
+            <stop offset="0%" stop-color="#fbf9f4"/>
+            <stop offset="50%" stop-color="#f4f1ea"/>
+            <stop offset="100%" stop-color="#d9d3c4"/>
+          </radialGradient>
+          <radialGradient id="lb-acc" cx="36%" cy="30%" r="80%">
+            <stop offset="0%" stop-color="#e88a6a"/>
+            <stop offset="55%" stop-color="#c96442"/>
+            <stop offset="100%" stop-color="#9a4628"/>
+          </radialGradient>
+          <radialGradient id="lb-floor" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="rgba(34,30,25,0.30)"/>
+            <stop offset="60%" stop-color="rgba(34,30,25,0.08)"/>
+            <stop offset="100%" stop-color="rgba(34,30,25,0)"/>
+          </radialGradient>
+        </defs>
+        <ellipse cx="110" cy="178" rx="80" ry="9" fill="url(#lb-floor)"/>
+        <rect x="70"  y="158" width="22" height="16" rx="8" fill="url(#lb-acc)"/>
+        <rect x="128" y="158" width="22" height="16" rx="8" fill="url(#lb-acc)"/>
+        <rect x="22" y="60" width="176" height="106" rx="53" fill="url(#lb-body)"/>
+        <ellipse cx="78" cy="84" rx="48" ry="14" fill="#fff" opacity="0.45"/>
+        <ellipse cx="110" cy="56" rx="11" ry="9" fill="url(#lb-acc)"/>
+        <g class="bart-blink" style="transform-origin: 110px 106px;">
+          <ellipse cx="86"  cy="106" rx="5" ry="8.5" fill="#221f1b"/>
+          <ellipse cx="134" cy="106" rx="5" ry="8.5" fill="#221f1b"/>
+          <ellipse cx="84"  cy="103" rx="1.4" ry="1.9" fill="#fff" opacity="0.95"/>
+          <ellipse cx="132" cy="103" rx="1.4" ry="1.9" fill="#fff" opacity="0.95"/>
+        </g>
+        <path d="M 100 128 Q 110 136 120 128" fill="none" stroke="#221f1b" stroke-width="2.4" stroke-linecap="round"/>
+        <ellipse cx="68"  cy="124" rx="6" ry="2.6" fill="#c96442" opacity="0.28"/>
+        <ellipse cx="152" cy="124" rx="6" ry="2.6" fill="#c96442" opacity="0.28"/>
+      </svg>
+
+      <h1 id="welcome">welcome back.<br/><em>let's keep studying.</em></h1>
+      <p id="welcome-sub">your past runs, materials, and study packets are right where you left them.</p>
+
+      <div class="quote">
+        "i went from staring at 12 pdfs to actually understanding the material in one afternoon."
+        <span class="by">— sam · biochem · spring '26</span>
+      </div>
+    </div>
+
+    <div class="foot-tip">v0.4.2 · made with care</div>
+  </aside>
+
+  <main class="right">
+    <div class="top">
+      <span id="switch-prompt">new here?</span>
+      <a id="switch-link" href="?mode=signup">create an account</a>
+    </div>
+
+    <div class="form-wrap">
+      <h2 id="form-title">log in</h2>
+      <div class="sub" id="form-sub">pick up where you left off.</div>
+
+      <button type="button" class="google" id="google">
+        <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+          <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34 6 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/>
+          <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16.1 18.9 13 24 13c3.1 0 5.9 1.2 8 3l5.7-5.7C34 6 29.3 4 24 4 16.1 4 9.3 8.4 6.3 14.7z"/>
+          <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.5 26.7 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.3 39.6 16.1 44 24 44z"/>
+          <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.2 5.6l6.2 5.2C40.9 35.5 44 30.2 44 24c0-1.3-.1-2.4-.4-3.5z"/>
+        </svg>
+        continue with google
+      </button>
+
+      <div class="divider">or</div>
+
+      <form id="auth-form" autocomplete="on" novalidate>
+        <div class="field" id="name-field" style="display:none;">
+          <label for="name">your name</label>
+          <div class="input-wrap">
+            <input id="name" name="name" type="text" placeholder="how should bart greet you?" autocomplete="name" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="email">email</label>
+          <div class="input-wrap">
+            <input id="email" name="email" type="email" placeholder="you@school.edu" autocomplete="email" required />
+          </div>
+          <div class="help" id="email-help"></div>
+        </div>
+
+        <div class="field">
+          <label for="password">password</label>
+          <div class="input-wrap">
+            <input id="password" name="password" type="password" placeholder="••••••••••••" autocomplete="current-password" required />
+            <button class="reveal-btn" id="reveal" type="button" aria-label="show password">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" stroke="currentColor" stroke-width="1.6"/>
+                <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/>
+              </svg>
+            </button>
+          </div>
+          <div class="help" id="password-help"></div>
+        </div>
+
+        <div class="row-between">
+          <label class="checkbox">
+            <input type="checkbox" id="remember" checked />
+            <span>remember me</span>
+          </label>
+          <a href="#" id="forgot" class="forgot">forgot password?</a>
+        </div>
+
+        <button class="submit" id="submit" type="submit">
+          <span id="submit-label">log in</span>
+          <svg class="arrow" viewBox="0 0 24 24" fill="none">
+            <path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        <div class="legal" id="legal" style="display:none;">
+          by signing up you agree to bart's
+          <a href="#" onclick="event.preventDefault()">terms</a>
+          and
+          <a href="#" onclick="event.preventDefault()">privacy policy</a>.
+        </div>
+      </form>
+
+      <div class="switch-mode">
+        <span id="alt-prompt">don't have an account?</span>
+        <a id="alt-link" href="?mode=signup">sign up</a>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  // ── Mode toggle (login / signup) via ?mode=signup ──
+  const url = new URL(window.location.href);
+  let mode = url.searchParams.get("mode") === "signup" ? "signup" : "login";
+
+  const els = {
+    welcome:      document.getElementById("welcome"),
+    welcomeSub:   document.getElementById("welcome-sub"),
+    formTitle:    document.getElementById("form-title"),
+    formSub:      document.getElementById("form-sub"),
+    submitLabel:  document.getElementById("submit-label"),
+    nameField:    document.getElementById("name-field"),
+    legal:        document.getElementById("legal"),
+    switchPrompt: document.getElementById("switch-prompt"),
+    switchLink:   document.getElementById("switch-link"),
+    altPrompt:    document.getElementById("alt-prompt"),
+    altLink:      document.getElementById("alt-link"),
+    password:     document.getElementById("password"),
+  };
+
+  function renderMode() {
+    if (mode === "signup") {
+      els.welcome.innerHTML = "make studying a little <em>kinder</em>.";
+      els.welcomeSub.textContent = "drop your materials. let bart figure out the rest.";
+      els.formTitle.textContent = "create your account";
+      els.formSub.textContent = "free while we're in beta — no credit card.";
+      els.submitLabel.textContent = "create account";
+      els.nameField.style.display = "block";
+      els.legal.style.display = "block";
+      els.password.setAttribute("autocomplete", "new-password");
+      els.switchPrompt.textContent = "already have one?";
+      els.switchLink.textContent = "log in";
+      els.switchLink.setAttribute("href", "?mode=login");
+      els.altPrompt.textContent = "already have an account?";
+      els.altLink.textContent = "log in";
+      els.altLink.setAttribute("href", "?mode=login");
+    } else {
+      els.welcome.innerHTML = "welcome back.<br/><em>let's keep studying.</em>";
+      els.welcomeSub.textContent = "your past runs, materials, and study packets are right where you left them.";
+      els.formTitle.textContent = "log in";
+      els.formSub.textContent = "pick up where you left off.";
+      els.submitLabel.textContent = "log in";
+      els.nameField.style.display = "none";
+      els.legal.style.display = "none";
+      els.password.setAttribute("autocomplete", "current-password");
+      els.switchPrompt.textContent = "new here?";
+      els.switchLink.textContent = "create an account";
+      els.switchLink.setAttribute("href", "?mode=signup");
+      els.altPrompt.textContent = "don't have an account?";
+      els.altLink.textContent = "sign up";
+      els.altLink.setAttribute("href", "?mode=signup");
+    }
+  }
+
+  function setMode(next, push) {
+    mode = next;
+    const u = new URL(window.location.href);
+    u.searchParams.set("mode", next);
+    if (push) history.pushState({ mode: next }, "", u.toString());
+    renderMode();
+  }
+
+  // intercept anchor clicks to toggle without full reload
+  document.getElementById("switch-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    setMode(mode === "signup" ? "login" : "signup", true);
+  });
+  document.getElementById("alt-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    setMode(mode === "signup" ? "login" : "signup", true);
+  });
+  window.addEventListener("popstate", (e) => {
+    const m = new URL(window.location.href).searchParams.get("mode");
+    mode = m === "signup" ? "signup" : "login";
+    renderMode();
+  });
+
+  // ── password reveal ──
+  const reveal = document.getElementById("reveal");
+  reveal.addEventListener("click", () => {
+    const p = els.password;
+    p.type = p.type === "password" ? "text" : "password";
+    reveal.style.color = p.type === "text" ? "var(--accent)" : "";
+  });
+
+  // ── forgot ──
+  document.getElementById("forgot").addEventListener("click", (e) => {
+    e.preventDefault();
+    const help = document.getElementById("email-help");
+    const email = document.getElementById("email").value.trim();
+    if (!email) {
+      help.classList.add("error");
+      help.textContent = "type your email above first, then click forgot password.";
+      document.getElementById("email").focus();
+      return;
+    }
+    help.classList.remove("error");
+    help.textContent = "we sent a reset link to " + email + ". (this is a prototype.)";
+  });
+
+  // ── google (not yet wired) ──
+  document.getElementById("google").addEventListener("click", () => {
+    const help = document.getElementById("email-help");
+    help.classList.add("error");
+    help.textContent = "google sign-in isn't hooked up yet — use email + password for now.";
+  });
+
+  // ── submit ──
+  document.getElementById("auth-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = document.getElementById("email").value.trim();
+    const pw    = els.password.value;
+    const name  = (document.getElementById("name") || {}).value || "";
+    const emailHelp = document.getElementById("email-help");
+    const pwHelp    = document.getElementById("password-help");
+    emailHelp.classList.remove("error"); emailHelp.textContent = "";
+    pwHelp.classList.remove("error");    pwHelp.textContent = "";
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      emailHelp.classList.add("error"); emailHelp.textContent = "that email doesn't look right.";
+      return;
+    }
+    if (pw.length < 6) {
+      pwHelp.classList.add("error"); pwHelp.textContent = "password should be at least 6 characters.";
+      return;
+    }
+    const btn = document.getElementById("submit");
+    btn.classList.add("loading");
+    document.getElementById("submit-label").textContent = mode === "signup" ? "creating account…" : "logging in…";
+
+    const url = mode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+    const body = mode === "signup"
+      ? { email, password: pw, name: name.trim() }
+      : { email, password: pw };
+
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        credentials: "same-origin",
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({ detail: "something went wrong." }));
+        btn.classList.remove("loading");
+        document.getElementById("submit-label").textContent = mode === "signup" ? "create account" : "log in";
+        const target = (r.status === 409 || /email/i.test(j.detail || "")) ? emailHelp : pwHelp;
+        target.classList.add("error");
+        target.textContent = j.detail || "something went wrong.";
+        return;
+      }
+      window.location.href = "/app";
+    } catch (err) {
+      btn.classList.remove("loading");
+      document.getElementById("submit-label").textContent = mode === "signup" ? "create account" : "log in";
+      pwHelp.classList.add("error");
+      pwHelp.textContent = "couldn't reach the server. is it running?";
+    }
+  });
+
+  renderMode();
+</script>
+
+</body>
+</html>

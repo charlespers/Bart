@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bart. — the cutest way to study</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="tokens.css" />
+<style>
+  body { overflow-x: hidden; }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(1100px 700px at 18% 8%,   rgba(255,255,255,0.55), transparent 60%),
+      radial-gradient(1000px 800px at 82% 92%,  rgba(201,100,66,0.06), transparent 60%);
+  }
+
+  /* ─── topbar ─── */
+  .nav {
+    position: sticky; top: 0; z-index: 30;
+    backdrop-filter: blur(10px) saturate(1.05);
+    background: rgba(244,241,234,0.74);
+    border-bottom: 1px solid rgba(217,211,196,0.55);
+  }
+  .nav-inner {
+    max-width: 1200px; margin: 0 auto;
+    padding: 16px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .nav .mark { font-size: 22px; }
+  .nav .links { display: flex; align-items: center; gap: 26px; }
+  .nav .links a {
+    font-family: var(--font-sans); font-size: 14px; color: var(--ink-soft);
+    text-decoration: none; font-weight: 500;
+  }
+  .nav .links a:hover { color: var(--accent); }
+  .nav .cta { padding: 10px 18px; font-size: 13.5px; }
+
+  /* ─── hero ─── */
+  .hero {
+    position: relative;
+    padding: 60px 32px 100px;
+    max-width: 1200px; margin: 0 auto;
+    text-align: center;
+    z-index: 1;
+  }
+  .eyebrow {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    color: var(--accent-lo);
+    background: var(--accent-tint);
+    padding: 7px 14px;
+    border-radius: 999px;
+    margin: 20px 0 22px;
+    text-transform: lowercase;
+  }
+  .eyebrow .pulse {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent); margin-right: 8px; vertical-align: 1px;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%     { opacity: 0.55; transform: scale(0.8); }
+  }
+
+  .hero .hero-line {
+    margin: 12px auto 0;
+    max-width: 920px;
+    font-weight: 700;
+    font-size: clamp(36px, 6vw, 68px);
+    letter-spacing: -0.032em;
+    line-height: 1.04;
+    color: var(--ink);
+    text-wrap: balance;
+  }
+  .hero .hero-line em {
+    font-style: normal;
+    color: var(--accent);
+    position: relative;
+    white-space: nowrap;
+  }
+  .hero .hero-line em::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: 4%;
+    height: 12%;
+    background: var(--accent-tint);
+    z-index: -1;
+    border-radius: 4px;
+  }
+
+  .hero .cta-row {
+    display: flex; gap: 14px; justify-content: center; align-items: center;
+    margin-top: 36px; flex-wrap: wrap;
+  }
+  .hero .cta-row .small {
+    font-family: var(--font-mono);
+    font-size: 12px; color: var(--ink-mute); letter-spacing: 0.04em;
+  }
+
+  /* ─── bart hero scene ─── */
+  .scene {
+    position: relative;
+    height: 380px;
+    margin: 0 auto 8px;
+    max-width: 920px;
+  }
+  .scene .ground {
+    position: absolute;
+    left: 50%; bottom: 36px;
+    width: 320px; height: 22px;
+    transform: translateX(-50%);
+    background: radial-gradient(50% 50% at 50% 50%, rgba(34,30,25,0.13), transparent 70%);
+  }
+  .scene .bart {
+    position: absolute;
+    left: 50%; bottom: 56px;
+    transform: translateX(-50%);
+    animation: bart-breathe 4.5s ease-in-out infinite;
+    filter: drop-shadow(0 14px 30px rgba(154,70,40,0.10));
+    z-index: 2;
+  }
+  .scene .bart svg { width: 240px; height: auto; }
+
+  /* drifting file chips */
+  .driftfile {
+    position: absolute;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 14px 9px 12px;
+    background: var(--cream-hi);
+    box-shadow:
+      0 1px 0 rgba(154,70,40,0.06),
+      0 12px 28px rgba(30,20,14,0.10),
+      inset 0 0 0 1px var(--cream-edge);
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-soft);
+    z-index: 1;
+    animation: drift 12s ease-in-out infinite;
+  }
+  .driftfile .icn {
+    width: 18px; height: 18px;
+    border-radius: 4px;
+    background: var(--accent-tint);
+    color: var(--accent-lo);
+    font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
+    display: inline-flex; align-items: center; justify-content: center;
+    text-transform: uppercase;
+  }
+  @keyframes drift {
+    0%   { transform: translateY(0)    rotate(var(--r, 0deg)); }
+    50%  { transform: translateY(-12px) rotate(calc(var(--r, 0deg) + 1.5deg)); }
+    100% { transform: translateY(0)    rotate(var(--r, 0deg)); }
+  }
+  .df-1 { top:  18%; left:  6%; --r: -7deg; animation-delay: -0.5s; }
+  .df-2 { top:   8%; right: 12%; --r: 5deg;  animation-delay: -2.8s; }
+  .df-3 { top:  46%; left:  -1%; --r: -3deg; animation-delay: -1.4s; }
+  .df-4 { bottom:30%; right:  3%; --r: 8deg; animation-delay: -3.1s; }
+  .df-5 { top:  62%; left:  9%; --r: 11deg; animation-delay: -4.2s; }
+  .df-6 { top:  72%; right: 14%; --r: -4deg; animation-delay: -2.0s; }
+
+  /* tiny arrows from files to bart */
+  .scene .arc {
+    position: absolute; inset: 0; z-index: 0;
+    pointer-events: none;
+  }
+  .scene .arc path {
+    fill: none; stroke: var(--accent); stroke-width: 1.4;
+    stroke-dasharray: 3 6; opacity: 0.5;
+    animation: dash 14s linear infinite;
+  }
+  @keyframes dash { to { stroke-dashoffset: -200; } }
+
+  /* ─── how it works ─── */
+  .section { max-width: 1100px; margin: 0 auto; padding: 110px 32px; position: relative; z-index: 1; }
+  .section-eyebrow {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 12px; letter-spacing: 0.18em;
+    color: var(--ink-faint); text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .section-title {
+    text-align: center;
+    font-size: clamp(32px, 4.4vw, 52px);
+    letter-spacing: -0.025em;
+    line-height: 1.05;
+    color: var(--ink);
+    margin: 0 auto 18px;
+    max-width: 760px;
+    font-weight: 700;
+    text-wrap: balance;
+  }
+  .section-title em { font-style: normal; color: var(--accent); }
+  .section-lede {
+    text-align: center;
+    max-width: 600px; margin: 0 auto 64px;
+    color: var(--ink-mute);
+    font-size: 17px; line-height: 1.55;
+    text-wrap: pretty;
+  }
+
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 36px;
+    margin-top: 60px;
+  }
+  .step { position: relative; padding: 0 8px; }
+  .step .n {
+    font-family: var(--font-mono);
+    font-size: 12px; color: var(--accent);
+    letter-spacing: 0.18em;
+    margin-bottom: 16px;
+  }
+  .step .stage {
+    aspect-ratio: 4 / 3;
+    background: var(--cream-hi);
+    border-radius: 24px;
+    box-shadow:
+      inset 0 0 0 1px var(--cream-edge),
+      0 1px 0 rgba(154,70,40,0.04);
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 18px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step h3 {
+    margin: 6px 0 8px;
+    font-size: 22px;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .step p {
+    color: var(--ink-mute);
+    font-size: 15px;
+    line-height: 1.5;
+    margin: 0;
+    text-wrap: pretty;
+  }
+
+  /* step illustrations */
+  .ill-drop {
+    width: 70%; height: 60%;
+    border: 2px dashed var(--accent);
+    border-radius: 18px;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow: visible;
+  }
+  .ill-drop .ff {
+    position: absolute;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px;
+    background: var(--cream-hi); border-radius: 999px;
+    box-shadow: 0 6px 14px rgba(30,20,14,0.08), inset 0 0 0 1px var(--cream-edge);
+    font-family: var(--font-mono); font-size: 10px; color: var(--ink-soft);
+  }
+  .ill-drop .ff .icn { width: 12px; height: 12px; border-radius: 3px; background: var(--accent-tint); color: var(--accent-lo); font-size: 7px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+  .ill-drop .ff-a { top: -14px; left: -12px; transform: rotate(-9deg); animation: drift 7s ease-in-out infinite; }
+  .ill-drop .ff-b { top: -8px; right: -8px; transform: rotate(7deg); animation: drift 7s ease-in-out -2.5s infinite; }
+  .ill-drop .ff-c { bottom: -12px; left: 30%; transform: rotate(4deg); animation: drift 7s ease-in-out -4s infinite; }
+
+  /* step 2: bart thinking */
+  .ill-think { width: 75%; height: 80%; display: flex; align-items: center; justify-content: center; position: relative; }
+  .ill-think .bart { animation: bart-breathe 4.5s ease-in-out infinite; }
+  .ill-think .bubbles { position: absolute; top: 8%; right: 4%; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+  .ill-think .bub {
+    background: var(--cream); padding: 4px 10px; border-radius: 12px;
+    font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute);
+    box-shadow: inset 0 0 0 1px var(--cream-edge);
+  }
+  .ill-think .bub.acc { color: var(--accent-lo); }
+
+  /* step 3: packet stack */
+  .ill-packet {
+    width: 70%; height: 75%;
+    position: relative;
+  }
+  .ill-packet .pg {
+    position: absolute; inset: 0;
+    background: var(--cream); border-radius: 10px;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.7) inset,
+      0 8px 24px rgba(30,20,14,0.12),
+      inset 0 0 0 1px var(--cream-edge);
+    padding: 14px;
+  }
+  .ill-packet .pg::before {
+    content: ""; display: block; height: 5px; width: 55%; background: var(--ink); border-radius: 2px;
+  }
+  .ill-packet .pg::after {
+    content: ""; display: block; margin-top: 12px;
+    height: 4px; width: 100%; background: var(--cream-edge); border-radius: 2px;
+    box-shadow:
+      0 8px 0 0 var(--cream-edge),
+      0 16px 0 0 var(--cream-edge),
+      0 24px 0 0 var(--cream-edge);
+  }
+  .ill-packet .p1 { transform: rotate(-7deg) translate(-22%, 8%); }
+  .ill-packet .p2 { transform: rotate(2deg)  translate(0%, 0%); }
+  .ill-packet .p3 { transform: rotate(8deg)  translate(22%, 12%); }
+  .ill-packet .p3 .pin {
+    position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 4px 10px rgba(201,100,66,0.45);
+  }
+
+  /* ─── what you get (sample lesson card) ─── */
+  .preview-wrap {
+    margin: 70px auto 0;
+    max-width: 1080px;
+    perspective: 1600px;
+  }
+  .preview {
+    background: var(--cream-hi);
+    border-radius: 22px;
+    box-shadow:
+      inset 0 0 0 1px var(--cream-edge),
+      0 30px 60px rgba(30,20,14,0.10),
+      0 6px 16px rgba(30,20,14,0.05);
+    overflow: hidden;
+    transform: rotateX(2deg);
+    transform-origin: top center;
+  }
+  .preview .chrome {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px;
+    background: var(--cream);
+    border-bottom: 1px solid var(--cream-edge);
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--ink-faint);
+  }
+  .preview .chrome .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--cream-edge); }
+  .preview .chrome .dot.r { background: #ed8580; }
+  .preview .chrome .dot.y { background: #f0c14d; }
+  .preview .chrome .dot.g { background: #8bc05c; }
+  .preview .chrome .url { margin-left: 18px; }
+
+  .preview-body {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    min-height: 540px;
+  }
+  .preview-side {
+    background: var(--cream);
+    border-right: 1px solid var(--cream-edge);
+    padding: 26px 22px;
+    font-family: var(--font-sans);
+  }
+  .preview-side .lab {
+    font-family: var(--font-mono);
+    font-size: 10px; color: var(--ink-faint); letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .preview-side .day {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 8px 6px; font-size: 13.5px;
+    color: var(--ink-soft);
+    border-radius: 6px;
+  }
+  .preview-side .day .n { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); }
+  .preview-side .day.active { color: var(--accent-lo); background: var(--accent-tint); font-weight: 500; }
+  .preview-side .day.active .n { color: var(--accent); }
+  .preview-side .head { font-family: var(--font-sans); font-weight: 700; font-size: 18px; color: var(--ink); margin-bottom: 18px; letter-spacing: -0.015em; }
+
+  .preview-main { padding: 32px 38px; font-family: var(--font-serif); }
+  .preview-main .crumb { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); letter-spacing: 0.08em; text-transform: uppercase; }
+  .preview-main h2 {
+    font-family: var(--font-sans);
+    font-weight: 700; font-size: 32px;
+    letter-spacing: -0.025em;
+    color: var(--ink); margin: 10px 0 20px;
+  }
+  .preview-main p { font-size: 15px; color: var(--ink-soft); line-height: 1.6; margin: 0 0 14px; }
+  .preview-main .qc {
+    background: var(--cream); padding: 18px 20px;
+    border-left: 3px solid var(--accent);
+    border-radius: 6px; margin: 22px 0;
+    font-family: var(--font-sans);
+  }
+  .preview-main .qc .lbl {
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--accent); letter-spacing: 0.18em; text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .preview-main .qc .q { font-size: 15px; color: var(--ink); font-family: var(--font-serif); }
+  .preview-main .formula {
+    font-family: var(--font-serif); font-style: italic;
+    font-size: 17px; text-align: center; color: var(--ink);
+    background: var(--cream); padding: 14px; border-radius: 8px;
+    margin: 18px 0;
+  }
+  .preview-main .formula .acc { color: var(--accent); }
+
+  /* float bart in corner */
+  .preview-bart {
+    position: absolute; right: 28px; top: 60px;
+    width: 56px; height: 56px;
+    animation: bart-breathe 4.5s ease-in-out infinite;
+  }
+  .preview-bart svg { width: 100%; height: auto; }
+
+  /* ─── footer ─── */
+  .foot {
+    padding: 80px 32px 60px;
+    text-align: center;
+    color: var(--ink-mute);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    border-top: 1px solid var(--cream-edge);
+    margin-top: 60px;
+    position: relative; z-index: 1;
+  }
+  .foot .big {
+    font-family: var(--font-sans); font-weight: 800;
+    font-size: 36px; letter-spacing: -0.025em; color: var(--ink);
+    margin-bottom: 16px;
+  }
+  .foot .big .dot { color: var(--accent); }
+  .foot .links { display: flex; gap: 22px; justify-content: center; margin: 20px 0; flex-wrap: wrap; }
+  .foot .links a { color: var(--ink-mute); text-decoration: none; }
+  .foot .links a:hover { color: var(--accent); }
+
+  /* ─── responsive ─── */
+  @media (max-width: 900px) {
+    .steps { grid-template-columns: 1fr; gap: 28px; }
+    .preview-body { grid-template-columns: 1fr; }
+    .preview-side { border-right: 0; border-bottom: 1px solid var(--cream-edge); }
+    .scene { height: 320px; }
+    .scene .bart svg { width: 180px; }
+  }
+  @media (max-width: 600px) {
+    .nav .links a:not(.cta) { display: none; }
+    .nav-inner { padding: 14px 20px; }
+    .hero { padding: 60px 22px 60px; }
+    .section { padding: 80px 22px; }
+    .driftfile { font-size: 10.5px; padding: 7px 11px 7px 10px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <span class="mark" style="font-size: 22px;">bart<span class="dot">.</span></span>
+    <div class="links">
+      <a href="#how">how it works</a>
+      <a href="#what">what you get</a>
+      <a href="/login">log in</a>
+      <a class="cta" href="/login?mode=signup">try it free</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="scene">
+    <svg class="arc" viewBox="0 0 920 380" preserveAspectRatio="none">
+      <path d="M 80 90 Q 380 30 460 280"/>
+      <path d="M 820 60 Q 580 60 460 280"/>
+      <path d="M 30 200 Q 280 200 460 280"/>
+      <path d="M 880 250 Q 660 260 460 280"/>
+    </svg>
+
+    <span class="driftfile df-1"><span class="icn">PDF</span>lecture_03_acids.pdf</span>
+    <span class="driftfile df-2"><span class="icn">PDF</span>midterm_2024.pdf</span>
+    <span class="driftfile df-3"><span class="icn">DOC</span>study_guide.docx</span>
+    <span class="driftfile df-4"><span class="icn">PPT</span>orgo_week_05.pptx</span>
+    <span class="driftfile df-5"><span class="icn">MD</span>my_notes.md</span>
+    <span class="driftfile df-6"><span class="icn">PDF</span>chapter_07.pdf</span>
+
+    <div class="bart" id="hero-bart"></div>
+    <div class="ground"></div>
+  </div>
+
+  <h1 class="hero-line">the <em>cutest</em> way to study.</h1>
+
+  <div class="cta-row">
+    <a class="cta" href="/login?mode=signup">
+      start studying
+      <svg class="arrow" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+    <a class="cta ghost" href="#how">see how</a>
+  </div>
+</section>
+
+<section class="section reveal" id="how">
+  <div class="section-eyebrow">how it works</div>
+  <h2 class="section-title">three steps. <em>ten minutes.</em> a packet that's actually yours.</h2>
+  <p class="section-lede">no setup. no terminal. no figuring out a study plan at 1am the night before.</p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="n">step 01</div>
+      <div class="stage">
+        <div class="ill-drop">
+          drop your stuff
+          <span class="ff ff-a"><span class="icn">PDF</span>chapter_03.pdf</span>
+          <span class="ff ff-b"><span class="icn">DOC</span>syllabus.docx</span>
+          <span class="ff ff-c"><span class="icn">PPT</span>lecture_05.pptx</span>
+        </div>
+      </div>
+      <h3>drop your materials.</h3>
+      <p>pdfs, slides, lecture notes, past exams, the syllabus — whatever you've got, drag it in.</p>
+    </div>
+
+    <div class="step">
+      <div class="n">step 02</div>
+      <div class="stage">
+        <div class="ill-think">
+          <div class="bart" id="step-bart"></div>
+          <div class="bubbles">
+            <span class="bub">reading…</span>
+            <span class="bub">planning 7 days…</span>
+            <span class="bub acc">writing your packet ✦</span>
+          </div>
+        </div>
+      </div>
+      <h3>bart studies them.</h3>
+      <p>five agents working in tandem — planner, researcher, author, critic, reviser — read your notes and write the packet.</p>
+    </div>
+
+    <div class="step">
+      <div class="n">step 03</div>
+      <div class="stage">
+        <div class="ill-packet">
+          <div class="pg p1"></div>
+          <div class="pg p2"></div>
+          <div class="pg p3"><span class="pin"></span></div>
+        </div>
+      </div>
+      <h3>open your packet.</h3>
+      <p>day-by-day lessons, schematics, mnemonics, a full practice exam, and a 60-minute review guide. all yours.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section reveal" id="what">
+  <div class="section-eyebrow">what you get</div>
+  <h2 class="section-title">dense lessons that <em>cite your actual notes.</em></h2>
+  <p class="section-lede">no generic filler, no hallucinations. every claim points back to your corpus.</p>
+
+  <div class="preview-wrap">
+    <div class="preview">
+      <div class="chrome">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="url">bart · organic chemistry II · day 03</span>
+      </div>
+      <div class="preview-body" style="position: relative;">
+        <aside class="preview-side">
+          <div class="lab">your packet</div>
+          <div class="head">7-day plan</div>
+          <div class="day"><span class="n">01</span><span>foundations &amp; notation</span></div>
+          <div class="day"><span class="n">02</span><span>resonance &amp; arrows</span></div>
+          <div class="day active"><span class="n">03</span><span>SN1 / SN2 mechanisms</span></div>
+          <div class="day"><span class="n">04</span><span>stereochemistry</span></div>
+          <div class="day"><span class="n">05</span><span>directing effects</span></div>
+          <div class="day"><span class="n">06</span><span>synthesis problems</span></div>
+          <div class="day"><span class="n">07</span><span>final review</span></div>
+          <div class="day" style="margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--cream-edge);"><span class="n">★</span><span>practice exam</span></div>
+        </aside>
+        <main class="preview-main">
+          <div class="crumb">day 03 · sn1 / sn2 · ≈ 90 minutes</div>
+          <h2>nucleophilic substitution, slowly.</h2>
+          <p>by the end of today you'll be able to look at a substrate, identify whether SN1 or SN2 is winning, and predict the product without guessing. we'll start with the kinetics, then build up to ambiguous cases.</p>
+          <div class="formula">rate<sub>SN2</sub> = <span class="acc">k</span> [substrate][nucleophile]</div>
+          <p>SN2 is one step, concerted, and stereospecific — the nucleophile attacks the back side and the leaving group leaves in the same motion. That's why tertiary substrates lose: too crowded.</p>
+          <div class="qc">
+            <div class="lbl">quick check ✦ 30 seconds</div>
+            <div class="q">which of these is most likely SN1: 2-bromobutane, t-butyl bromide, or bromocyclohexane?</div>
+          </div>
+        </main>
+        <div class="preview-bart" id="preview-bart"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="big">bart<span class="dot">.</span></div>
+  <div>for students who would rather <em style="font-style:normal;color:var(--accent)">learn</em> than reorganize their notes.</div>
+  <div class="links">
+    <a href="/login">log in</a>
+    <a href="/login?mode=signup">sign up</a>
+    <a href="#how">how it works</a>
+    <a href="#" onclick="event.preventDefault()">privacy</a>
+    <a href="#" onclick="event.preventDefault()">contact</a>
+  </div>
+  <div style="margin-top:14px; color: var(--ink-faint);">© 2026 bart. all your notes belong to you.</div>
+</footer>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="bart-svg.jsx"></script>
+<script type="text/babel">
+  // mount the loaf in three places
+  const big   = document.getElementById("hero-bart");
+  const step  = document.getElementById("step-bart");
+  const prev  = document.getElementById("preview-bart");
+  if (big)  ReactDOM.createRoot(big).render(<BartLoaf size={240} />);
+  if (step) ReactDOM.createRoot(step).render(<BartLoaf size={140} />);
+  if (prev) ReactDOM.createRoot(prev).render(<BartLoaf size={56} />);
+
+  // scroll-reveal
+  const io = new IntersectionObserver(
+    (entries) => entries.forEach(e => { if (e.isIntersecting) e.target.classList.add("is-in"); }),
+    { rootMargin: "0px 0px -10% 0px", threshold: 0.05 }
+  );
+  document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>

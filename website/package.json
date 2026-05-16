@@ -1,0 +1,10 @@
+{
+  "name": "bart-website",
+  "private": true,
+  "version": "0.1.0",
+  "description": "bart. — static prototype (React + Babel Standalone in-browser, no build step)",
+  "scripts": {
+    "dev": "bash ./dev.sh",
+    "dev:static": "npx --yes serve -l 3000 ."
+  }
+}

@@ -3,6 +3,16 @@
 .env
 .env.*
 !.env.example
+# user-auth DB (emails, bcrypt hashes, session tokens) — never push
+website/bart.db
+website/bart.db-journal
+website/bart.db-wal
+website/bart.db-shm
+# per-user workspace configs (each has a .bart_config.json with auth_mode)
+.workspaces/
+# npm artifacts — we don't actually use them, the website is React-via-Babel-Standalone
+package-lock.json
+node_modules/
 
 # ─────────── python build / venv ───────────
 .venv/
