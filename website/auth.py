@@ -60,12 +60,52 @@ CREATE TABLE IF NOT EXISTS runs (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS friendships (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  requester_id INTEGER NOT NULL,
+  recipient_id INTEGER NOT NULL,
+  status       TEXT NOT NULL CHECK (status IN ('pending','accepted')),
+  created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  accepted_at  TEXT,
+  UNIQUE (requester_id, recipient_id),
+  CHECK (requester_id <> recipient_id),
+  FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_friendships_recipient ON friendships(recipient_id, status);
+CREATE INDEX IF NOT EXISTS idx_friendships_requester ON friendships(requester_id, status);
+
+-- favorites: a run someone else shared with you that you've saved.
+-- We snapshot owner_id + subject at save-time so the row stays readable
+-- even if the original owner later revokes the share.
+CREATE TABLE IF NOT EXISTS favorites (
+  user_id        INTEGER NOT NULL,
+  run_id         TEXT NOT NULL,
+  owner_id       INTEGER NOT NULL,
+  saved_subject  TEXT,
+  saved_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, run_id),
+  FOREIGN KEY (user_id)  REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (run_id)   REFERENCES runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, saved_at DESC);
 """
 
 
 def init_db() -> None:
     with _connect() as db:
         db.executescript(SCHEMA)
+        # idempotent column add — sqlite doesn't support IF NOT EXISTS on
+        # ALTER TABLE, so we check pragma_table_info first.
+        cols = {row["name"] for row in db.execute("PRAGMA table_info(runs)").fetchall()}
+        if "share_token" not in cols:
+            db.execute("ALTER TABLE runs ADD COLUMN share_token TEXT")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_share_token "
+                "ON runs(share_token) WHERE share_token IS NOT NULL"
+            )
 
 
 @contextmanager
@@ -117,6 +157,27 @@ def find_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
         return db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
 
+def update_password(user_id: int, new_password: str) -> None:
+    with _connect() as db:
+        db.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hash_password(new_password), user_id),
+        )
+
+
+def delete_sessions_for_user(user_id: int, keep_sid: Optional[str] = None) -> None:
+    """Invalidate every session for a user — except optionally one to keep.
+    Used after a password change so other devices are forced to re-log-in."""
+    with _connect() as db:
+        if keep_sid:
+            db.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND id <> ?",
+                (user_id, keep_sid),
+            )
+        else:
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+
 # ─── sessions ────────────────────────────────────────────────────────────────
 
 def create_session(user_id: int) -> str:
@@ -148,15 +209,17 @@ def _user_from_sid(sid: Optional[str]) -> Optional[sqlite3.Row]:
     return row
 
 
-def set_session_cookie(resp: Response, sid: str) -> None:
+def set_session_cookie(resp: Response, sid: str, secure: bool = False) -> None:
+    """`secure` should be True when the cookie is being sent over HTTPS.
+    Caller (server.py) computes this from request.url.scheme so we honour
+    proxy headers (Fly / Render set X-Forwarded-Proto)."""
     resp.set_cookie(
         key=SESSION_COOKIE,
         value=sid,
         max_age=SESSION_DAYS * 24 * 3600,
         httponly=True,
         samesite="lax",
-        # secure=False for local dev — flip to True behind HTTPS.
-        secure=False,
+        secure=secure,
         path="/",
     )
 
@@ -200,7 +263,7 @@ def record_run(
 def list_runs(user_id: int) -> list[dict]:
     with _connect() as db:
         rows = db.execute(
-            "SELECT run_id, subject, focus, preset, days, source_count, created_at "
+            "SELECT run_id, subject, focus, preset, days, source_count, share_token, created_at "
             "FROM runs WHERE user_id = ? ORDER BY created_at DESC",
             (user_id,),
         ).fetchall()
@@ -213,3 +276,242 @@ def run_owner(run_id: str) -> Optional[int]:
             "SELECT user_id FROM runs WHERE run_id = ?", (run_id,)
         ).fetchone()
     return row["user_id"] if row else None
+
+
+# ─── sharing ─────────────────────────────────────────────────────────────────
+
+def create_share(run_id: str, user_id: int) -> Optional[str]:
+    """Generate (or rotate) a share token for a run the caller owns.
+    Returns the token, or None if the run isn't owned by user_id."""
+    token = secrets.token_urlsafe(18)  # ~24 chars, URL-safe
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE runs SET share_token = ? WHERE run_id = ? AND user_id = ?",
+            (token, run_id, user_id),
+        )
+        if cur.rowcount == 0:
+            return None
+    return token
+
+
+def revoke_share(run_id: str, user_id: int) -> bool:
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE runs SET share_token = NULL WHERE run_id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_share_token(run_id: str, user_id: int) -> Optional[str]:
+    with _connect() as db:
+        row = db.execute(
+            "SELECT share_token FROM runs WHERE run_id = ? AND user_id = ?",
+            (run_id, user_id),
+        ).fetchone()
+    return row["share_token"] if row and row["share_token"] else None
+
+
+def run_by_share_token(token: str) -> Optional[sqlite3.Row]:
+    """Resolve a share token back to its run record (run_id, user_id, ...)."""
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM runs WHERE share_token = ?", (token,)
+        ).fetchone()
+
+
+# ─── friendships ─────────────────────────────────────────────────────────────
+
+class FriendError(Exception): ...
+
+
+def send_friend_request(requester_id: int, recipient_email: str) -> dict:
+    """Create a pending request. Returns the friendship row as a dict.
+    Raises FriendError with a user-readable reason on the common failures."""
+    recipient = find_user_by_email(recipient_email)
+    if not recipient:
+        raise FriendError("no account with that email — ask them to sign up first.")
+    if recipient["id"] == requester_id:
+        raise FriendError("you can't friend yourself.")
+    with _connect() as db:
+        # already friends or pending in either direction? short-circuit.
+        existing = db.execute(
+            "SELECT id, requester_id, recipient_id, status FROM friendships "
+            "WHERE (requester_id=? AND recipient_id=?) "
+            "   OR (requester_id=? AND recipient_id=?)",
+            (requester_id, recipient["id"], recipient["id"], requester_id),
+        ).fetchone()
+        if existing:
+            if existing["status"] == "accepted":
+                raise FriendError("you're already friends.")
+            # pending: if THEY requested US, auto-accept; otherwise it's a dup.
+            if existing["requester_id"] == recipient["id"]:
+                db.execute(
+                    "UPDATE friendships SET status='accepted', accepted_at=CURRENT_TIMESTAMP "
+                    "WHERE id=?", (existing["id"],),
+                )
+                row = db.execute("SELECT * FROM friendships WHERE id=?", (existing["id"],)).fetchone()
+                return dict(row)
+            raise FriendError("you've already sent them a request.")
+        cur = db.execute(
+            "INSERT INTO friendships (requester_id, recipient_id, status) VALUES (?, ?, 'pending')",
+            (requester_id, recipient["id"]),
+        )
+        row = db.execute("SELECT * FROM friendships WHERE id=?", (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def list_friends(user_id: int) -> dict:
+    """Return {accepted, incoming, outgoing} — each a list of {id, user: {id,email,name}, since}."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT f.id, f.requester_id, f.recipient_id, f.status, f.created_at, f.accepted_at, "
+            "       u.id AS u_id, u.email AS u_email, u.name AS u_name "
+            "FROM friendships f "
+            "JOIN users u ON u.id = CASE WHEN f.requester_id=? THEN f.recipient_id ELSE f.requester_id END "
+            "WHERE f.requester_id=? OR f.recipient_id=? "
+            "ORDER BY f.created_at DESC",
+            (user_id, user_id, user_id),
+        ).fetchall()
+    accepted, incoming, outgoing = [], [], []
+    for r in rows:
+        entry = {
+            "id":    r["id"],
+            "user":  {"id": r["u_id"], "email": r["u_email"], "name": r["u_name"]},
+            "since": r["accepted_at"] or r["created_at"],
+        }
+        if r["status"] == "accepted":
+            accepted.append(entry)
+        elif r["recipient_id"] == user_id:
+            incoming.append(entry)
+        else:
+            outgoing.append(entry)
+    return {"accepted": accepted, "incoming": incoming, "outgoing": outgoing}
+
+
+def accept_friend_request(friendship_id: int, user_id: int) -> bool:
+    """Accept a pending request — only the recipient can accept."""
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE friendships SET status='accepted', accepted_at=CURRENT_TIMESTAMP "
+            "WHERE id=? AND recipient_id=? AND status='pending'",
+            (friendship_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def decline_friend_request(friendship_id: int, user_id: int) -> bool:
+    """Decline (delete) a pending request — only the recipient can decline."""
+    with _connect() as db:
+        cur = db.execute(
+            "DELETE FROM friendships WHERE id=? AND recipient_id=? AND status='pending'",
+            (friendship_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def unfriend(user_id: int, other_user_id: int) -> bool:
+    """Remove an accepted friendship in either direction."""
+    with _connect() as db:
+        cur = db.execute(
+            "DELETE FROM friendships "
+            "WHERE status='accepted' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))",
+            (user_id, other_user_id, other_user_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+# ─── favorites ───────────────────────────────────────────────────────────────
+
+def save_favorite(user_id: int, share_token: str) -> dict:
+    """Save someone else's shared packet to my favorites. Returns the saved row.
+    Raises FriendError on bad token / saving your own / dup."""
+    run = run_by_share_token(share_token)
+    if not run:
+        raise FriendError("that share link is invalid or was revoked.")
+    if run["user_id"] == user_id:
+        raise FriendError("you can't favorite your own packet.")
+    with _connect() as db:
+        try:
+            db.execute(
+                "INSERT INTO favorites (user_id, run_id, owner_id, saved_subject) "
+                "VALUES (?, ?, ?, ?)",
+                (user_id, run["run_id"], run["user_id"], run["subject"] or ""),
+            )
+        except sqlite3.IntegrityError:
+            raise FriendError("you've already saved this one.")
+        row = db.execute(
+            "SELECT * FROM favorites WHERE user_id=? AND run_id=?",
+            (user_id, run["run_id"]),
+        ).fetchone()
+    return dict(row)
+
+
+def list_favorites(user_id: int) -> list[dict]:
+    """List saved packets joined with current share_token + owner email so the
+    UI can show "from <owner>" and link to /share/<token>. share_token is NULL
+    if the owner revoked the share since you saved it."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT f.run_id, f.owner_id, f.saved_subject, f.saved_at, "
+            "       r.share_token, u.email AS owner_email, u.name AS owner_name "
+            "FROM favorites f "
+            "JOIN runs  r ON r.run_id = f.run_id "
+            "JOIN users u ON u.id     = f.owner_id "
+            "WHERE f.user_id=? "
+            "ORDER BY f.saved_at DESC",
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def remove_favorite(user_id: int, run_id: str) -> bool:
+    with _connect() as db:
+        cur = db.execute("DELETE FROM favorites WHERE user_id=? AND run_id=?", (user_id, run_id))
+        return cur.rowcount > 0
+
+
+# ─── leaderboard ─────────────────────────────────────────────────────────────
+
+def leaderboard_for(user_id: int) -> list[dict]:
+    """Return stats for me + every friend, ordered by packets_created DESC.
+    Stats: packets_created, files_uploaded, days_active, last_active."""
+    with _connect() as db:
+        # 1. collect user_ids: me + my accepted friends.
+        friend_ids = [
+            row["other"] for row in db.execute(
+                "SELECT CASE WHEN requester_id=? THEN recipient_id ELSE requester_id END AS other "
+                "FROM friendships WHERE status='accepted' AND (requester_id=? OR recipient_id=?)",
+                (user_id, user_id, user_id),
+            ).fetchall()
+        ]
+        all_ids = [user_id, *friend_ids]
+        if not all_ids:
+            return []
+        placeholders = ",".join("?" * len(all_ids))
+        rows = db.execute(
+            f"""SELECT u.id, u.email, u.name,
+                       COUNT(r.run_id)                       AS packets_created,
+                       COALESCE(SUM(r.source_count), 0)      AS files_uploaded,
+                       COUNT(DISTINCT date(r.created_at))    AS days_active,
+                       MAX(r.created_at)                     AS last_active
+                FROM users u
+                LEFT JOIN runs r ON r.user_id = u.id
+                WHERE u.id IN ({placeholders})
+                GROUP BY u.id
+                ORDER BY packets_created DESC, files_uploaded DESC, days_active DESC""",
+            all_ids,
+        ).fetchall()
+    return [
+        {
+            "id":              r["id"],
+            "email":           r["email"],
+            "name":            r["name"],
+            "is_you":          r["id"] == user_id,
+            "packets_created": r["packets_created"],
+            "files_uploaded":  r["files_uploaded"],
+            "days_active":     r["days_active"],
+            "last_active":     r["last_active"],
+        }
+        for r in rows
+    ]

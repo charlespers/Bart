@@ -1,0 +1,55 @@
+# Keep the build context small — everything below stays out of the image.
+
+# version control
+.git
+.gitignore
+
+# secrets + local config
+.env
+.env.*
+.bart_config.json
+website/bart.db
+website/bart.db-journal
+website/bart.db-wal
+website/bart.db-shm
+
+# python build / venv (rebuilt inside the container)
+.venv
+venv
+env
+website/.venv
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+build
+dist
+.eggs
+
+# user-generated content (lives on /data via the volume, not in the image)
+output
+materials
+.workspaces
+
+# editor / OS noise
+.DS_Store
+.vscode
+.idea
+*.swp
+*~
+
+# node (we use Babel Standalone in-browser; nothing to ship)
+node_modules
+package-lock.json
+
+# docs / dev-only — but keep prompts/*.md (runtime prompt templates) + bart/**/*.md
+docs
+examples
+tests
+README.md
+DEPLOY.md
+CHANGELOG.md

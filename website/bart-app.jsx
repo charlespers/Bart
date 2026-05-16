@@ -242,9 +242,724 @@ function PettableBart() {
   );
 }
 
+/* ─────────── Settings: connect your Claude account ─────────── */
+function Settings({ onBack }) {
+  const [status, setStatus] = useState(null);   // { connected, login_in_progress }
+  const [phase, setPhase] = useState("idle");   // idle | starting | waiting | submitting | done | error
+  const [deviceUrl, setDeviceUrl] = useState(null);
+  const [codeInput, setCodeInput] = useState("");
+  const [errMsg, setErrMsg] = useState(null);
+  const esRef = useRef(null);
+
+  async function loadStatus() {
+    try {
+      const r = await fetch("/api/auth/anthropic", { credentials: "same-origin" });
+      if (r.ok) setStatus(await r.json());
+    } catch (_) { /* ignore */ }
+  }
+  useEffect(() => { loadStatus(); }, []);
+  useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
+
+  async function submitCode() {
+    const code = codeInput.trim();
+    if (!code) return;
+    setPhase("submitting"); setErrMsg(null);
+    try {
+      const r = await fetch("/api/auth/anthropic/code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ code }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setPhase("waiting");  // stay in waiting; user can retry
+        setErrMsg(j.detail || `couldn't submit (${r.status})`);
+        return;
+      }
+      setCodeInput("");
+      // stay in "waiting" — the SSE stream will fire `ok` or `failed` once the
+      // subprocess finishes writing credentials.
+      setPhase("waiting");
+    } catch (e) {
+      setPhase("waiting");
+      setErrMsg(`network error: ${e.message}`);
+    }
+  }
+
+  async function connect() {
+    setPhase("starting"); setDeviceUrl(null); setCodeInput(""); setErrMsg(null);
+    try {
+      const r = await fetch("/api/auth/anthropic/connect", {
+        method: "POST", credentials: "same-origin",
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setPhase("error"); setErrMsg(j.detail || `couldn't start (${r.status})`);
+        return;
+      }
+    } catch (e) {
+      setPhase("error"); setErrMsg(`network error: ${e.message}`); return;
+    }
+    setPhase("waiting");
+    const es = new EventSource("/api/auth/anthropic/events");
+    esRef.current = es;
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.kind === "url") setDeviceUrl(data.url);
+        if (data.kind === "ok") { setPhase("done"); loadStatus(); }
+        if (data.kind === "failed") {
+          setPhase("error");
+          setErrMsg(data.error || `login failed (exit ${data.code ?? "?"})`);
+        }
+      } catch (_) {}
+    };
+    es.addEventListener("done", () => { es.close(); esRef.current = null; loadStatus(); });
+    es.onerror = () => { es.close(); esRef.current = null; };
+  }
+
+  async function disconnect() {
+    if (!confirm("disconnect your claude account from bart? your past packets stay; you'll need to reconnect before a new run.")) return;
+    try {
+      await fetch("/api/auth/anthropic", { method: "DELETE", credentials: "same-origin" });
+    } catch (_) {}
+    setPhase("idle"); setDeviceUrl(null); loadStatus();
+  }
+
+  const connected = status?.connected;
+
+  return (
+    <div className="packet" style={{ marginTop: 24 }}>
+      <div className="heading">
+        settings
+        <span className="pkt-cost" onClick={onBack} style={{ cursor: "pointer" }}>
+          ← back to bart
+        </span>
+      </div>
+
+      <div style={{
+        marginTop: 4, padding: "20px 22px",
+        background: "var(--cream-hi)",
+        borderRadius: 14,
+        boxShadow: "inset 0 0 0 1px var(--cream-edge)",
+      }}>
+        <div style={{
+          fontFamily: "var(--font-mono)", fontSize: 10.5,
+          color: "var(--ink-faint)", letterSpacing: "0.16em",
+          textTransform: "uppercase", marginBottom: 8,
+        }}>
+          your claude account
+        </div>
+
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12,
+          fontSize: 17, color: "var(--ink)", marginBottom: 6,
+        }}>
+          <span style={{
+            display: "inline-block", width: 9, height: 9, borderRadius: 999,
+            background: connected ? "var(--ok)" : "var(--ink-faint)",
+          }} />
+          {connected ? "connected" : "not connected"}
+        </div>
+
+        <div style={{
+          color: "var(--ink-mute)", fontSize: 14, lineHeight: 1.55, marginBottom: 18,
+        }}>
+          bart needs your claude.ai login to actually run. {connected
+            ? "you're set — start studying."
+            : "click connect, sign in on claude.ai in the popup, come back here."}
+        </div>
+
+        {!connected && phase === "idle" && (
+          <button className="run-btn" onClick={connect} style={{ padding: "12px 22px" }}>
+            connect claude account
+          </button>
+        )}
+
+        {phase === "starting" && (
+          <div className="muted mono" style={{ fontSize: 12 }}>
+            launching claude /login…
+          </div>
+        )}
+
+        {phase === "waiting" && (
+          <div>
+            <div style={{ fontSize: 14, color: "var(--ink)", marginBottom: 10 }}>
+              {deviceUrl
+                ? <>open this in your browser, sign in, and authorize:</>
+                : <>waiting for the login URL from the CLI…</>}
+            </div>
+            {deviceUrl && (
+              <>
+                <a href={deviceUrl} target="_blank" rel="noopener noreferrer"
+                   style={{
+                     display: "inline-block", padding: "12px 18px",
+                     background: "var(--accent)", color: "var(--cream-hi)",
+                     borderRadius: 999, fontFamily: "var(--font-mono)", fontSize: 12.5,
+                     textDecoration: "none", letterSpacing: "0.04em",
+                     wordBreak: "break-all", maxWidth: "100%",
+                   }}>
+                  open claude.com to sign in ↗
+                </a>
+                <ol style={{
+                  marginTop: 18, paddingLeft: 18,
+                  fontSize: 14, color: "var(--ink)", lineHeight: 1.55,
+                }}>
+                  <li>open that link, sign in to your claude.ai account, approve bart.</li>
+                  <li>claude.com will redirect you to a page with a <strong>code</strong> in the URL or on the page.</li>
+                  <li>paste the code below and click submit.</li>
+                </ol>
+                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  <input
+                    type="text" placeholder="paste your code here"
+                    value={codeInput}
+                    onChange={e => setCodeInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") submitCode(); }}
+                    style={{
+                      flex: 1, padding: "10px 14px",
+                      background: "var(--cream)", border: "0", borderRadius: 10,
+                      fontFamily: "var(--font-mono)", fontSize: 13,
+                      boxShadow: "inset 0 0 0 1.5px var(--cream-edge)",
+                    }}
+                  />
+                  <button onClick={submitCode}
+                          className="run-btn"
+                          style={{ padding: "10px 18px", fontSize: 14 }}
+                          disabled={phase === "submitting" || !codeInput.trim()}>
+                    {phase === "submitting" ? "submitting…" : "submit"}
+                  </button>
+                </div>
+                {errMsg && (
+                  <div style={{ color: "var(--accent-lo)", fontSize: 12, marginTop: 8 }}>
+                    {errMsg}
+                  </div>
+                )}
+              </>
+            )}
+            {!deviceUrl && (
+              <div className="muted mono" style={{ fontSize: 11, marginTop: 14 }}>
+                this page will update once the CLI prints the login URL.
+              </div>
+            )}
+          </div>
+        )}
+
+        {phase === "done" && (
+          <div style={{ color: "var(--ok)", fontSize: 14, fontWeight: 600 }}>
+            ✓ connected — you can run bart now.
+          </div>
+        )}
+
+        {phase === "error" && (
+          <div>
+            <div style={{ color: "var(--accent-lo)", fontSize: 13, marginBottom: 10 }}>
+              {errMsg || "something went wrong."}
+            </div>
+            <button className="run-btn" onClick={connect} style={{ padding: "10px 18px", fontSize: 14 }}>
+              try again
+            </button>
+          </div>
+        )}
+
+        {connected && phase !== "waiting" && (
+          <div style={{ marginTop: 12 }}>
+            <a href="#" onClick={e => { e.preventDefault(); disconnect(); }}
+               style={{
+                 fontFamily: "var(--font-mono)", fontSize: 11,
+                 color: "var(--ink-faint)", textDecoration: "none",
+                 letterSpacing: "0.08em",
+               }}>
+              disconnect ↗
+            </a>
+          </div>
+        )}
+      </div>
+
+      <div className="muted mono" style={{
+        fontSize: 11, color: "var(--ink-faint)",
+        marginTop: 22, lineHeight: 1.6,
+      }}>
+        bart uses the `claude` CLI on the server with your credentials in an isolated workspace.
+        we don't see your password — just the session token claude.ai gives us.
+      </div>
+
+      <ChangePasswordCard />
+    </div>
+  );
+}
+
+/* ─────────── Settings: change password ─────────── */
+function ChangePasswordCard() {
+  const [cur, setCur]   = useState("");
+  const [nw, setNw]     = useState("");
+  const [conf, setConf] = useState("");
+  const [phase, setPhase] = useState("idle");   // idle | submitting | done | error
+  const [errMsg, setErrMsg] = useState(null);
+
+  async function submit(e) {
+    e.preventDefault();
+    setErrMsg(null);
+    if (nw.length < 6) { setErrMsg("new password must be at least 6 characters."); return; }
+    if (nw !== conf)   { setErrMsg("new password and confirmation don't match."); return; }
+    if (nw === cur)    { setErrMsg("new password is the same as the current one."); return; }
+    setPhase("submitting");
+    try {
+      const r = await fetch("/api/auth/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ current_password: cur, new_password: nw }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setPhase("error");
+        setErrMsg(j.detail || `couldn't update password (${r.status})`);
+        return;
+      }
+      setPhase("done");
+      setCur(""); setNw(""); setConf("");
+    } catch (e2) {
+      setPhase("error");
+      setErrMsg(`network error: ${e2.message}`);
+    }
+  }
+
+  const inputStyle = {
+    flex: 1, padding: "10px 14px",
+    background: "var(--cream)", border: "0", borderRadius: 10,
+    fontFamily: "var(--font-mono)", fontSize: 13,
+    boxShadow: "inset 0 0 0 1.5px var(--cream-edge)",
+  };
+
+  return (
+    <div style={{
+      marginTop: 18, padding: "20px 22px",
+      background: "var(--cream-hi)",
+      borderRadius: 14,
+      boxShadow: "inset 0 0 0 1px var(--cream-edge)",
+    }}>
+      <div style={{
+        fontFamily: "var(--font-mono)", fontSize: 10.5,
+        color: "var(--ink-faint)", letterSpacing: "0.16em",
+        textTransform: "uppercase", marginBottom: 8,
+      }}>
+        password
+      </div>
+      <div style={{
+        color: "var(--ink-mute)", fontSize: 14, lineHeight: 1.55, marginBottom: 14,
+      }}>
+        change the password you use to log into bart. other devices you're signed in on will be logged out.
+      </div>
+
+      <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <input type="password" placeholder="current password"
+               value={cur} onChange={e => setCur(e.target.value)}
+               autoComplete="current-password" style={inputStyle} />
+        <input type="password" placeholder="new password (6+ characters)"
+               value={nw} onChange={e => setNw(e.target.value)}
+               autoComplete="new-password" style={inputStyle} />
+        <input type="password" placeholder="confirm new password"
+               value={conf} onChange={e => setConf(e.target.value)}
+               autoComplete="new-password" style={inputStyle} />
+        <div>
+          <button type="submit"
+                  className="run-btn"
+                  style={{ padding: "10px 22px", fontSize: 14 }}
+                  disabled={phase === "submitting" || !cur || !nw || !conf}>
+            {phase === "submitting" ? "updating…" : "update password"}
+          </button>
+        </div>
+      </form>
+
+      {phase === "done" && (
+        <div style={{ color: "var(--ok)", fontSize: 14, fontWeight: 600, marginTop: 10 }}>
+          ✓ password updated.
+        </div>
+      )}
+      {errMsg && (
+        <div style={{ color: "var(--accent-lo)", fontSize: 13, marginTop: 10 }}>
+          {errMsg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────── Social: friends, favorites, leaderboard ─────────── */
+function Social({ onBack, me }) {
+  const [tab, setTab] = useState("friends");  // friends | favorites | leaderboard
+  const [friends, setFriends]     = useState({ accepted: [], incoming: [], outgoing: [] });
+  const [favorites, setFavorites] = useState([]);
+  const [board, setBoard]         = useState([]);
+  const [toast, setToast]         = useState(null);
+  const [emailInput, setEmailInput] = useState("");
+  const [shareInput, setShareInput] = useState("");
+
+  function flash(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(cur => cur === msg ? null : cur), 2400);
+  }
+
+  async function refresh() {
+    const [f, fav, lb] = await Promise.all([
+      fetch("/api/friends",     { credentials: "same-origin" }).then(r => r.ok ? r.json() : null),
+      fetch("/api/favorites",   { credentials: "same-origin" }).then(r => r.ok ? r.json() : null),
+      fetch("/api/leaderboard", { credentials: "same-origin" }).then(r => r.ok ? r.json() : null),
+    ]);
+    if (f)   setFriends(f);
+    if (fav) setFavorites(fav.favorites || []);
+    if (lb)  setBoard(lb.rows || []);
+  }
+  useEffect(() => { refresh(); }, []);
+
+  async function sendRequest() {
+    const email = emailInput.trim();
+    if (!email) return;
+    try {
+      const r = await fetch("/api/friends/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ email }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { flash(j.detail || `couldn't send (${r.status})`); return; }
+      setEmailInput("");
+      flash(j.friendship?.status === "accepted"
+        ? `you're already friends with ${email} — they requested you first.`
+        : `request sent to ${email}.`);
+      refresh();
+    } catch (e) { flash(`network error: ${e.message}`); }
+  }
+
+  async function respondToRequest(friendshipId, accept) {
+    try {
+      const r = await fetch(`/api/friends/${friendshipId}/${accept ? "accept" : "decline"}`, {
+        method: "POST", credentials: "same-origin",
+      });
+      if (!r.ok) { flash(`couldn't ${accept ? "accept" : "decline"} (${r.status})`); return; }
+      flash(accept ? "friend added." : "request declined.");
+      refresh();
+    } catch (e) { flash(`network error: ${e.message}`); }
+  }
+
+  async function unfriend(otherId, email) {
+    if (!confirm(`unfriend ${email}?`)) return;
+    try {
+      const r = await fetch(`/api/friends/${otherId}`, { method: "DELETE", credentials: "same-origin" });
+      if (!r.ok) { flash(`couldn't unfriend (${r.status})`); return; }
+      flash("unfriended.");
+      refresh();
+    } catch (e) { flash(`network error: ${e.message}`); }
+  }
+
+  async function saveFavorite() {
+    const v = shareInput.trim();
+    if (!v) return;
+    try {
+      const r = await fetch("/api/favorites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(/^https?:\/\//.test(v) || v.includes("/share/")
+          ? { share_url: v } : { share_token: v }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { flash(j.detail || `couldn't save (${r.status})`); return; }
+      setShareInput("");
+      flash("saved to favorites.");
+      refresh();
+    } catch (e) { flash(`network error: ${e.message}`); }
+  }
+
+  async function removeFavorite(runId) {
+    try {
+      const r = await fetch(`/api/favorites/${runId}`, { method: "DELETE", credentials: "same-origin" });
+      if (!r.ok) { flash(`couldn't remove (${r.status})`); return; }
+      flash("removed.");
+      refresh();
+    } catch (e) { flash(`network error: ${e.message}`); }
+  }
+
+  function openShare(token) {
+    if (!token) { flash("the owner revoked this share link."); return; }
+    window.open(`/share/${token}`, "_blank", "noopener,noreferrer");
+  }
+
+  function fmtDateOnly(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso.replace(" ", "T") + (iso.includes("Z") ? "" : "Z"));
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  const tabLink = (id, label, badge) => (
+    <a href="#" onClick={e => { e.preventDefault(); setTab(id); }}
+       style={{
+         padding: "8px 14px",
+         fontFamily: "var(--font-sans)", fontSize: 14, fontWeight: 600,
+         color: tab === id ? "var(--accent)" : "var(--ink-mute)",
+         borderBottom: tab === id ? "2px solid var(--accent)" : "2px solid transparent",
+         textDecoration: "none", letterSpacing: "-0.005em",
+       }}>
+      {label}{badge ? <span style={{ marginLeft: 6, color: "var(--accent-lo)" }}>{badge}</span> : null}
+    </a>
+  );
+
+  return (
+    <div className="packet" style={{ marginTop: 24 }}>
+      <div className="heading">
+        friends
+        <span className="pkt-cost" onClick={onBack} style={{ cursor: "pointer" }}>
+          ← back to bart
+        </span>
+      </div>
+
+      <div style={{
+        display: "flex", gap: 6,
+        borderBottom: "1px solid var(--cream-edge)",
+        marginBottom: 22, marginTop: 4,
+      }}>
+        {tabLink("friends",     "friends",     friends.incoming.length || null)}
+        {tabLink("favorites",   "favorites")}
+        {tabLink("leaderboard", "leaderboard")}
+      </div>
+
+      {tab === "friends" && (
+        <div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 22 }}>
+            <input
+              type="email" placeholder="friend's email"
+              value={emailInput}
+              onChange={e => setEmailInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") sendRequest(); }}
+              style={{
+                flex: 1, padding: "10px 14px",
+                background: "var(--cream-hi)", border: "0", borderRadius: 10,
+                fontFamily: "var(--font-sans)", fontSize: 14,
+                boxShadow: "inset 0 0 0 1.5px var(--cream-edge)",
+              }}
+            />
+            <button onClick={sendRequest} className="run-btn" style={{ padding: "10px 20px", fontSize: 14 }}>
+              send request
+            </button>
+          </div>
+
+          {friends.incoming.length > 0 && (
+            <SectionList title="incoming requests">
+              {friends.incoming.map(f => (
+                <Row key={f.id}
+                     left={
+                       <>
+                         {f.user.email}
+                         <span style={{ color: "var(--ink-faint)", marginLeft: 8, fontSize: 13 }}>
+                           sent {fmtDateOnly(f.since)}
+                         </span>
+                       </>
+                     }
+                     actions={
+                       <>
+                         <RowAction onClick={() => respondToRequest(f.id, true)}>accept</RowAction>
+                         <RowAction muted onClick={() => respondToRequest(f.id, false)}>decline</RowAction>
+                       </>
+                     } />
+              ))}
+            </SectionList>
+          )}
+
+          <SectionList title={`your friends (${friends.accepted.length})`}>
+            {friends.accepted.length === 0 && (
+              <div className="muted mono" style={{ padding: "12px 6px" }}>
+                no friends yet — invite someone by email above.
+              </div>
+            )}
+            {friends.accepted.map(f => {
+              // show name OR email, never both — keeps the row to one line.
+              const display = (f.user.name && f.user.name.trim()) ? f.user.name : f.user.email;
+              const sideNote = (f.user.name && f.user.name.trim()) ? f.user.email : null;
+              return (
+                <Row key={f.id}
+                     left={
+                       <>
+                         <span style={{ fontWeight: 500 }}>{display}</span>
+                         {sideNote && (
+                           <span style={{ color: "var(--ink-mute)", marginLeft: 8, fontSize: 13 }}>
+                             {sideNote}
+                           </span>
+                         )}
+                         <span style={{ color: "var(--ink-faint)", marginLeft: 8, fontSize: 13 }}>
+                           since {fmtDateOnly(f.since)}
+                         </span>
+                       </>
+                     }
+                     actions={
+                       <RowAction muted onClick={() => unfriend(f.user.id, f.user.email)}>unfriend</RowAction>
+                     } />
+              );
+            })}
+          </SectionList>
+
+          {friends.outgoing.length > 0 && (
+            <SectionList title="pending (sent by you)">
+              {friends.outgoing.map(f => (
+                <Row key={f.id}
+                     left={f.user.email}
+                     actions={<span style={{ color: "var(--ink-faint)" }}>waiting…</span>} />
+              ))}
+            </SectionList>
+          )}
+        </div>
+      )}
+
+      {tab === "favorites" && (
+        <div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 22 }}>
+            <input
+              type="text" placeholder="paste a /share/… link to save"
+              value={shareInput}
+              onChange={e => setShareInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") saveFavorite(); }}
+              style={{
+                flex: 1, padding: "10px 14px",
+                background: "var(--cream-hi)", border: "0", borderRadius: 10,
+                fontFamily: "var(--font-mono)", fontSize: 13,
+                boxShadow: "inset 0 0 0 1.5px var(--cream-edge)",
+              }}
+            />
+            <button onClick={saveFavorite} className="run-btn" style={{ padding: "10px 20px", fontSize: 14 }}>
+              save
+            </button>
+          </div>
+
+          {favorites.length === 0 ? (
+            <div className="muted mono" style={{ padding: "20px 6px" }}>
+              no favorites yet — ask a friend for a share link.
+            </div>
+          ) : (
+            <div className="lesson-list">
+              {favorites.map(f => (
+                <div key={f.run_id} className="lesson-row" onClick={() => openShare(f.share_token)}>
+                  <span className="num">{fmtDateOnly(f.saved_at)}</span>
+                  <span className="title">
+                    {f.saved_subject || <span className="muted">untitled</span>}
+                    <span className="sub">from {f.owner_email}</span>
+                  </span>
+                  <span className="stat" style={{ color: f.share_token ? undefined : "var(--accent-lo)" }}>
+                    {f.share_token ? "shared" : "revoked"}
+                  </span>
+                  <span className="open" onClick={e => { e.stopPropagation(); removeFavorite(f.run_id); }}>remove</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "leaderboard" && (
+        <div>
+          {board.length === 0 ? (
+            <div className="muted mono" style={{ padding: "20px 6px" }}>
+              loading… or add a friend on the friends tab to start a leaderboard.
+            </div>
+          ) : (
+            <div className="lesson-list">
+              {board.map((row, i) => (
+                <div key={row.id} className="lesson-row"
+                     style={row.is_you ? { background: "var(--accent-tint)" } : null}>
+                  <span className="num">#{i + 1}</span>
+                  <span className="title">
+                    {row.is_you ? "you" : (row.name || row.email)}
+                    <span className="sub">
+                      {row.packets_created} {row.packets_created === 1 ? "packet" : "packets"}
+                      {" · "}{row.files_uploaded} files
+                      {" · "}{row.days_active} {row.days_active === 1 ? "day" : "days"} active
+                    </span>
+                  </span>
+                  <span className="stat">
+                    {row.last_active ? `last ${fmtDateOnly(row.last_active)}` : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)",
+          background: "var(--ink)", color: "var(--cream-hi)",
+          padding: "10px 18px", borderRadius: 999,
+          fontFamily: "var(--font-mono)", fontSize: 12.5, letterSpacing: 0.02,
+          boxShadow: "0 10px 28px rgba(30,20,14,0.25)",
+          zIndex: 100, maxWidth: 520, textAlign: "center",
+        }}>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// small helpers used in Social
+function SectionList({ title, children }) {
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div style={{
+        fontFamily: "var(--font-mono)", fontSize: 10.5,
+        color: "var(--ink-faint)", letterSpacing: "0.16em",
+        textTransform: "uppercase", marginBottom: 6,
+      }}>{title}</div>
+      <div>{children}</div>
+    </div>
+  );
+}
+// One-line row: left content stays on a single line (truncates with …),
+// actions sit on the right and are always visible.
+function Row({ left, actions }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      gap: 16, padding: "10px 6px",
+      borderBottom: "1px solid var(--cream-edge)",
+      fontFamily: "var(--font-sans)",
+    }}>
+      <span style={{
+        flex: 1, minWidth: 0,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        fontSize: 14.5, color: "var(--ink)", letterSpacing: "-0.005em",
+      }}>
+        {left}
+      </span>
+      <div style={{
+        display: "flex", gap: 14, alignItems: "center", flexShrink: 0,
+        fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--accent)",
+        letterSpacing: "0.04em", textTransform: "uppercase",
+      }}>
+        {actions}
+      </div>
+    </div>
+  );
+}
+// Inline action chip used inside Row — looks like the existing .open links
+// but always visible (the .open class hides them until the parent is hovered).
+function RowAction({ onClick, muted, children }) {
+  return (
+    <a href="#" onClick={e => { e.preventDefault(); onClick && onClick(); }}
+       style={{
+         color: muted ? "var(--ink-faint)" : "var(--accent)",
+         textDecoration: "none", cursor: "pointer",
+       }}>
+      {children}
+    </a>
+  );
+}
+
+
 /* ─────────── Past runs view ─────────── */
 function PastRuns({ onBack, me }) {
   const [runs, setRuns] = useState(null);
+  const [toast, setToast] = useState(null);  // string shown briefly after copy / share / unshare
   useEffect(() => {
     fetch("/api/runs")
       .then(r => r.ok ? r.json() : { runs: [] })
@@ -253,13 +968,49 @@ function PastRuns({ onBack, me }) {
   }, []);
 
   function openRun(runId) {
-    window.open(`output/${runId}/index.html`, "_blank", "noopener,noreferrer");
+    window.open(`/output/${runId}/index.html`, "_blank", "noopener,noreferrer");
   }
   function fmt(mtime) {
     const d = new Date(mtime * 1000);
     return d.toLocaleString(undefined, {
       month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
     }).toLowerCase();
+  }
+
+  function flash(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(cur => cur === msg ? null : cur), 2200);
+  }
+  async function copyShareUrl(token) {
+    const url = `${window.location.origin}/share/${token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      flash("link copied — anyone with it can view this packet.");
+    } catch (_) {
+      flash(url);  // clipboard blocked — just show the URL so user can copy manually
+    }
+  }
+  async function shareRun(runId) {
+    try {
+      const r = await fetch(`/api/runs/${runId}/share`, { method: "POST", credentials: "same-origin" });
+      if (!r.ok) throw new Error(`share failed (${r.status})`);
+      const { token } = await r.json();
+      setRuns(prev => prev.map(p => p.run_id === runId ? { ...p, share_token: token } : p));
+      copyShareUrl(token);
+    } catch (e) {
+      flash(`couldn't share: ${e.message}`);
+    }
+  }
+  async function unshareRun(runId) {
+    if (!confirm("revoke the share link? anyone using the current link will get a 404.")) return;
+    try {
+      const r = await fetch(`/api/runs/${runId}/share`, { method: "DELETE", credentials: "same-origin" });
+      if (!r.ok) throw new Error(`unshare failed (${r.status})`);
+      setRuns(prev => prev.map(p => p.run_id === runId ? { ...p, share_token: null } : p));
+      flash("share link revoked.");
+    } catch (e) {
+      flash(`couldn't revoke: ${e.message}`);
+    }
   }
 
   return (
@@ -286,19 +1037,56 @@ function PastRuns({ onBack, me }) {
       )}
       {runs !== null && runs.length > 0 && (
         <div className="lesson-list">
-          {runs.map(r => (
-            <div key={r.run_id} className="lesson-row" onClick={() => openRun(r.run_id)}>
-              <span className="num">{fmt(r.mtime)}</span>
-              <span className="title">
-                {r.subject || <span className="muted">untitled</span>}
-                <span className="sub">{r.run_id}</span>
-              </span>
-              <span className="stat">
-                {r.sources.length} file{r.sources.length === 1 ? "" : "s"}
-              </span>
-              <span className="open">open ↗</span>
-            </div>
-          ))}
+          {runs.map(r => {
+            const shared = !!r.share_token;
+            return (
+              <div key={r.run_id} className="lesson-row" onClick={() => openRun(r.run_id)}>
+                <span className="num">{fmt(r.mtime)}</span>
+                <span className="title">
+                  {r.subject || <span className="muted">untitled</span>}
+                  <span className="sub">{r.run_id}{shared ? " · shared" : ""}</span>
+                </span>
+                <span className="stat">
+                  {r.sources.length} file{r.sources.length === 1 ? "" : "s"}
+                </span>
+                {shared ? (
+                  <>
+                    <span
+                      className="open"
+                      title="copy share link"
+                      onClick={e => { e.stopPropagation(); copyShareUrl(r.share_token); }}
+                    >copy link</span>
+                    <span
+                      className="open"
+                      title="revoke the share link"
+                      style={{ color: "var(--ink-faint)" }}
+                      onClick={e => { e.stopPropagation(); unshareRun(r.run_id); }}
+                    >unshare</span>
+                  </>
+                ) : (
+                  <span
+                    className="open"
+                    title="create a public share link"
+                    onClick={e => { e.stopPropagation(); shareRun(r.run_id); }}
+                  >share ↗</span>
+                )}
+                <span className="open">open ↗</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)",
+          background: "var(--ink)", color: "var(--cream-hi)",
+          padding: "10px 18px", borderRadius: 999,
+          fontFamily: "var(--font-mono)", fontSize: 12.5, letterSpacing: 0.02,
+          boxShadow: "0 10px 28px rgba(30,20,14,0.25)",
+          zIndex: 100, maxWidth: 520, textAlign: "center",
+        }}>
+          {toast}
         </div>
       )}
     </div>
@@ -312,7 +1100,23 @@ function App() {
     document.documentElement.style.setProperty("--accent", t.accent);
   }, [t.accent]);
 
-  const [view, setView] = useState("home");   // home | runs
+  // URL-synced view: refreshing on /app/settings keeps you on settings.
+  // home → /app, runs → /app/runs, social → /app/friends, settings → /app/settings.
+  const VIEW_TO_PATH = { home: "/app", runs: "/app/runs", social: "/app/friends", settings: "/app/settings" };
+  const PATH_TO_VIEW = { "/app": "home", "/app/": "home", "/app/runs": "runs", "/app/friends": "social", "/app/settings": "settings" };
+  const [view, _setView] = useState(() => PATH_TO_VIEW[window.location.pathname] || "home");
+  const setView = (next) => {
+    _setView(next);
+    const path = VIEW_TO_PATH[next] || "/app";
+    if (window.location.pathname !== path) {
+      window.history.pushState({ view: next }, "", path);
+    }
+  };
+  useEffect(() => {
+    const onPop = () => _setView(PATH_TO_VIEW[window.location.pathname] || "home");
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   // current logged-in user — so the topbar can show which account you're on.
   // /app is gated server-side, so by the time we get here we have a session.
@@ -396,7 +1200,9 @@ function App() {
   const [showDetails, setShowDetails] = useState(false);
   // real-progress signal from bart's stdout: orchestrator prints `[N/M] filename`
   // for each artifact it finishes. When this is set, it overrides stage tweens.
-  const [artifacts, setArtifacts]   = useState({ done: 0, total: 0, firstDoneAt: null });
+  // firstDoneAt + lastDoneAt + runStartedAt let us derive a per-artifact rate
+  // that's stable between completions, so ETA ticks down and the bar tweens.
+  const [artifacts, setArtifacts]   = useState({ done: 0, total: 0, firstDoneAt: null, lastDoneAt: null, runStartedAt: null });
   useEffect(() => {
     if (phase !== "running") return;
     const id = setInterval(() => setNowTick(Date.now()), 500);
@@ -433,19 +1239,43 @@ function App() {
     // so the bar starts moving as soon as the first artifact finishes and
     // leaves room for the final rendering pass.
     if (artifacts.total > 0) {
-      const ratio = Math.min(1, artifacts.done / artifacts.total);
-      const pct = Math.max(1, Math.min(99, Math.round(10 + ratio * 85)));
-      // ETA: average seconds-per-artifact × remaining artifacts. Needs at
-      // least one artifact done before we have a usable rate.
-      let remaining = null;
-      if (artifacts.done > 0 && artifacts.firstDoneAt) {
-        const perArtifactMs = (nowTick - artifacts.firstDoneAt) / artifacts.done;
-        const left = artifacts.total - artifacts.done;
-        remaining = Math.max(5, Math.round((left * perArtifactMs) / 1000));
+      const { done, total, firstDoneAt, lastDoneAt, runStartedAt } = artifacts;
+      let pct, remaining = null;
+
+      if (done >= total) {
+        // last artifact landed — we're rendering the packet now.
+        pct = 95;
+        remaining = 5;
+      } else if (done === 0) {
+        // bart's still extracting/planning. Hold at 10% so the bar is alive
+        // but not lying — ETA is "estimating…" until the first artifact lands.
+        pct = 10;
+      } else {
+        // Stable per-artifact rate, snapshotted at the last completion.
+        // - done == 1 → use elapsed since run start (only one data point).
+        // - done >= 2 → use the actual gap between firstDoneAt and lastDoneAt.
+        const meanArtifactMs = done >= 2
+          ? Math.max(1000, (lastDoneAt - firstDoneAt) / (done - 1))
+          : Math.max(1000, (lastDoneAt - (runStartedAt || firstDoneAt)) || 1000);
+
+        // Tween between done/total and (done+1)/total based on how far we've
+        // gotten through the *current* artifact's expected runtime. Cap at
+        // 95% of a slot so the bar never overshoots before the next completion.
+        const sinceLast = nowTick - lastDoneAt;
+        const slotProgress = Math.min(0.95, Math.max(0, sinceLast / meanArtifactMs));
+        const ratio = Math.min(0.99, (done + slotProgress) / total);
+        pct = Math.max(11, Math.min(94, Math.round(10 + ratio * 85)));
+
+        // ETA: snapshot was (total - done) × mean at lastDoneAt; tick down by
+        // however much time has passed since. Clamp to ≥ 2s so it doesn't sit
+        // on zero while the slow artifact finishes.
+        const snapshotMs = (total - done) * meanArtifactMs;
+        remaining = Math.max(2, Math.round((snapshotMs - sinceLast) / 1000));
       }
-      const label = artifacts.done >= artifacts.total
+
+      const label = done >= total
         ? "rendering your packet…"
-        : `${artifacts.done} of ${artifacts.total} ${artifacts.total === 1 ? "artifact" : "artifacts"} done`;
+        : `${done} of ${total} ${total === 1 ? "artifact" : "artifacts"} done`;
       return { pct, remaining, label };
     }
 
@@ -503,7 +1333,7 @@ function App() {
     setStageLabel("warming up…");
     setStageIdx(-1);
     setStageEnteredAt(null);
-    setArtifacts({ done: 0, total: 0, firstDoneAt: null });
+    setArtifacts({ done: 0, total: 0, firstDoneAt: null, lastDoneAt: null, runStartedAt: Date.now() });
     setShowDetails(false);
 
     const safeDays = Number.isFinite(days) && days > 0 ? days : 7;
@@ -555,10 +1385,13 @@ function App() {
           return;
         }
         if (data.kind === "artifact_done") {
+          const now = Date.now();
           setArtifacts(prev => ({
+            ...prev,
             done: Math.max(prev.done, data.done || 0),
             total: Math.max(prev.total, data.total || 0),
-            firstDoneAt: prev.firstDoneAt || Date.now(),
+            firstDoneAt: prev.firstDoneAt || now,
+            lastDoneAt: now,
           }));
           setStageLabel(`finished ${data.file} — ${data.done}/${data.total}`);
           return;
@@ -623,7 +1456,7 @@ function App() {
 
     let runId = null;
     try {
-      const r = await fetch("output/", { headers: { Accept: "application/json" } });
+      const r = await fetch("/output/", { headers: { Accept: "application/json" } });
       if (r.ok) {
         const j = await r.json();
         const runs = (j.files || [])
@@ -636,12 +1469,12 @@ function App() {
 
     if (!runId) {
       alert(
-        "no packet yet — run ./run from the project root first.\n" +
-        "(bart writes to output/run_<timestamp>/; this page reads from there)"
+        "no packet yet — your run is still building or didn't produce output.\n" +
+        "check past runs in a moment."
       );
       return;
     }
-    window.open(`output/${runId}/${leaf}`, "_blank", "noopener,noreferrer");
+    window.open(`/output/${runId}/${leaf}`, "_blank", "noopener,noreferrer");
   }
 
   const totalCost = useMemo(() => {
@@ -661,8 +1494,17 @@ function App() {
             </span>
           )}
           <span className="mono">v0.4.2</span>
-          <a href="#" onClick={e => { e.preventDefault(); setView(view === "runs" ? "home" : "runs"); }}>
+          <a href={view === "runs" ? "/app" : "/app/runs"}
+             onClick={e => { e.preventDefault(); setView(view === "runs" ? "home" : "runs"); }}>
             {view === "runs" ? "bart" : "past runs"}
+          </a>
+          <a href={view === "social" ? "/app" : "/app/friends"}
+             onClick={e => { e.preventDefault(); setView(view === "social" ? "home" : "social"); }}>
+            {view === "social" ? "bart" : "friends"}
+          </a>
+          <a href={view === "settings" ? "/app" : "/app/settings"}
+             onClick={e => { e.preventDefault(); setView(view === "settings" ? "home" : "settings"); }}>
+            {view === "settings" ? "bart" : "settings"}
           </a>
           <a href="#" onClick={async e => {
             e.preventDefault();
@@ -680,6 +1522,10 @@ function App() {
 
         {view === "runs" ? (
           <PastRuns onBack={() => setView("home")} me={me} />
+        ) : view === "social" ? (
+          <Social onBack={() => setView("home")} me={me} />
+        ) : view === "settings" ? (
+          <Settings onBack={() => setView("home")} />
         ) : (<>
 
         <h1 className="bart-speech">
