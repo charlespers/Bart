@@ -99,6 +99,23 @@ _CATALOG_BY_ARTIFACT = {
         "passage-annotated", "character-graph", "theme-weave",
         "style-spectrum", "quote-pull", "timeline",
     ],
+    "physics_daily_lesson": [
+        "why-it-matters", "concept-build", "formula-card", "trap-callout",
+        "quick-check", "worked-example", "multi-step", "checkpoint",
+        "graph-plot", "number-line", "integral-area", "comparison-matrix",
+        "process-ribbon", "anatomy-diagram",
+    ],
+    "bio_daily_lesson": [
+        "why-it-matters", "concept-build", "formula-card", "trap-callout",
+        "quick-check", "worked-example", "checkpoint",
+        "anatomy-diagram", "concept-map", "process-ribbon", "flowchart",
+        "timeline", "comparison-matrix",
+    ],
+    "econ_daily_lesson": [
+        "why-it-matters", "concept-build", "formula-card", "trap-callout",
+        "quick-check", "worked-example", "multi-step", "checkpoint",
+        "graph-plot", "comparison-matrix", "number-line", "process-ribbon",
+    ],
 }
 
 
@@ -141,6 +158,26 @@ _LIT_KEYWORDS = (
 )
 
 
+_PHYSICS_KEYWORDS = (
+    "physics", "mechanics", "kinematic", "dynamics", "thermodynamic",
+    "electromagnet", "electricity", "magnetism", "optics", "quantum",
+    "relativity", "astrophys", "statics",
+)
+
+
+_BIO_KEYWORDS = (
+    "biology", "bio ", "molecular bio", "cell bio", "genetics", "genomic",
+    "physiology", "anatomy", "ecology", "evolution", "microbio",
+    "neuroscience", "botany", "zoology", "immunolog",
+)
+
+
+_ECON_KEYWORDS = (
+    "economic", "econ ", "microeconom", "macroeconom", "econometric",
+    "finance", "financial", "trade", "monetary", "fiscal",
+)
+
+
 def is_chem_subject(subject: str) -> bool:
     return _matches(subject, _CHEM_KEYWORDS)
 
@@ -155,6 +192,12 @@ def _domain_kind(subject: str) -> str | None:
     keywords match. Order matters — most specific first."""
     if _matches(subject, _CHEM_KEYWORDS):
         return "chem"
+    if _matches(subject, _BIO_KEYWORDS):
+        return "bio"
+    if _matches(subject, _PHYSICS_KEYWORDS):
+        return "physics"
+    if _matches(subject, _ECON_KEYWORDS):
+        return "econ"
     if _matches(subject, _ML_KEYWORDS):
         return "ml"
     if _matches(subject, _CS_KEYWORDS):
@@ -168,12 +211,24 @@ def _domain_kind(subject: str) -> str | None:
     return None
 
 
+# Artifact kinds that may carry generated figures. The `bart-figure` block
+# is advertised to the Author for these — but only when image generation is
+# actually enabled for the run, so a no-image run never tells the Author to
+# request figures it can't produce.
+_FIGURE_ARTIFACTS = frozenset({
+    "daily_lesson", "schematics", "short_study_guide",
+})
+
+
 def catalog_for(artifact_kind: str, subject: str = "") -> str:
     """Slim catalog appropriate for the given artifact_kind.
 
-    When `subject` matches a domain keyword set (chem / ml / cs / phil /
-    math / lit), daily-lesson catalogs include that domain's components
-    in addition to the generic ones.
+    When `subject` matches a domain keyword set (chem / bio / physics / econ
+    / ml / cs / phil / math / lit), daily-lesson catalogs include that
+    domain's components in addition to the generic ones.
+
+    The `bart-figure` block is appended for figure-friendly artifacts when
+    image generation is enabled for this run (see ``bart.imagegen``).
     """
     if artifact_kind == "daily_lesson":
         domain = _domain_kind(subject)
@@ -181,5 +236,13 @@ def catalog_for(artifact_kind: str, subject: str = "") -> str:
         only = _CATALOG_BY_ARTIFACT.get(key) or _CATALOG_BY_ARTIFACT["daily_lesson"]
     else:
         only = _CATALOG_BY_ARTIFACT.get(artifact_kind)
+
+    if only is not None and artifact_kind in _FIGURE_ARTIFACTS:
+        try:
+            from ...imagegen import image_generation_enabled
+            if image_generation_enabled() and "figure" not in only:
+                only = list(only) + ["figure"]
+        except Exception:  # noqa: BLE001 — figures are optional; never block
+            pass
     return render_block_catalog(only=only)
 

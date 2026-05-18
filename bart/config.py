@@ -54,6 +54,12 @@ class Config(BaseModel):
     # picker walks the family's variants and selects the best fit for the
     # detected device. Honored only when local_model_key is empty.
     local_model_family: str = "auto"
+    # When true, bart-figure blocks generate real custom illustrations via an
+    # open-source image backend (see bart/imagegen.py) and embed them in the
+    # packet. When false, bart-figure renders a clean placeholder and the
+    # block is not advertised to the Author. Off by default — opt-in so an
+    # offline run never blocks on the network.
+    image_generation: bool = False
 
     @field_validator("exam_date")
     @classmethod

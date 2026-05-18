@@ -448,6 +448,7 @@ async def billing_status(user=Depends(auth.current_user)):
         "status": user["subscription_status"] or "free",
         "current_period_end": user["current_period_end"],
         "has_run_access": auth.has_run_access(user),
+        "usage": auth.claude_run_usage(user),
     }
 
 
@@ -574,7 +575,15 @@ async def stripe_webhook(request: Request):
 
 @app.get("/api/auth/me")
 async def me(user=Depends(auth.current_user)):
-    return {"user": _user_payload(user)}
+    return {"user": _user_payload(user), "usage": auth.claude_run_usage(user)}
+
+
+@app.get("/api/usage")
+async def usage(user=Depends(auth.current_user)):
+    """Premium (Claude) run allowance for the current month. The run row
+    polls this so the student always sees how many premium runs remain;
+    Gemma runs are unlimited and never counted."""
+    return auth.claude_run_usage(user)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -715,6 +724,19 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
     )
 
     if not use_gemma:
+        # Monthly Claude-run allowance. Local Gemma runs are unlimited, so a
+        # subscriber who's used their premium runs can always switch the
+        # model toggle to "gemma 4" and keep generating full packets — the
+        # quality of any single packet is never reduced.
+        usage = auth.claude_run_usage(user)
+        if not usage["unlimited"] and usage["remaining"] <= 0:
+            raise HTTPException(
+                429,
+                f"you've used all {usage['limit']} premium (claude) runs this "
+                f"month. switch the model to gemma 4 for unlimited free runs, "
+                f"or your allowance resets on the 1st.",
+            )
+
         if shutil.which("claude") is None:
             raise HTTPException(
                 503,
@@ -749,6 +771,10 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
         # hardware and auto-picks the best-fitting Gemma 4 variant.
         "local_model_key": "",
         "local_model_family": "gemma4" if use_gemma else "auto",
+        # Custom illustrations on by default for web runs — generated via the
+        # free, open Pollinations backend and embedded in the packet. Degrades
+        # gracefully to a placeholder if the network is unavailable.
+        "image_generation": True,
     }
     config_path = _user_config_path(user["id"])
     config_path.write_text(json.dumps(config, indent=2))
@@ -837,6 +863,16 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
         raise HTTPException(500, f"could not launch bart: {e}")
     _procs[token] = proc
     _run_meta[token]["user_lock"] = user_lock
+
+    # The run launched successfully — count it against the monthly premium
+    # allowance. Gemma runs are free and unlimited, so they're never counted.
+    # Grandfathered accounts skip the counter (consume_claude_run still runs
+    # but their quota is never checked, so it's harmless bookkeeping).
+    if not use_gemma and not auth._row_get(user, "is_grandfathered", 0):
+        try:
+            auth.consume_claude_run(user["id"])
+        except Exception:  # noqa: BLE001 — never fail a launched run on bookkeeping
+            pass
 
     async def reader():
         try:

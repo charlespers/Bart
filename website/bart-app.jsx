@@ -1360,10 +1360,18 @@ function App() {
   // current logged-in user — so the topbar can show which account you're on.
   // /app is gated server-side, so by the time we get here we have a session.
   const [me, setMe] = useState(null);
+  // Premium (claude) run allowance for the month. Gemma runs are unlimited.
+  const [usage, setUsage] = useState(null);
+  const refreshUsage = useCallback(() => {
+    fetch("/api/usage", { credentials: "same-origin" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setUsage(d))
+      .catch(() => {});
+  }, []);
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "same-origin" })
       .then(r => r.ok ? r.json() : null)
-      .then(d => d && setMe(d.user))
+      .then(d => { if (d) { setMe(d.user); if (d.usage) setUsage(d.usage); } })
       .catch(() => {});
   }, []);
 
@@ -1620,6 +1628,16 @@ function App() {
         setTimeout(() => { window.location.href = "/pricing"; }, 900);
         return;
       }
+      if (rr.status === 429) {
+        // Monthly premium-run allowance exhausted. Steer them to the free
+        // unlimited Gemma engine rather than a dead end.
+        const err = await rr.json().catch(() => ({}));
+        appendMsg(err.detail || "premium runs used up for this month — switch to gemma 4 for unlimited free runs.");
+        setModel("gemma");
+        refreshUsage();
+        setPhase("idle");
+        return;
+      }
       if (!rr.ok) {
         const err = await rr.json().catch(() => ({ detail: `run failed (${rr.status})` }));
         appendMsg(err.detail || `run failed (${rr.status})`);
@@ -1680,6 +1698,8 @@ function App() {
       esRef.current = null;
       setPkt(buildPacket(subject, safeDays));
       setPhase("done");
+      // A premium run just consumed an allowance slot — refresh the counter.
+      refreshUsage();
       // The server archived materials/ into the run dir — clear the chips so
       // the next run starts clean.
       setFiles([]);
@@ -1874,6 +1894,16 @@ function App() {
             placeholder="anything weak / important"
           />
           .
+          {usage && !usage.unlimited && (
+            <div className="run-usage">
+              {model === "gemma"
+                ? <>gemma 4 runs are <b>unlimited</b> — free on local open weights.</>
+                : <>
+                    <b>{usage.remaining}</b> of {usage.limit} premium runs left this month
+                    {usage.remaining === 0 && <> · <span className="run-usage-cta">switch to gemma 4 for unlimited</span></>}
+                  </>}
+            </div>
+          )}
         </div>
 
         <div className="run-cta">

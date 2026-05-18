@@ -161,6 +161,8 @@ def _build_index_page(
     days_focuses: dict[int, str],
     missing_day_nums: list[int] | None = None,
     run_id: str = "",
+    guidance: str = "",
+    student_level: str = "",
 ) -> str:
     """Compose the landing page from structural blocks."""
     page = Page()
@@ -168,6 +170,8 @@ def _build_index_page(
         subject=subject,
         generated_at=generated_at,
         exam_date=exam_date,
+        guidance=guidance,
+        student_level=student_level,
     ))
 
     # KPI strip — quick glance at the packet shape.
@@ -381,6 +385,8 @@ def build_packet(run_dir: Path, manifest: dict, *, run_record=None) -> List[Warn
         days_focuses=days_focuses,
         missing_day_nums=missing_day_nums,
         run_id=run_dir.name,
+        guidance=str(cfg.get("guidance", "")),
+        student_level=str(cfg.get("student_level", "")),
     )
     index_html = assemble_page(
         body=body,

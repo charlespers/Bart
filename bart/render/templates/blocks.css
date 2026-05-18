@@ -6,15 +6,15 @@
 .block-hero {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 36px;
+  gap: 40px;
   align-items: center;
-  padding: 48px 0 56px;
+  padding: 56px 0 60px;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 48px;
+  margin-bottom: 52px;
 }
 
 @media (max-width: 700px) {
-  .block-hero { grid-template-columns: 1fr; gap: 16px; padding: 32px 0; }
+  .block-hero { grid-template-columns: 1fr; gap: 18px; padding: 36px 0; }
 }
 
 .block-hero-loaf {
@@ -23,11 +23,22 @@
   display: block;
 }
 
+/* small uppercase eyebrow above the title — quiet, premium framing */
+.block-hero-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+
 .block-hero-title {
   font-size: 52px;
   font-weight: 800;
   letter-spacing: -0.035em;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   line-height: 1.05;
 }
 
@@ -35,22 +46,67 @@
   color: var(--accent);
 }
 
-.block-hero-meta {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--fg-mute);
-  letter-spacing: 0.04em;
-  margin-bottom: 14px;
-}
-
 .block-hero-tagline {
   font-size: 19px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--fg-soft);
   max-width: 600px;
   margin: 0;
   text-wrap: pretty;
 }
+
+/* "Tailored to: ..." — the student's own guidance, surfaced on the cover so
+   the packet reads as bespoke. */
+.block-hero-custom {
+  margin-top: 18px;
+  padding: 12px 16px;
+  background: var(--paper-hi);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--r-md, 8px) var(--r-md, 8px) 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--fg-soft);
+  max-width: 600px;
+}
+.block-hero-custom-label {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  margin-right: 8px;
+}
+
+/* exam countdown — the cover's focal stat */
+.block-hero-countdown {
+  margin-top: 22px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.block-hero-countdown-num {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--fg);
+  line-height: 1;
+}
+.block-hero-countdown-unit {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--fg-soft);
+}
+
+.block-hero-meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-mute);
+  letter-spacing: 0.04em;
+  margin-top: 16px;
+}
+.block-hero-sep { margin: 0 8px; opacity: 0.5; }
 
 /* ─── KPI grid ───────────────────────────────────────────────── */
 
@@ -2939,4 +2995,95 @@
   .b-passage-annotated .b-pa-body { grid-template-columns: 1fr; }
   .b-dial-row { grid-template-columns: 1fr; }
   .b-dial-syn { width: 100%; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Readability spacing — overrides (last wins). Generous, even vertical
+   rhythm between the major teaching blocks so a packet reads as a
+   sequence of calm, well-separated cards rather than a dense wall.
+   ───────────────────────────────────────────────────────────────────── */
+.b-concept-build,
+.b-formula-card,
+.b-worked-example,
+.b-quick-check,
+.b-trap-callout,
+.b-checkpoint,
+.b-multi-step,
+.b-multiple-choice,
+.b-why-it-matters,
+.b-comparison-matrix,
+.b-mnemonic-card,
+.b-build-equation,
+.b-fill-in-blank,
+.b-match-pairs {
+  margin-top: 36px;
+  margin-bottom: 36px;
+}
+
+/* Two blocks back-to-back (no prose between) get a touch more air so they
+   don't visually fuse into one slab. */
+.b-concept-build + .b-concept-build,
+.b-formula-card + .b-formula-card,
+.b-trap-callout + .b-trap-callout,
+.b-worked-example + .b-worked-example,
+.b-quick-check + .b-quick-check {
+  margin-top: 44px;
+}
+
+/* A heading immediately after a block shouldn't crowd it. */
+.b-concept-build + h2, .b-formula-card + h2, .b-worked-example + h2,
+.b-checkpoint + h2, .b-trap-callout + h2 {
+  margin-top: 84px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   bart-figure — custom generated illustration (see bart/imagegen.py).
+   Renders a real image (data URI) when generation is on, else a tasteful
+   placeholder card naming the requested illustration.
+   ───────────────────────────────────────────────────────────────────── */
+.b-figure {
+  margin: 40px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.b-figure-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--r-lg, 12px);
+  border: 1px solid var(--rule);
+  box-shadow: 0 1px 3px rgba(34,30,25,0.06), 0 8px 24px rgba(34,30,25,0.05);
+}
+.b-figure-cap {
+  font-size: var(--text-sm, 15px);
+  color: var(--fg-soft);
+  font-style: italic;
+  text-align: center;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+/* Placeholder — shown when image generation is off or a request failed. */
+.b-figure-placeholder .b-figure-frame {
+  width: 100%;
+  max-width: 560px;
+  aspect-ratio: var(--fig-aspect, 16/9);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  border: 1.5px dashed var(--rule);
+  border-radius: var(--r-lg, 12px);
+  background: var(--paper-hi);
+  color: var(--fg-soft);
+}
+.b-figure-icon { width: 34px; height: 34px; opacity: 0.55; }
+.b-figure-note {
+  font-size: var(--text-sm, 15px);
+  line-height: 1.5;
+  max-width: 44ch;
 }

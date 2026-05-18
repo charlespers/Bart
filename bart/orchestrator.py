@@ -138,6 +138,11 @@ class Orchestrator:
     # ------------------------------------------------------------------
     def run(self) -> int:
         try:
+            # bart-figure blocks read BART_IMAGE_GEN at render time; mirror
+            # the config flag into the env so the renderer (which is pure and
+            # config-unaware) knows whether to generate real illustrations.
+            if getattr(self.cfg, "image_generation", False):
+                os.environ["BART_IMAGE_GEN"] = "1"
             self._print_header()
             with self._stage("extract"):
                 kept, skipped = self._extract()

@@ -117,6 +117,18 @@ BLOCK_SCHEMAS: dict[str, BlockSchema] = {
         summary="A figure caption, optionally numbered.",
         example='{"text": "...", "number?": 3}',
     ),
+    "figure": BlockSchema(
+        required=("prompt",),
+        optional=("caption", "alt", "aspect"),
+        field_types={"prompt": _STR, "caption": _STR, "alt": _STR,
+                     "aspect": _STR},
+        summary=("A custom illustration generated from a plain-language "
+                 "prompt. Use it to picture anything that's clearer shown "
+                 "than described — a diagram, an apparatus, a scene."),
+        example=('{"prompt": "a clearly labeled diagram of a plant cell", '
+                 '"caption?": "Fig. 1 — the plant cell", '
+                 '"aspect?": "16:9|4:3|1:1|3:2"}'),
+    ),
     # ── Visuals (originals) ───────────────────────────────────────
     "formula-card": BlockSchema(
         required=("tex",),

@@ -143,6 +143,16 @@ def init_db() -> None:
                 ("loctran0323@gmail.com",),
             )
             billing_added = True
+        # Metered usage — a $10/month subscription includes a monthly
+        # allowance of Claude-powered (premium) runs; local Gemma runs are
+        # always unlimited and free. `usage_period` is the "YYYY-MM" the
+        # counter belongs to; a month rollover lazily resets the counter.
+        if "claude_runs_used" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN claude_runs_used INTEGER DEFAULT 0")
+            billing_added = True
+        if "usage_period" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN usage_period TEXT")
+            billing_added = True
         if billing_added:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_subscription_id "
@@ -263,6 +273,102 @@ def update_subscription(
             "current_period_end = ? WHERE id = ?",
             (subscription_id, status, current_period_end, user_id),
         )
+
+
+# ─── metered usage ─────────────────────────────────────────────────────────────
+
+# A $10/month subscription includes this many Claude-powered (premium-quality)
+# runs per calendar month. Local Gemma runs are always free and unlimited, so a
+# subscriber who exhausts the premium allowance can still generate full packets
+# — the quality of any single packet is never reduced, only the premium engine
+# is metered. Tunable per-deployment without a code change.
+CLAUDE_RUNS_PER_MONTH = max(1, int(os.environ.get("BART_CLAUDE_RUNS_PER_MONTH", "12")))
+
+
+def _current_period() -> str:
+    """The billing period the usage counter belongs to — "YYYY-MM" (UTC)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _row_get(row, key, default=None):
+    """sqlite3.Row has no .get(); read a possibly-absent column safely."""
+    try:
+        val = row[key]
+    except (IndexError, KeyError):
+        return default
+    return default if val is None else val
+
+
+def claude_run_usage(user) -> dict:
+    """Return this user's Claude-run allowance status for the current month.
+
+    Lazily rolls the counter over at a month boundary. The returned dict:
+      { unlimited: bool, used: int, limit: int, remaining: int, period: str }
+
+    Grandfathered accounts (and anyone without a tracked subscription row)
+    report `unlimited=True`.
+    """
+    period = _current_period()
+    if user is None:
+        return {"unlimited": False, "used": 0, "limit": CLAUDE_RUNS_PER_MONTH,
+                "remaining": 0, "period": period}
+
+    if _row_get(user, "is_grandfathered", 0):
+        return {"unlimited": True, "used": 0, "limit": CLAUDE_RUNS_PER_MONTH,
+                "remaining": CLAUDE_RUNS_PER_MONTH, "period": period}
+
+    user_id = user["id"]
+    with _connect() as db:
+        row = db.execute(
+            "SELECT claude_runs_used, usage_period FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        used = _row_get(row, "claude_runs_used", 0) if row else 0
+        stored_period = _row_get(row, "usage_period") if row else None
+        if stored_period != period:
+            # Month rollover (or first-ever run) — reset the counter.
+            db.execute(
+                "UPDATE users SET claude_runs_used = 0, usage_period = ? WHERE id = ?",
+                (period, user_id),
+            )
+            used = 0
+
+    used = max(0, int(used))
+    remaining = max(0, CLAUDE_RUNS_PER_MONTH - used)
+    return {"unlimited": False, "used": used, "limit": CLAUDE_RUNS_PER_MONTH,
+            "remaining": remaining, "period": period}
+
+
+def has_claude_run_quota(user) -> bool:
+    """True iff the user may start another Claude-powered run this month."""
+    usage = claude_run_usage(user)
+    return usage["unlimited"] or usage["remaining"] > 0
+
+
+def consume_claude_run(user_id: int) -> None:
+    """Record that a Claude-powered run was started — decrements the monthly
+    allowance. Resets the counter first if the stored period is stale, so a
+    run that straddles a month boundary is always counted against the right
+    month. No-op semantics for grandfathered users are handled by callers
+    (they skip the quota path entirely)."""
+    period = _current_period()
+    with _connect() as db:
+        row = db.execute(
+            "SELECT claude_runs_used, usage_period FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return
+        if _row_get(row, "usage_period") != period:
+            db.execute(
+                "UPDATE users SET claude_runs_used = 1, usage_period = ? WHERE id = ?",
+                (period, user_id),
+            )
+        else:
+            db.execute(
+                "UPDATE users SET claude_runs_used = claude_runs_used + 1 WHERE id = ?",
+                (user_id,),
+            )
 
 
 def find_or_create_google_user(google_id: str, email: str, name: str = "") -> sqlite3.Row:

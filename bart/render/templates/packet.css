@@ -49,14 +49,16 @@
   --text-base: 21px;     /* bumped — readable textbook scale on widescreen displays */
   --text-sm:   15px;
   --text-xs:   13px;
-  --leading:   1.75;
+  --leading:   1.85;     /* loose line-height — prose breathes, scans easily */
   --tracking-mono: 0.005em;
 
   /* spacing */
-  --gutter-y:    1.4rem;
+  --gutter-y:    1.7rem; /* generous gap between paragraphs — clear visual rhythm */
+  --measure:     74ch;   /* prose line-length cap — long lines are hard to track;
+                            ~74 characters keeps reading comfortable */
   --max-prose:   100%;   /* article fills the content column; prose paragraphs
-                            cap their own measure (78ch) for readability while
-                            library blocks and display math use the full width */
+                            cap their own measure for readability while library
+                            blocks and display math use the full width */
   --r-sm:        4px;
   --r-md:        8px;
   --r-lg:        12px;
@@ -360,20 +362,26 @@ article {
    library blocks all use the available width. The page padding plus sidebar
    already provide reading-friendly side margins; capping paragraphs to a
    narrow measure inside that just left huge empty gutters. */
-article p, article ul, article ol, article blockquote,
+/* Headings span the full content column; running prose (paragraphs, lists,
+   blockquotes) caps its line-length at --measure so the reader's eye never
+   has to track an over-long line back to the next one. */
 article h1, article h2, article h3, article h4, article h5, article h6 {
   max-width: 100%;
 }
+article p, article ul, article ol, article blockquote {
+  max-width: var(--measure);
+}
 article p {
-  margin: 0 0 1.3em;
+  margin: 0 0 var(--gutter-y);
   /* Slightly wider letter-spacing on body serif aids small-text legibility. */
   letter-spacing: 0.005em;
 }
-article ul, article ol { margin: 0 0 1.3em 1.4em; padding: 0; }
-article li { margin: 0 0 0.4em; }
+article ul, article ol { margin: 0 0 var(--gutter-y) 1.4em; padding: 0; }
+article li { margin: 0 0 0.55em; }
+article li:last-child { margin-bottom: 0; }
 article blockquote {
-  margin: 1.2em 0;
-  padding: 0.4em 1.2em;
+  margin: 1.6em 0;
+  padding: 0.6em 1.4em;
   border-left: 3px solid var(--rule);
   color: var(--fg-soft);
   font-style: italic;
@@ -394,14 +402,13 @@ article h1, article h2, article h3, article h4, article h5, article h6 {
 }
 
 article h1 { font-size: 44px; margin: 0 0 10px; letter-spacing: -0.028em; }
-article h2 { font-size: 30px; margin: 60px 0 14px; padding-top: 30px; border-top: 1px solid var(--border); }
-article h2:first-of-type { border-top: 0; padding-top: 0; margin-top: 36px; }
-article h3 { font-size: 23px; margin: 38px 0 10px; }
-article h4 { font-size: 19px; margin: 26px 0 8px; color: var(--fg-soft); }
-article h5, article h6 { font-size: 17px; margin: 20px 0 6px; color: var(--fg-soft); text-transform: uppercase; letter-spacing: 0.05em; }
+article h2 { font-size: 30px; margin: 76px 0 18px; padding-top: 34px; border-top: 1px solid var(--border); }
+article h2:first-of-type { border-top: 0; padding-top: 0; margin-top: 40px; }
+article h3 { font-size: 23px; margin: 50px 0 12px; }
+article h4 { font-size: 19px; margin: 34px 0 10px; color: var(--fg-soft); }
+article h5, article h6 { font-size: 17px; margin: 24px 0 8px; color: var(--fg-soft); text-transform: uppercase; letter-spacing: 0.05em; }
 
 article p {
-  margin: 0 0 var(--gutter-y);
   text-wrap: pretty;
 }
 

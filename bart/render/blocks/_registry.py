@@ -17,6 +17,7 @@ from .visuals import *  # noqa: F401,F403
 from .interactives import *  # noqa: F401,F403
 from .chem import *  # noqa: F401,F403
 from .packs import *  # noqa: F401,F403
+from .figure import figure  # noqa: F401  — custom generated-image block
 
 
 # Map of fence-name -> renderer function.
@@ -28,6 +29,7 @@ _BLOCK_REGISTRY: dict[str, Callable[..., str]] = {
     "paper-rule":        paper_rule,
     "marginalia":        marginalia,
     "fig-caption":       fig_caption,
+    "figure":            figure,
     # Visuals (originals)
     "formula-card":      formula_card,
     "worked-example":    worked_example,

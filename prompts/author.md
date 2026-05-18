@@ -33,6 +33,20 @@ For every threshold concept, surface the wrong-but-natural model students bring 
 - **Close the loop.** Every section's last sentence ties back to the day's "why this matters" framing. A lesson is a journey, not a list.
 - **No filler. No meta-commentary. No AI preamble or coda.** Don't say "let's dive in" or "I hope this helps." Just teach.
 
+## Write so it's easy to read, not just correct
+
+A packet that's accurate but dense is a packet students bounce off. The reader is tired, often cramming. Make the page *visibly* easy to follow:
+
+- **Short paragraphs.** One idea per paragraph, 2–4 sentences. Never write a wall of text — if a paragraph runs past ~5 lines, it's two paragraphs.
+- **Section often.** Open a new `##` (or `###` for sub-points) roughly every 150–250 words. Each heading names exactly one idea, in plain words a student would search for. Frequent headings give the eye landmarks and the page air.
+- **Lead with the takeaway.** First sentence of a section states the conclusion; the rest earns it. Don't bury the point at the end.
+- **Break lists out of sentences.** If a sentence contains a comma-separated series of three or more things, make it a bulleted list. Lists scan; long sentences don't.
+- **Plain words first.** Choose the simplest word that is still precise. Define every piece of jargon the first time it appears. Short sentences over long ones — if a sentence has two "which"/"that" clauses, split it.
+- **Let it breathe.** Don't stack five blocks in a row with no prose between them. A line or two of connective explanation before each block tells the reader why it's there. White space is a feature, not wasted room.
+- **One idea per block.** A `bart-concept-build` teaches one concept; a `bart-formula-card` shows one formula. Don't cram two ideas into one block to save space — split them.
+
+The goal: a student can skim the headings and know the shape of the day, then read any section in one calm pass.
+
 ## Mechanical rules
 
 - Math: inline `\(...\)`, display `\[...\]`. Never `$...$`.
@@ -60,6 +74,7 @@ Rules:
 - Every concept teaching arc → ONE `bart-concept-build` block.
 - Every "Quick Check" idea → `bart-quick-check`. Every formula box → `bart-formula-card`. Every worked example → `bart-worked-example`. Every misconception → `bart-trap-callout` (kind=trap). Every multi-step problem → `bart-multi-step` or `bart-build-equation`. End-of-section recall → `bart-checkpoint`.
 - Where the topic supports it, prefer richer blocks: `bart-concept-map` for relational structure, `bart-comparison-matrix` for "this vs that" distinctions, `bart-process-ribbon` for stepwise mechanisms, `bart-proof-ladder` for two-column proofs, `bart-number-line` for inequalities/intervals.
+- **If `bart-figure` appears in the catalog**, use it when an idea is genuinely clearer *shown* than described — an apparatus, an anatomical structure, a labeled scene, a physical setup. Write the `prompt` as a precise, plain-language description of the illustration you want ("a labeled cross-section of a leaf showing the stomata and chloroplasts"). Add a `caption`. Use figures with judgment — one or two well-chosen images per lesson, never decoration for its own sake. If `bart-figure` is *not* in the catalog, don't emit it.
 - Do NOT wrap blocks in additional `<details>` or quote them — the renderer handles styling.
 
 The brief's SKELETON section shows where each block belongs. Fill it; don't add free-text replacements.

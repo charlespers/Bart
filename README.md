@@ -145,6 +145,10 @@ Lessons are graded by a critic agent before they reach you. If a lesson is weak,
 
 **Practice-heavy.** Every lesson ends with embedded Quick Checks (collapsible answers), worked examples, and 8–12 drill problems. The practice exam is a serious 3-hour mock with a real answer key.
 
+**Any subject.** The pipeline is subject-agnostic — it works the same for history as for organic chemistry. On top of that, bart ships hand-curated, zero-cost reference cards that auto-attach when your subject matches: **chemistry, physics, biology, economics, statistics, computer science, and electrical engineering**. Subjects like physics, biology, economics, math, ML, philosophy, and literature also get a tailored set of visual blocks (graphs, diagrams, proof ladders, …) in their daily lessons.
+
+**Custom illustrations.** When image generation is enabled, the Author can request a figure in plain language — "a labeled cross-section of a leaf" — and bart generates it with an open-source image backend (the free [Pollinations](https://pollinations.ai) service, or a Stable Diffusion server you run yourself) and embeds it right in the packet. See *Custom figures* below.
+
 ---
 
 ## Commands
@@ -425,6 +429,21 @@ Pick the family in `./run setup`, or set `local_model_family` (`"qwen3"` / `"gem
 | Rate limits | subscription tier | API tier | none (single local server) |
 
 You can switch between modes anytime with `./run setup`. The web app also exposes a **claude / gemma 4** toggle on the run row — pick "gemma 4" to run entirely on free local weights.
+
+---
+
+## Custom figures (image generation)
+
+bart can generate custom illustrations and embed them in your packet. The Author requests an image in plain language via a `bart-figure` block (e.g. *"a labeled diagram of the cardiac cycle"*); bart generates it and embeds it as a self-contained data URI.
+
+It is **off by default** — turn it on by setting `image_generation: true` in `.bart_config.json`, or `BART_IMAGE_GEN=1` in the environment. When off, `bart-figure` blocks render a clean placeholder, so packets are never broken.
+
+Two open backends, picked automatically:
+
+- **Pollinations** (default) — the free, open-source [pollinations.ai](https://pollinations.ai) generator. No API key, no signup.
+- **Local Stable Diffusion** — point bart at a Stable Diffusion server you run yourself (AUTOMATIC1111 / Forge / ComfyUI with the A1111-compatible API) by setting `BART_IMAGE_SD_URL=http://127.0.0.1:7860`. Fully offline.
+
+Generated images are cached on disk by prompt hash, so re-runs cost nothing. Tunables: `BART_IMAGE_MAX` (per-run image cap, default 24), `BART_IMAGE_SD_STEPS` (local-SD sampling steps).
 
 ---
 
