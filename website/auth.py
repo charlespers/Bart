@@ -148,8 +148,8 @@ CREATE TABLE IF NOT EXISTS payouts (
   creator_id         INTEGER NOT NULL,
   amount_cents       INTEGER NOT NULL,
   currency           TEXT NOT NULL DEFAULT 'usd',
-  method             TEXT NOT NULL,            -- 'stripe' | 'manual'
-  status             TEXT NOT NULL,            -- 'pending' | 'paid' | 'failed'
+  method             TEXT NOT NULL CHECK (method IN ('stripe','manual')),  -- 'stripe' | 'manual'
+  status             TEXT NOT NULL CHECK (status IN ('pending','paid','failed')),  -- 'pending' | 'paid' | 'failed'
   stripe_transfer_id TEXT,
   note               TEXT,
   period             TEXT,                     -- 'YYYY-MM' the payout covers
