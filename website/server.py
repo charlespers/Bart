@@ -61,6 +61,16 @@ STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_MONTHLY = os.environ.get("STRIPE_PRICE_MONTHLY", "")
 APP_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "https://studywithbart.com")
+# Premium ("claude") web-run authoring model. Sonnet 4.6 is ~5x cheaper than
+# Opus on the heavy authoring step and keeps the $10/mo tier profitable with
+# the creator commission stacked on (see the creator-accounts design spec).
+WEB_PRIMARY_MODEL = os.environ.get("BART_WEB_PRIMARY_MODEL", "claude-sonnet-4-6")
+# Creator payouts. PAYOUT_MINIMUM_CENTS is the balance a creator must reach
+# before a payout run pays them. STRIPE_CONNECT_ENABLED switches the dashboard
+# between Connect onboarding and manual-handle entry.
+PAYOUT_MINIMUM_CENTS = max(0, int(
+    os.environ.get("BART_PAYOUT_MINIMUM_CENTS", "2500")))
+STRIPE_CONNECT_ENABLED = os.environ.get("BART_STRIPE_CONNECT", "0") == "1"
 
 
 HERE = Path(__file__).resolve().parent
@@ -551,15 +561,20 @@ def _period_end_from_sub(sub_obj) -> Optional[str]:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _credit_referral_commission(user_id: int, session_data: dict) -> None:
-    """Pay a creator their share of a *verified* subscription payment.
+def _credit_referral_commission(user_id: int, amount_cents: int,
+                                currency: str, stripe_ref: str) -> None:
+    """Pay the referring creator their flat commission for one verified
+    payment by a referred user. Idempotent on `stripe_ref` (a Stripe invoice
+    id), so the creator is paid exactly once per invoice — i.e. every billing
+    cycle the referred user keeps paying. No-op if the user wasn't referred,
+    the referral code is stale, or nothing was actually collected.
 
     Called only from inside the signature-verified Stripe webhook, after
-    Stripe has actually collected the money — never on a forgeable redirect.
-    No-op when the subscriber wasn't referred, or the referral code is stale.
-    Idempotent: keyed on the Stripe checkout-session id, so a webhook Stripe
-    retries never credits a creator twice."""
+    Stripe has actually collected the money."""
     try:
+        amount_cents = int(amount_cents or 0)
+        if amount_cents <= 0 or not stripe_ref:
+            return
         user = auth.find_user_by_id(user_id)
         if user is None:
             return
@@ -569,22 +584,34 @@ def _credit_referral_commission(user_id: int, session_data: dict) -> None:
         creator = auth.get_creator_by_code(code)
         if creator is None:
             return
-        amount_cents = int(session_data.get("amount_total") or 0)
-        if amount_cents <= 0:
+        # Flat $2 per verified payment, capped at the amount actually
+        # collected so a discounted/zero payment never overpays.
+        commission = min(auth.CREATOR_COMMISSION_CENTS, amount_cents)
+        if commission <= 0:
             return
-        currency = session_data.get("currency") or "usd"
-        commission = round(amount_cents * auth.CREATOR_COMMISSION_RATE)
-        ref = str(session_data.get("id") or f"session-user-{user_id}")
         if auth.record_commission(
             creator_id=creator["id"], referred_user_id=user_id,
-            amount_cents=commission, currency=currency, stripe_ref=ref,
+            amount_cents=commission, currency=currency or "usd",
+            stripe_ref=stripe_ref,
         ):
             print(f"[creator] credited code {creator['referral_code']} "
-                  f"{commission}¢ for verified payment by user {user_id}",
+                  f"{commission}¢ for invoice {stripe_ref} (user {user_id})",
                   file=sys.stderr, flush=True)
     except Exception as e:  # noqa: BLE001 — commission bookkeeping is best-effort
         print(f"[creator] commission credit failed: {e}",
               file=sys.stderr, flush=True)
+
+
+def _stripe_transfer(creator_row, amount_cents: int) -> str:
+    """Transfer `amount_cents` to a creator's Connect account. Returns the
+    Stripe transfer id; raises on failure (run_payouts catches and rolls back)."""
+    tr = _stripe().Transfer.create(
+        amount=amount_cents,
+        currency="usd",
+        destination=creator_row["stripe_account_id"],
+        description=f"bart creator payout — {creator_row['referral_code']}",
+    )
+    return tr["id"]
 
 
 @app.post("/api/stripe/webhook")
@@ -632,13 +659,19 @@ async def stripe_webhook(request: Request):
                         status=sub.status,
                         current_period_end=_period_end_from_sub(sub),
                     )
-                # Creator commission — credited ONLY here, inside the
-                # signature-verified webhook, i.e. only after Stripe has
-                # actually collected the payment. If this subscriber arrived
-                # through a creator's referral link, pay that creator their
-                # share. Idempotent on the checkout-session id, so a retried
-                # webhook never double-credits.
-                _credit_referral_commission(user_id, data)
+                # First payment — credit the referring creator, keyed on the
+                # first invoice id so the invoice.payment_succeeded path below
+                # (which also sees this invoice) can never double-credit. If
+                # the session carries no invoice id, skip here and let the
+                # invoice event handle it.
+                first_invoice = data.get("invoice")
+                if first_invoice:
+                    _credit_referral_commission(
+                        user_id=user_id,
+                        amount_cents=int(data.get("amount_total") or 0),
+                        currency=data.get("currency") or "usd",
+                        stripe_ref=str(first_invoice),
+                    )
             except Exception as e:
                 print(f"[stripe-webhook] checkout.session.completed handler error: {e}",
                       file=sys.stderr, flush=True)
@@ -657,6 +690,23 @@ async def stripe_webhook(request: Request):
                 subscription_id=data.get("id"),
                 status=status or "free",
                 current_period_end=_period_end_from_sub(obj),
+            )
+
+    elif etype == "invoice.payment_succeeded":
+        # Every paid invoice — the initial one AND every monthly renewal.
+        # This is what makes the creator commission recurring: each renewal
+        # invoice credits the referring creator another $2. Idempotent on the
+        # invoice id; the first invoice may also be credited by the
+        # checkout.session.completed branch above using the SAME invoice id,
+        # so record_commission's idempotency guarantees exactly one credit.
+        customer_id = data.get("customer")
+        u = auth.find_user_by_stripe_customer(customer_id) if customer_id else None
+        if u is not None:
+            _credit_referral_commission(
+                user_id=u["id"],
+                amount_cents=int(data.get("amount_paid") or 0),
+                currency=data.get("currency") or "usd",
+                stripe_ref=str(data.get("id") or ""),
             )
 
     return {"received": True}
@@ -729,19 +779,94 @@ async def creator_apply(req: CreatorApplyRequest, request: Request,
 
 @app.get("/api/creator/me")
 async def creator_me(user=Depends(auth.current_user)):
-    """The signed-in user's creator status: their dashboard (referral link,
-    referrals, earnings) once approved, otherwise their application status."""
+    """The signed-in user's creator status: full dashboard payload once
+    approved (referral link, earnings, payout state, payout history),
+    otherwise their application status."""
     creator = auth.get_creator_for_user(user)
     if creator is not None:
-        summary = auth.creator_summary(creator)
-        summary["is_creator"] = True
-        summary["referral_url"] = f"{APP_PUBLIC_URL}/r/{summary['referral_code']}"
-        return summary
+        earnings = auth.creator_earnings(creator)
+        payouts = auth.list_payouts(creator_id=creator["id"])[:20]
+        return {
+            "is_creator": True,
+            "name": creator["name"],
+            "referral_code": creator["referral_code"],
+            "referral_url": f"{APP_PUBLIC_URL}/r/{creator['referral_code']}",
+            "commission_cents": auth.CREATOR_COMMISSION_CENTS,
+            "payout_minimum_cents": PAYOUT_MINIMUM_CENTS,
+            "connect_mode": STRIPE_CONNECT_ENABLED,
+            "payout_method": creator["payout_method"],
+            "payout_details": creator["payout_details"],
+            "payouts_enabled": bool(creator["payouts_enabled"]),
+            "has_stripe_account": bool(creator["stripe_account_id"]),
+            "earnings": earnings,
+            "payouts": payouts,
+        }
     app = auth.latest_application_for_email(user["email"] or "")
     return {
         "is_creator": False,
         "application_status": app["status"] if app is not None else None,
     }
+
+
+class PayoutMethodRequest(BaseModel):
+    details: str = ""
+
+
+@app.post("/api/creator/payout-method")
+async def creator_payout_method(req: PayoutMethodRequest,
+                                user=Depends(auth.current_user)):
+    """Save a manual payout handle (PayPal/Venmo email) for the creator."""
+    creator = auth.get_creator_for_user(user)
+    if creator is None:
+        raise HTTPException(403, "you're not a bart creator.")
+    details = (req.details or "").strip()
+    if not details:
+        raise HTTPException(400, "enter a payout handle.")
+    auth.set_creator_payout_method(creator["id"], details)
+    return {"ok": True}
+
+
+@app.post("/api/creator/connect/start")
+async def creator_connect_start(user=Depends(auth.current_user)):
+    """Begin Stripe Connect Express onboarding — create the connected account
+    if needed, then return a hosted onboarding URL for the browser to open."""
+    if not STRIPE_CONNECT_ENABLED:
+        raise HTTPException(409, "stripe payouts aren't enabled — your bart "
+                                 "payout is handled manually.")
+    creator = auth.get_creator_for_user(user)
+    if creator is None:
+        raise HTTPException(403, "you're not a bart creator.")
+    s = _stripe()
+    account_id = creator["stripe_account_id"]
+    if not account_id:
+        acct = s.Account.create(
+            type="express",
+            email=creator["email"],
+            capabilities={"transfers": {"requested": True}},
+        )
+        account_id = acct["id"]
+        auth.set_creator_stripe_account(creator["id"], account_id)
+    link = s.AccountLink.create(
+        account=account_id,
+        refresh_url=f"{APP_PUBLIC_URL}/creators?connect=refresh",
+        return_url=f"{APP_PUBLIC_URL}/creators?connect=done",
+        type="account_onboarding",
+    )
+    return {"url": link["url"]}
+
+
+@app.get("/api/creator/connect/refresh")
+async def creator_connect_refresh(user=Depends(auth.current_user)):
+    """Re-sync the creator's Connect account status from Stripe."""
+    creator = auth.get_creator_for_user(user)
+    if creator is None:
+        raise HTTPException(403, "you're not a bart creator.")
+    if not creator["stripe_account_id"]:
+        return {"payouts_enabled": False}
+    acct = dict(_stripe().Account.retrieve(creator["stripe_account_id"]))
+    enabled = bool(acct.get("payouts_enabled") and acct.get("charges_enabled"))
+    auth.set_creator_payouts_enabled(creator["id"], enabled)
+    return {"payouts_enabled": enabled}
 
 
 @app.get("/api/admin/creator-applications")
@@ -771,8 +896,8 @@ async def admin_approve_creator(app_id: int, user=Depends(auth.current_user)):
             "Your application to the bart creator program was approved.\n\n"
             f"Your referral link:\n  {referral_url}\n\n"
             "Share it anywhere. When someone subscribes through it, you earn "
-            f"{int(auth.CREATOR_COMMISSION_RATE * 100)}% of their payment — "
-            "credited automatically once the payment clears.\n\n"
+            f"${auth.CREATOR_COMMISSION_CENTS / 100:.2f} every month they stay "
+            "subscribed — credited automatically once each payment clears.\n\n"
             "Sign in and open the creator page to see your referrals and "
             "earnings any time.\n\n— the bart team\n"
         ),
@@ -786,6 +911,49 @@ async def admin_reject_creator(app_id: int, user=Depends(auth.current_user)):
     if not auth.reject_creator_application(app_id):
         raise HTTPException(404, "no such pending application.")
     return {"ok": True}
+
+
+class MarkPaidRequest(BaseModel):
+    note: str = ""
+
+
+@app.get("/api/admin/payouts")
+async def admin_list_payouts(status: str = "all", user=Depends(auth.current_user)):
+    """All payouts, newest first — admin only. ?status=pending|paid|failed|all."""
+    _require_admin(user)
+    want = None if status == "all" else status
+    return {"payouts": auth.list_payouts(status=want)}
+
+
+@app.post("/api/admin/payouts/run")
+async def admin_run_payouts(user=Depends(auth.current_user)):
+    """Run the monthly payout batch — pays every creator at or above the
+    minimum balance. Stripe Connect creators are transferred automatically;
+    everyone else gets a pending payout for the manual queue."""
+    _require_admin(user)
+    if STRIPE_CONNECT_ENABLED and not STRIPE_SECRET_KEY:
+        raise HTTPException(409, "stripe connect is enabled but "
+                                 "STRIPE_SECRET_KEY is not configured.")
+    transfer = _stripe_transfer if STRIPE_CONNECT_ENABLED else None
+    results = auth.run_payouts(PAYOUT_MINIMUM_CENTS, transfer_fn=transfer)
+    return {"ok": True, "payouts": results}
+
+
+@app.post("/api/admin/payouts/{payout_id}/mark-paid")
+async def admin_mark_payout_paid(payout_id: int, req: MarkPaidRequest,
+                                 user=Depends(auth.current_user)):
+    """Settle a pending (manual) payout once the money has been sent."""
+    _require_admin(user)
+    if not auth.mark_payout_paid(payout_id, note=req.note):
+        raise HTTPException(404, "no such pending payout.")
+    return {"ok": True}
+
+
+@app.get("/api/admin/creators")
+async def admin_list_creators(user=Depends(auth.current_user)):
+    """Every creator with referral counts + earnings — admin only."""
+    _require_admin(user)
+    return {"creators": auth.list_creators()}
 
 
 # ─── trial codes (single-use free-packet coupons) ────────────────────────────
@@ -1017,7 +1185,7 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
         "student_level": "undergraduate",
         "style": "academic-rigorous",
         "daily_hours": 3.0,
-        "primary_model": "claude-opus-4-7",
+        "primary_model": WEB_PRIMARY_MODEL,
         "daily_model": "claude-sonnet-4-6",
         "fast_model": "claude-haiku-4-5-20251001",
         "deep_research": False,

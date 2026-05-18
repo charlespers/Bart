@@ -46,6 +46,40 @@
   .note.ok  { color: var(--ok); }
   .note.err { color: var(--accent-lo); }
   code { font-family: var(--font-mono); font-size: 12px; background: var(--cream-lo); padding: 1px 5px; border-radius: 4px; }
+  /* payouts panel */
+  .card {
+    background: var(--cream-hi); border: 1px solid var(--cream-edge);
+    border-radius: 16px; padding: 22px 24px; margin-top: 40px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 17px; }
+  .card .hint { color: var(--ink-mute); font-size: 13px; margin: 0 0 16px; }
+  .btn.run { background: var(--accent); color: var(--cream-hi); }
+  .btn:disabled { opacity: 0.55; cursor: default; }
+  .totals { font-size: 13px; color: var(--ink-mute); margin-bottom: 14px; }
+  .totals b { color: var(--ink-soft); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td {
+    text-align: left; padding: 9px 8px;
+    border-bottom: 1px solid var(--cream-edge);
+  }
+  th {
+    font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--ink-mute);
+  }
+  .payout-note-input {
+    font-family: var(--font-sans); font-size: 12px; color: var(--ink);
+    background: var(--cream); border: 1.5px solid var(--cream-edge);
+    border-radius: 8px; padding: 5px 8px; outline: none; width: 140px;
+  }
+  .payout-note-input:focus { border-color: var(--accent); }
+  .btn.markpaid {
+    font-size: 12px; padding: 5px 12px;
+    background: transparent; color: var(--ink-mute);
+    box-shadow: inset 0 0 0 1.5px var(--cream-edge);
+    margin-left: 6px; vertical-align: middle;
+  }
+  .btn.markpaid:hover { color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
+  .muted { color: var(--ink-mute); }
 </style>
 </head>
 <body>
@@ -58,6 +92,24 @@
     <div class="tab" data-status="rejected">rejected</div>
   </div>
   <div id="list"><div class="empty">loading…</div></div>
+
+  <div class="card" id="creators-panel">
+    <h2>creators</h2>
+    <p class="hint">all approved creators with referral stats and earnings. pending balance = unpaid commissions; lifetime = all commissions ever.</p>
+    <div class="totals" id="creators-totals"></div>
+    <div id="creators-list"><div class="empty">loading…</div></div>
+  </div>
+
+  <div class="card" id="payouts-panel">
+    <h2>payouts</h2>
+    <p class="hint">monthly creator commissions. "run monthly payouts" creates pending payouts for all approved creators with unpaid earnings; "mark paid" settles them after you've transferred funds.</p>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;">
+      <button class="btn run" id="run-payouts-btn">run monthly payouts</button>
+      <span class="note" id="run-note"></span>
+    </div>
+    <div class="totals" id="payouts-totals"></div>
+    <div id="payouts-list"><div class="empty">loading…</div></div>
+  </div>
 </div>
 
 <script>
@@ -75,7 +127,7 @@
     list.innerHTML = '<div class="empty">loading…</div>';
     fetch('/api/admin/creator-applications?status=' + status, { credentials: 'same-origin' })
       .then(function (r) {
-        if (r.status === 403) throw new Error('admin only — sign in as an admin account.');
+        if (r.status === 404) throw new Error('admin only — sign in as an admin account.');
         if (!r.ok) throw new Error('could not load (' + r.status + ').');
         return r.json();
       })
@@ -149,6 +201,212 @@
   });
 
   load();
+})();
+
+/* ── creators panel ── */
+(function () {
+  var totalsEl   = document.getElementById('creators-totals');
+  var listEl     = document.getElementById('creators-list');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function fmt(cents) {
+    return '$' + (cents / 100).toFixed(2);
+  }
+
+  function loadCreators() {
+    listEl.innerHTML = '<div class="empty">loading…</div>';
+    fetch('/api/admin/creators', { credentials: 'same-origin' })
+      .then(function (r) {
+        if (r.status === 404) throw new Error('admin only — sign in as an admin account.');
+        if (!r.ok) throw new Error('could not load creators (' + r.status + ').');
+        return r.json();
+      })
+      .then(function (d) { renderCreators(d.creators || []); })
+      .catch(function (e) {
+        listEl.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+        totalsEl.innerHTML = '';
+      });
+  }
+
+  function renderCreators(creators) {
+    var totalPending  = creators.reduce(function (s, c) { return s + (c.earnings && c.earnings.pending_balance_cents || 0); }, 0);
+    var totalLifetime = creators.reduce(function (s, c) { return s + (c.earnings && c.earnings.lifetime_earnings_cents || 0); }, 0);
+    totalsEl.innerHTML =
+      '<b>' + creators.length + '</b> creator' + (creators.length === 1 ? '' : 's')
+      + ' &nbsp;·&nbsp; <b>' + fmt(totalPending) + '</b> total pending'
+      + ' &nbsp;·&nbsp; <b>' + fmt(totalLifetime) + '</b> total lifetime';
+
+    if (!creators.length) {
+      listEl.innerHTML = '<div class="empty">no creators yet.</div>';
+      return;
+    }
+
+    var rows = creators.map(function (c) {
+      var e = c.earnings || {};
+      var method = c.payout_method ? esc(c.payout_method) : '<span class="muted">—</span>';
+      var statusClass = c.status === 'active' ? 'approved' : 'rejected';
+      return '<tr>'
+        + '<td>' + esc(c.name || '—') + '</td>'
+        + '<td><code>' + esc(c.referral_code) + '</code></td>'
+        + '<td><span class="pill ' + statusClass + '">' + esc(c.status) + '</span></td>'
+        + '<td>' + esc(e.total_referred || 0) + '</td>'
+        + '<td>' + esc(e.active_subscribers || 0) + '</td>'
+        + '<td>' + esc(fmt(e.pending_balance_cents || 0)) + '</td>'
+        + '<td>' + esc(fmt(e.lifetime_earnings_cents || 0)) + '</td>'
+        + '<td>' + method + '</td>'
+        + '</tr>';
+    }).join('');
+
+    listEl.innerHTML =
+      '<table><thead><tr>'
+      + '<th>name</th><th>code</th><th>status</th><th>referred</th>'
+      + '<th>active subs</th><th>pending balance</th><th>lifetime</th><th>payout method</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  loadCreators();
+})();
+
+/* ── payouts panel ── */
+(function () {
+  var runBtn    = document.getElementById('run-payouts-btn');
+  var runNote   = document.getElementById('run-note');
+  var totalsEl  = document.getElementById('payouts-totals');
+  var payList   = document.getElementById('payouts-list');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function fmt(cents) {
+    return '$' + (cents / 100).toFixed(2);
+  }
+
+  function loadPayouts() {
+    payList.innerHTML = '<div class="empty">loading…</div>';
+    fetch('/api/admin/payouts?status=all', { credentials: 'same-origin' })
+      .then(function (r) {
+        if (r.status === 404) throw new Error('admin only — sign in as an admin account.');
+        if (!r.ok) throw new Error('could not load payouts (' + r.status + ').');
+        return r.json();
+      })
+      .then(function (d) { renderPayouts(d.payouts || []); })
+      .catch(function (e) {
+        payList.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+        totalsEl.innerHTML = '';
+      });
+  }
+
+  function renderPayouts(payouts) {
+    /* totals */
+    var paid    = payouts.filter(function (p) { return p.status === 'paid'; });
+    var pending = payouts.filter(function (p) { return p.status === 'pending'; });
+    var totalPaidCents    = paid.reduce(function (s, p) { return s + p.amount_cents; }, 0);
+    var totalPendingCents = pending.reduce(function (s, p) { return s + p.amount_cents; }, 0);
+    totalsEl.innerHTML =
+      payouts.length + ' payout' + (payouts.length === 1 ? '' : 's') + ' total &nbsp;·&nbsp; '
+      + '<b>' + fmt(totalPaidCents) + '</b> paid &nbsp;·&nbsp; '
+      + '<b>' + fmt(totalPendingCents) + '</b> pending';
+
+    if (!payouts.length) {
+      payList.innerHTML = '<div class="empty">no payouts yet.</div>';
+      return;
+    }
+
+    var rows = payouts.map(function (p) {
+      var statusClass = p.status === 'paid' ? 'approved' : p.status === 'failed' ? 'rejected' : 'pending';
+      var action = p.status === 'pending'
+        ? '<input class="payout-note-input" type="text" placeholder="note (optional)"'
+          + ' data-payout-note="' + esc(p.id) + '" />'
+          + '<button class="btn markpaid" data-payout-id="' + esc(p.id) + '">mark paid</button>'
+        : '<span class="muted">—</span>';
+      return '<tr>'
+        + '<td><code>' + esc(p.id) + '</code></td>'
+        + '<td>' + esc(p.creator_id) + '</td>'
+        + '<td>' + esc(fmt(p.amount_cents)) + '</td>'
+        + '<td>' + esc(p.method) + '</td>'
+        + '<td><span class="pill ' + statusClass + '">' + esc(p.status) + '</span></td>'
+        + '<td>' + esc((p.created_at || '').slice(0, 10)) + '</td>'
+        + '<td>' + esc(p.period || '—') + '</td>'
+        + '<td>' + action + '</td>'
+        + '</tr>';
+    }).join('');
+
+    payList.innerHTML =
+      '<table><thead><tr>'
+      + '<th>id</th><th>creator</th><th>amount</th><th>method</th>'
+      + '<th>status</th><th>created</th><th>period</th><th>action</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+
+    payList.querySelectorAll('.btn.markpaid').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var pid  = b.dataset.payoutId;
+        var noteInput = payList.querySelector('[data-payout-note="' + pid + '"]');
+        var noteVal   = noteInput ? noteInput.value.trim() : '';
+        markPaid(pid, noteVal, b);
+      });
+    });
+  }
+
+  function markPaid(id, note, btn) {
+    btn.disabled = true;
+    fetch('/api/admin/payouts/' + encodeURIComponent(id) + '/mark-paid', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ note: note })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      if (res.ok) {
+        loadPayouts();
+      } else {
+        btn.disabled = false;
+        alert('mark-paid failed: ' + ((res.j && res.j.detail) || 'unknown error'));
+      }
+    }).catch(function () {
+      btn.disabled = false;
+      alert('network error marking payout paid.');
+    });
+  }
+
+  runBtn.addEventListener('click', function () {
+    runBtn.disabled = true;
+    runNote.className = 'note';
+    runNote.textContent = 'running…';
+    fetch('/api/admin/payouts/run', {
+      method: 'POST',
+      credentials: 'same-origin'
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      runBtn.disabled = false;
+      if (res.ok) {
+        var ps    = res.j.payouts || [];
+        var total = ps.reduce(function (s, p) { return s + p.amount_cents; }, 0);
+        runNote.className = 'note ok';
+        runNote.textContent = ps.length + ' payout' + (ps.length === 1 ? '' : 's')
+          + ' created, ' + fmt(total) + ' total.';
+        loadPayouts();
+      } else {
+        runNote.className = 'note err';
+        runNote.textContent = (res.j && res.j.detail) || 'failed.';
+      }
+    }).catch(function () {
+      runBtn.disabled = false;
+      runNote.className = 'note err';
+      runNote.textContent = 'network error.';
+    });
+  });
+
+  loadPayouts();
 })();
 </script>
 </body>

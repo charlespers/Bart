@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -141,6 +142,25 @@ CREATE TABLE IF NOT EXISTS commissions (
 CREATE INDEX IF NOT EXISTS idx_commissions_creator
   ON commissions(creator_id, created_at DESC);
 
+-- payouts: one row per batch payment of accumulated commissions to a creator.
+-- A payout claims its commission rows by stamping commissions.payout_id.
+CREATE TABLE IF NOT EXISTS payouts (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  creator_id         INTEGER NOT NULL,
+  amount_cents       INTEGER NOT NULL,
+  currency           TEXT NOT NULL DEFAULT 'usd',
+  method             TEXT NOT NULL CHECK (method IN ('stripe','manual')),  -- 'stripe' | 'manual'
+  status             TEXT NOT NULL CHECK (status IN ('pending','paid','failed')),  -- 'pending' | 'paid' | 'failed'
+  stripe_transfer_id TEXT,
+  note               TEXT,
+  period             TEXT,                     -- 'YYYY-MM' the payout covers
+  created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  paid_at            TEXT,
+  FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_payouts_creator
+  ON payouts(creator_id, created_at DESC);
+
 -- trial codes: single-use coupons that grant one free premium (Claude)
 -- packet generation. Codes are minted only by an admin. A code is consumed
 -- globally on first redemption — `redeemed_by` stamps which account spent
@@ -240,6 +260,26 @@ def init_db() -> None:
         # granted by redeeming a single-use trial code. Spent one-per-run.
         if "trial_credits" not in user_cols:
             db.execute("ALTER TABLE users ADD COLUMN trial_credits INTEGER DEFAULT 0")
+        # Creator payouts — Stripe Connect account + payout preferences, and
+        # the link from each commission to the payout that settled it.
+        creator_cols = {row["name"] for row in
+                        db.execute("PRAGMA table_info(creators)").fetchall()}
+        if "stripe_account_id" not in creator_cols:
+            db.execute("ALTER TABLE creators ADD COLUMN stripe_account_id TEXT")
+        if "payout_method" not in creator_cols:
+            db.execute("ALTER TABLE creators ADD COLUMN payout_method TEXT")
+        if "payout_details" not in creator_cols:
+            db.execute("ALTER TABLE creators ADD COLUMN payout_details TEXT")
+        if "payouts_enabled" not in creator_cols:
+            db.execute("ALTER TABLE creators ADD COLUMN payouts_enabled INTEGER DEFAULT 0")
+        commission_cols = {row["name"] for row in
+                           db.execute("PRAGMA table_info(commissions)").fetchall()}
+        if "payout_id" not in commission_cols:
+            db.execute("ALTER TABLE commissions ADD COLUMN payout_id INTEGER")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_commissions_payout "
+                "ON commissions(payout_id)"
+            )
         if billing_added:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_subscription_id "
@@ -921,10 +961,12 @@ def leaderboard_for(user_id: int) -> list[dict]:
 
 # ─── creator program ───────────────────────────────────────────────────────────
 
-# Share of each verified subscription payment paid to the referring creator.
-# Tunable per-deployment; 0.30 = 30%.
-CREATOR_COMMISSION_RATE = max(0.0, min(1.0, float(
-    os.environ.get("BART_CREATOR_COMMISSION_RATE", "0.30"))))
+# Flat commission paid to the referring creator for each verified subscription
+# payment — $2.00 by default. Paid every billing cycle the referred user keeps
+# paying, so a creator earns $2/mo per active subscriber for as long as they
+# stay subscribed. Tunable per-deployment.
+CREATOR_COMMISSION_CENTS = max(0, int(
+    os.environ.get("BART_CREATOR_COMMISSION_CENTS", "200")))
 
 # Referral codes: unambiguous uppercase alphabet (no 0/O, 1/I) — easy to read,
 # type, and say aloud.
@@ -1088,6 +1130,21 @@ def approve_creator_application(app_id: int) -> Optional[dict]:
     return dict(row)
 
 
+def list_creators() -> list[dict]:
+    """Every creator with their earnings breakdown — powers the admin
+    creator overview. Newest creator first."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT * FROM creators ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        rec = dict(r)
+        rec["earnings"] = creator_earnings(r)
+        out.append(rec)
+    return out
+
+
 def reject_creator_application(app_id: int) -> bool:
     with _connect() as db:
         cur = db.execute(
@@ -1151,8 +1208,225 @@ def creator_summary(creator) -> dict:
         "payments": comm["n"],
         "earnings_cents": comm["cents"],
         "earnings_usd": round(comm["cents"] / 100.0, 2),
-        "commission_rate": CREATOR_COMMISSION_RATE,
+        "commission_cents": CREATOR_COMMISSION_CENTS,
     }
+
+
+def creator_earnings(creator) -> dict:
+    """Full earnings + referral breakdown for the creator dashboard.
+
+    `pending_balance_cents` is the sum of commissions not yet attached to a
+    payout — that is what a payout run pays out. `monthly_run_rate_cents`
+    projects next month's income at $2 per currently-active subscriber."""
+    code = creator["referral_code"]
+    cid = creator["id"]
+    period = _current_period()
+    with _connect() as db:
+        lifetime = db.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) AS c "
+            "FROM commissions WHERE creator_id = ?", (cid,)
+        ).fetchone()["c"]
+        pending = db.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) AS c FROM commissions "
+            "WHERE creator_id = ? AND payout_id IS NULL", (cid,)
+        ).fetchone()["c"]
+        paid_out = db.execute(
+            "SELECT COALESCE(SUM(c.amount_cents), 0) AS c "
+            "FROM commissions c JOIN payouts p ON c.payout_id = p.id "
+            "WHERE c.creator_id = ? AND p.status = 'paid'", (cid,)
+        ).fetchone()["c"]
+        awaiting_payout = db.execute(
+            "SELECT COALESCE(SUM(c.amount_cents), 0) AS c "
+            "FROM commissions c JOIN payouts p ON c.payout_id = p.id "
+            "WHERE c.creator_id = ? AND p.status = 'pending'", (cid,)
+        ).fetchone()["c"]
+        this_month = db.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) AS c FROM commissions "
+            "WHERE creator_id = ? AND substr(created_at, 1, 7) = ?",
+            (cid, period)
+        ).fetchone()["c"]
+        total_referred = db.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE referred_by = ?", (code,)
+        ).fetchone()["n"]
+        active = db.execute(
+            "SELECT COUNT(*) AS n FROM users "
+            "WHERE referred_by = ? AND subscription_status = 'active'", (code,)
+        ).fetchone()["n"]
+    return {
+        "lifetime_earnings_cents": lifetime,
+        "pending_balance_cents": pending,
+        "awaiting_payout_cents": awaiting_payout,
+        "paid_out_cents": paid_out,
+        "this_month_cents": this_month,
+        "total_referred": total_referred,
+        "active_subscribers": active,
+        "monthly_run_rate_cents": active * CREATOR_COMMISSION_CENTS,
+        "conversion_pct": round(100.0 * active / total_referred, 1)
+                          if total_referred else 0.0,
+    }
+
+
+# ─── creator payout-setting helpers ──────────────────────────────────────────
+
+def set_creator_stripe_account(creator_id: int, account_id: str) -> None:
+    """Store the creator's Stripe Connect account id."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE creators SET stripe_account_id = ?, payout_method = 'stripe' "
+            "WHERE id = ?", (account_id, creator_id),
+        )
+
+
+def set_creator_payouts_enabled(creator_id: int, enabled: bool) -> None:
+    """Flag whether the creator's Connect account can receive transfers."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE creators SET payouts_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, creator_id),
+        )
+
+
+def set_creator_payout_method(creator_id: int, details: str) -> None:
+    """Save a manual payout handle (e.g. a PayPal/Venmo email)."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE creators SET payout_method = 'manual', payout_details = ? "
+            "WHERE id = ?", ((details or "").strip() or None, creator_id),
+        )
+
+
+# ─── payout pipeline ──────────────────────────────────────────────────────────
+
+def _unpaid_commission_ids(db, creator_id: int) -> tuple[list[int], int]:
+    """Return (ids, total_cents) of a creator's not-yet-paid-out commissions."""
+    rows = db.execute(
+        "SELECT id, amount_cents FROM commissions "
+        "WHERE creator_id = ? AND payout_id IS NULL", (creator_id,)
+    ).fetchall()
+    return [r["id"] for r in rows], sum(r["amount_cents"] for r in rows)
+
+
+def run_payouts(minimum_cents: int, period: Optional[str] = None,
+                transfer_fn=None) -> list[dict]:
+    """Pay out every creator whose unpaid-commission balance >= minimum_cents.
+
+    `period` is the "YYYY-MM" label stamped on each payout row; defaults to
+    the current calendar month (UTC) when not supplied.
+
+    Phase 1 (one transaction): for each eligible creator, insert a 'pending'
+    payouts row and claim the creator's unpaid commissions by stamping
+    payout_id.  The transaction commits before any external call is made.
+
+    Phase 2 (per payout, outside Phase-1 transaction): attempt the Stripe
+    transfer if applicable.  Success: UPDATE payout to 'paid'.  Failure:
+    un-claim commissions and mark payout 'failed'.  Manual payouts stay
+    'pending' — an admin settles them via mark_payout_paid.
+
+    This two-phase design means: if the process dies after Stripe moves money
+    but before the settle UPDATE, the payout stays pending (commissions are
+    claimed) so a re-run will NOT double-pay.
+
+    Returns one result dict per payout created."""
+    if period is None:
+        period = _current_period()
+    work: list[tuple] = []  # (payout_id, creator_row, ids, total, method, use_stripe)
+
+    # ── Phase 1: claim commissions and create pending payout rows ─────────────
+    with _connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        creators = db.execute(
+            "SELECT * FROM creators WHERE status = 'active'").fetchall()
+        for creator in creators:
+            ids, total = _unpaid_commission_ids(db, creator["id"])
+            if total < minimum_cents or not ids:
+                continue
+            use_stripe = bool(
+                transfer_fn is not None
+                and creator["stripe_account_id"]
+                and creator["payouts_enabled"])
+            method = "stripe" if use_stripe else "manual"
+            cur = db.execute(
+                "INSERT INTO payouts "
+                "(creator_id, amount_cents, currency, method, status, period) "
+                "VALUES (?, ?, 'usd', ?, 'pending', ?)",
+                (creator["id"], total, method, period),
+            )
+            payout_id = cur.lastrowid
+            db.execute(
+                f"UPDATE commissions SET payout_id = ? WHERE id IN "
+                f"({','.join('?' * len(ids))})",
+                (payout_id, *ids),
+            )
+            work.append((payout_id, creator, ids, total, method, use_stripe))
+    # Phase-1 transaction commits here — payout rows exist as 'pending' and
+    # commissions are claimed durably before any Stripe call.
+
+    # ── Phase 2: execute transfers, settle or roll back each payout ───────────
+    results: list[dict] = []
+    for payout_id, creator, ids, total, method, use_stripe in work:
+        status, transfer_id = "pending", None
+        if use_stripe:
+            try:
+                transfer_id = transfer_fn(creator, total)
+                with _connect() as db:
+                    db.execute(
+                        "UPDATE payouts SET status = 'paid', "
+                        "stripe_transfer_id = ?, paid_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ?",
+                        (transfer_id, payout_id),
+                    )
+                status = "paid"
+            except Exception as e:  # noqa: BLE001
+                with _connect() as db:
+                    db.execute(
+                        f"UPDATE commissions SET payout_id = NULL WHERE id IN "
+                        f"({','.join('?' * len(ids))})", tuple(ids),
+                    )
+                    db.execute(
+                        "UPDATE payouts SET status = 'failed' WHERE id = ?",
+                        (payout_id,),
+                    )
+                status = "failed"
+                print(f"[payout] transfer failed for creator "
+                      f"{creator['id']}: {e}", file=sys.stderr, flush=True)
+        # Manual payouts stay 'pending' — no DB write needed here.
+        results.append({
+            "id": payout_id, "creator_id": creator["id"],
+            "amount_cents": total, "method": method, "status": status,
+            "stripe_transfer_id": transfer_id,
+        })
+    return results
+
+
+def mark_payout_paid(payout_id: int, note: str = "") -> bool:
+    """Settle a still-pending payout (manual path). Returns True iff a pending
+    payout was actually updated — already-paid/failed/unknown ids return False."""
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE payouts SET status = 'paid', paid_at = CURRENT_TIMESTAMP, "
+            "note = COALESCE(NULLIF(?, ''), note) "
+            "WHERE id = ? AND status = 'pending'",
+            ((note or "").strip(), payout_id),
+        )
+        return cur.rowcount > 0
+
+
+def list_payouts(creator_id: Optional[int] = None,
+                 status: Optional[str] = None) -> list[dict]:
+    """Payouts newest-first, optionally filtered by creator and/or status."""
+    clauses, args = [], []
+    if creator_id is not None:
+        clauses.append("creator_id = ?")
+        args.append(creator_id)
+    if status:
+        clauses.append("status = ?")
+        args.append(status)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with _connect() as db:
+        return [dict(r) for r in db.execute(
+            f"SELECT * FROM payouts{where} ORDER BY created_at DESC, id DESC",
+            tuple(args),
+        ).fetchall()]
 
 
 # ─── trial codes ───────────────────────────────────────────────────────────────

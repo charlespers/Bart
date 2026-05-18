@@ -1,5 +1,12 @@
 # ─────────── secrets & local config ───────────
 .bart_config.json
+# outreach pipeline: holds an Instagram Graph API token + optional TTS key
+.outreach_config.json
+# generated Reels awaiting review/publish — user content, never push
+outreach/queue/
+# user-supplied royalty-free music beds (the dir is kept via its .gitignore)
+outreach/music/*
+!outreach/music/.gitignore
 .env
 .env.*
 !.env.example
