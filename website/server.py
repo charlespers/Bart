@@ -53,6 +53,8 @@ from slowapi.util import get_remote_address
 
 import auth
 
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -271,6 +273,51 @@ async def logout(request: Request, response: Response):
         auth.delete_session(sid)
     auth.clear_session_cookie(response)
     return {"ok": True}
+
+
+class GoogleAuthRequest(BaseModel):
+    credential: str   # the JWT id_token from Google Identity Services
+
+
+@app.post("/api/auth/google")
+@_limiter.limit("10/minute")
+async def auth_google(req: GoogleAuthRequest, request: Request, response: Response):
+    """Sign in (or sign up) with Google. Front end uses Google Identity Services
+    to produce a signed JWT (id_token); we verify it against Google's public
+    keys and check that the audience matches our client_id, then issue a
+    session cookie."""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(503, "google sign-in isn't configured on the server.")
+    # Lazy import so the package is only required if google auth is enabled.
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            req.credential, google_requests.Request(), GOOGLE_CLIENT_ID
+        )
+    except ValueError as e:
+        raise HTTPException(401, f"google token couldn't be verified: {e}")
+
+    if not idinfo.get("email_verified", False):
+        raise HTTPException(401, "google says this email isn't verified.")
+
+    google_sub = idinfo.get("sub")
+    email = (idinfo.get("email") or "").strip().lower()
+    name  = idinfo.get("name") or idinfo.get("given_name") or ""
+    if not (google_sub and email):
+        raise HTTPException(401, "google token missing required fields.")
+
+    user = auth.find_or_create_google_user(google_sub, email, name)
+    sid = auth.create_session(user["id"])
+    auth.set_session_cookie(response, sid, secure=request.url.scheme == "https")
+    return {"user": {"id": user["id"], "email": user["email"], "name": user["name"]}}
+
+
+@app.get("/api/auth/google/config")
+async def google_config():
+    """Public endpoint — returns the GIS client_id so the login page can render
+    the button without us having to template the HTML."""
+    return {"client_id": GOOGLE_CLIENT_ID}
 
 
 @app.get("/api/auth/me")

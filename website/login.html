@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,ital,wght@8..60,1,400;8..60,1,500&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="tokens.css" />
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   body {
     min-height: 100vh;
@@ -558,11 +559,59 @@
     help.textContent = "we sent a reset link to " + email + ". (this is a prototype.)";
   });
 
-  // ── google (not yet wired) ──
+  // ── google sign-in (via Google Identity Services) ──
+  // We fetch our public client_id on page load, then attach an OAuth click
+  // handler to the existing button. Google handles the popup; we POST the
+  // resulting JWT to /api/auth/google and the server issues a session.
+  let _googleClientId = null;
+  fetch("/api/auth/google/config")
+    .then(r => r.ok ? r.json() : null)
+    .then(j => { _googleClientId = j && j.client_id; })
+    .catch(() => {});
+
+  async function _handleGoogleCredential(credential) {
+    const help = document.getElementById("email-help");
+    help.classList.remove("error");
+    help.textContent = "signing you in…";
+    try {
+      const r = await fetch("/api/auth/google", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ credential }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        help.classList.add("error");
+        help.textContent = j.detail || `google sign-in failed (${r.status})`;
+        return;
+      }
+      window.location.href = "/app";
+    } catch (e) {
+      help.classList.add("error");
+      help.textContent = "network error during google sign-in.";
+    }
+  }
+
   document.getElementById("google").addEventListener("click", () => {
     const help = document.getElementById("email-help");
-    help.classList.add("error");
-    help.textContent = "google sign-in isn't hooked up yet — use email + password for now.";
+    if (!window.google || !window.google.accounts || !window.google.accounts.id) {
+      help.classList.add("error");
+      help.textContent = "google sign-in script didn't load — check your connection and refresh.";
+      return;
+    }
+    if (!_googleClientId) {
+      help.classList.add("error");
+      help.textContent = "google sign-in isn't configured yet — try again in a moment.";
+      return;
+    }
+    // Initialize the GIS client and prompt the user with the One Tap / popup.
+    window.google.accounts.id.initialize({
+      client_id: _googleClientId,
+      callback: (resp) => _handleGoogleCredential(resp.credential),
+      ux_mode: "popup",
+    });
+    window.google.accounts.id.prompt();
   });
 
   // ── submit ──

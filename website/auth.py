@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   email         TEXT NOT NULL UNIQUE,
   name          TEXT,
-  password_hash TEXT NOT NULL,
+  password_hash TEXT,                       -- nullable: google-only accounts skip this
   created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -106,6 +106,13 @@ def init_db() -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_share_token "
                 "ON runs(share_token) WHERE share_token IS NOT NULL"
             )
+        user_cols = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+        if "google_id" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN google_id TEXT")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id "
+                "ON users(google_id) WHERE google_id IS NOT NULL"
+            )
 
 
 @contextmanager
@@ -126,7 +133,9 @@ def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
 
 
-def verify_password(pw: str, hashed: str) -> bool:
+def verify_password(pw: str, hashed: str | None) -> bool:
+    if not hashed:
+        return False  # google-only accounts have no password to check
     try:
         return bcrypt.checkpw(pw.encode("utf-8"), hashed.encode("ascii"))
     except (ValueError, TypeError):
@@ -155,6 +164,30 @@ def find_user_by_email(email: str) -> Optional[sqlite3.Row]:
 def find_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
     with _connect() as db:
         return db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+def find_or_create_google_user(google_id: str, email: str, name: str = "") -> sqlite3.Row:
+    """Look up a Google-authenticated user, or create one. Matching rules:
+      1. exact match on google_id → return that row
+      2. exact match on email → link by stamping google_id onto the existing row
+         (so an email/password user can later sign in with Google seamlessly)
+      3. otherwise → create a new google-only user (password_hash stays NULL)
+    Returns the resulting user row.
+    """
+    email = email.strip().lower()
+    with _connect() as db:
+        row = db.execute("SELECT * FROM users WHERE google_id = ?", (google_id,)).fetchone()
+        if row:
+            return row
+        row = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        if row:
+            db.execute("UPDATE users SET google_id = ? WHERE id = ?", (google_id, row["id"]))
+            return db.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+        cur = db.execute(
+            "INSERT INTO users (email, name, password_hash, google_id) VALUES (?, ?, NULL, ?)",
+            (email, name.strip() or None, google_id),
+        )
+        return db.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
 
 
 def update_password(user_id: int, new_password: str) -> None:
