@@ -561,15 +561,20 @@ def _period_end_from_sub(sub_obj) -> Optional[str]:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _credit_referral_commission(user_id: int, session_data: dict) -> None:
-    """Pay a creator their share of a *verified* subscription payment.
+def _credit_referral_commission(user_id: int, amount_cents: int,
+                                currency: str, stripe_ref: str) -> None:
+    """Pay the referring creator their flat commission for one verified
+    payment by a referred user. Idempotent on `stripe_ref` (a Stripe invoice
+    id), so the creator is paid exactly once per invoice — i.e. every billing
+    cycle the referred user keeps paying. No-op if the user wasn't referred,
+    the referral code is stale, or nothing was actually collected.
 
     Called only from inside the signature-verified Stripe webhook, after
-    Stripe has actually collected the money — never on a forgeable redirect.
-    No-op when the subscriber wasn't referred, or the referral code is stale.
-    Idempotent: keyed on the Stripe checkout-session id, so a webhook Stripe
-    retries never credits a creator twice."""
+    Stripe has actually collected the money."""
     try:
+        amount_cents = int(amount_cents or 0)
+        if amount_cents <= 0 or not stripe_ref:
+            return
         user = auth.find_user_by_id(user_id)
         if user is None:
             return
@@ -579,20 +584,18 @@ def _credit_referral_commission(user_id: int, session_data: dict) -> None:
         creator = auth.get_creator_by_code(code)
         if creator is None:
             return
-        amount_cents = int(session_data.get("amount_total") or 0)
-        if amount_cents <= 0:
-            return
-        currency = session_data.get("currency") or "usd"
         # Flat $2 per verified payment, capped at the amount actually
         # collected so a discounted/zero payment never overpays.
         commission = min(auth.CREATOR_COMMISSION_CENTS, amount_cents)
-        ref = str(session_data.get("id") or f"session-user-{user_id}")
+        if commission <= 0:
+            return
         if auth.record_commission(
             creator_id=creator["id"], referred_user_id=user_id,
-            amount_cents=commission, currency=currency, stripe_ref=ref,
+            amount_cents=commission, currency=currency or "usd",
+            stripe_ref=stripe_ref,
         ):
             print(f"[creator] credited code {creator['referral_code']} "
-                  f"{commission}¢ for verified payment by user {user_id}",
+                  f"{commission}¢ for invoice {stripe_ref} (user {user_id})",
                   file=sys.stderr, flush=True)
     except Exception as e:  # noqa: BLE001 — commission bookkeeping is best-effort
         print(f"[creator] commission credit failed: {e}",
@@ -656,13 +659,19 @@ async def stripe_webhook(request: Request):
                         status=sub.status,
                         current_period_end=_period_end_from_sub(sub),
                     )
-                # Creator commission — credited ONLY here, inside the
-                # signature-verified webhook, i.e. only after Stripe has
-                # actually collected the payment. If this subscriber arrived
-                # through a creator's referral link, pay that creator their
-                # share. Idempotent on the checkout-session id, so a retried
-                # webhook never double-credits.
-                _credit_referral_commission(user_id, data)
+                # First payment — credit the referring creator, keyed on the
+                # first invoice id so the invoice.payment_succeeded path below
+                # (which also sees this invoice) can never double-credit. If
+                # the session carries no invoice id, skip here and let the
+                # invoice event handle it.
+                first_invoice = data.get("invoice")
+                if first_invoice:
+                    _credit_referral_commission(
+                        user_id=user_id,
+                        amount_cents=int(data.get("amount_total") or 0),
+                        currency=data.get("currency") or "usd",
+                        stripe_ref=str(first_invoice),
+                    )
             except Exception as e:
                 print(f"[stripe-webhook] checkout.session.completed handler error: {e}",
                       file=sys.stderr, flush=True)
@@ -681,6 +690,23 @@ async def stripe_webhook(request: Request):
                 subscription_id=data.get("id"),
                 status=status or "free",
                 current_period_end=_period_end_from_sub(obj),
+            )
+
+    elif etype == "invoice.payment_succeeded":
+        # Every paid invoice — the initial one AND every monthly renewal.
+        # This is what makes the creator commission recurring: each renewal
+        # invoice credits the referring creator another $2. Idempotent on the
+        # invoice id; the first invoice may also be credited by the
+        # checkout.session.completed branch above using the SAME invoice id,
+        # so record_commission's idempotency guarantees exactly one credit.
+        customer_id = data.get("customer")
+        u = auth.find_user_by_stripe_customer(customer_id) if customer_id else None
+        if u is not None:
+            _credit_referral_commission(
+                user_id=u["id"],
+                amount_cents=int(data.get("amount_paid") or 0),
+                currency=data.get("currency") or "usd",
+                stripe_ref=str(data.get("id") or ""),
             )
 
     return {"received": True}

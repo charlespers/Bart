@@ -120,7 +120,7 @@
     list.innerHTML = '<div class="empty">loading…</div>';
     fetch('/api/admin/creator-applications?status=' + status, { credentials: 'same-origin' })
       .then(function (r) {
-        if (r.status === 403) throw new Error('admin only — sign in as an admin account.');
+        if (r.status === 404) throw new Error('admin only — sign in as an admin account.');
         if (!r.ok) throw new Error('could not load (' + r.status + ').');
         return r.json();
       })

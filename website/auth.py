@@ -1318,6 +1318,7 @@ def run_payouts(minimum_cents: int, period: Optional[str] = None,
 
     # ── Phase 1: claim commissions and create pending payout rows ─────────────
     with _connect() as db:
+        db.execute("BEGIN IMMEDIATE")
         creators = db.execute(
             "SELECT * FROM creators WHERE status = 'active'").fetchall()
         for creator in creators:
