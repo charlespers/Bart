@@ -74,6 +74,29 @@ def _slugify(value: str, sep: str) -> str:
     return value or "section"
 
 
+# Match a bart-* widget — the marker comment, its content, and the closing
+# comment. Use DOTALL so the inner HTML can span lines. Non-greedy so we
+# stop at the FIRST `<!-- /bart-... -->`, not the last one in the document.
+_BART_WIDGET_RE = re.compile(
+    r"<!--\s*bart-([\w-]+)\s*-->.*?<!--\s*/bart-\1\s*-->",
+    re.DOTALL,
+)
+
+
+def _strip_bart_widgets(md_text: str) -> str:
+    """Last-resort recovery: pull bart-* widget HTML blocks out of the
+    markdown source so a malformed widget can't take the whole page down.
+    Replaces each widget with a small notice so the user knows something
+    was there."""
+    def _replace(m: re.Match) -> str:
+        kind = m.group(1).replace("_", " ")
+        return (
+            f"\n\n> _interactive **{kind}** widget — couldn't render here;"
+            f" see the markdown source for the full content._\n\n"
+        )
+    return _BART_WIDGET_RE.sub(_replace, md_text)
+
+
 def _new_md() -> markdown.Markdown:
     return markdown.Markdown(
         extensions=_EXTENSIONS,
@@ -110,19 +133,33 @@ def render(md_text: str) -> tuple[str, list[RenderWarning], dict]:
         # throw sources on agent-generated content. The bare-bones pass keeps
         # only headings, lists, code, tables, fenced_code — enough to recover
         # 99% of pages.
+        # The fourth strategy strips the bart-* widget HTML blocks before
+        # rendering. We use it as a last-resort *content* recovery: malformed
+        # widget JSON / unbalanced delims inside a widget shouldn't take the
+        # whole exam page down — the user can still read prose + questions.
+        md_stripped = _strip_bart_widgets(md_text)
+
         recovery_strategies = [
             ("no-arithmatex",
              [ext for ext in _EXTENSIONS
-              if not (isinstance(ext, str) and "arithmatex" in ext)]),
+              if not (isinstance(ext, str) and "arithmatex" in ext)],
+             md_text),
             ("no-pymdownx",
              [ext for ext in _EXTENSIONS
-              if not (isinstance(ext, str) and ext.startswith("pymdownx"))]),
+              if not (isinstance(ext, str) and ext.startswith("pymdownx"))],
+             md_text),
             ("bare-bones",
              ["tables", "fenced_code", "attr_list", "sane_lists",
               TocExtension(permalink=False, toc_depth="2-4",
-                           slugify=lambda v, sep: _slugify(v, sep))]),
+                           slugify=lambda v, sep: _slugify(v, sep))],
+             md_text),
+            ("widgets-stripped",
+             ["tables", "fenced_code", "attr_list", "sane_lists",
+              TocExtension(permalink=False, toc_depth="2-4",
+                           slugify=lambda v, sep: _slugify(v, sep))],
+             md_stripped),
         ]
-        for label, ext_list in recovery_strategies:
+        for label, ext_list, source in recovery_strategies:
             try:
                 md_safe = markdown.Markdown(
                     extensions=ext_list,
@@ -134,7 +171,7 @@ def render(md_text: str) -> tuple[str, list[RenderWarning], dict]:
                     output_format="html5",
                     tab_length=4,
                 )
-                html = md_safe.convert(md_text)
+                html = md_safe.convert(source)
                 warnings.append(RenderWarning(
                     "markdown_recovered",
                     f"rendered with `{label}` extension set after primary failure",
