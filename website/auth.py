@@ -1291,9 +1291,12 @@ def _unpaid_commission_ids(db, creator_id: int) -> tuple[list[int], int]:
     return [r["id"] for r in rows], sum(r["amount_cents"] for r in rows)
 
 
-def run_payouts(minimum_cents: int, period: str,
+def run_payouts(minimum_cents: int, period: Optional[str] = None,
                 transfer_fn=None) -> list[dict]:
     """Pay out every creator whose unpaid-commission balance >= minimum_cents.
+
+    `period` is the "YYYY-MM" label stamped on each payout row; defaults to
+    the current calendar month (UTC) when not supplied.
 
     Phase 1 (one transaction): for each eligible creator, insert a 'pending'
     payouts row and claim the creator's unpaid commissions by stamping
@@ -1309,6 +1312,8 @@ def run_payouts(minimum_cents: int, period: str,
     claimed) so a re-run will NOT double-pay.
 
     Returns one result dict per payout created."""
+    if period is None:
+        period = _current_period()
     work: list[tuple] = []  # (payout_id, creator_row, ids, total, method, use_stripe)
 
     # ── Phase 1: claim commissions and create pending payout rows ─────────────

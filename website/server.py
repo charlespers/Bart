@@ -887,6 +887,10 @@ async def admin_reject_creator(app_id: int, user=Depends(auth.current_user)):
     return {"ok": True}
 
 
+class MarkPaidRequest(BaseModel):
+    note: str = ""
+
+
 @app.get("/api/admin/payouts")
 async def admin_list_payouts(status: str = "all", user=Depends(auth.current_user)):
     """All payouts, newest first — admin only. ?status=pending|paid|failed|all."""
@@ -901,14 +905,12 @@ async def admin_run_payouts(user=Depends(auth.current_user)):
     minimum balance. Stripe Connect creators are transferred automatically;
     everyone else gets a pending payout for the manual queue."""
     _require_admin(user)
-    period = auth._current_period()
+    if STRIPE_CONNECT_ENABLED and not STRIPE_SECRET_KEY:
+        raise HTTPException(409, "stripe connect is enabled but "
+                                 "STRIPE_SECRET_KEY is not configured.")
     transfer = _stripe_transfer if STRIPE_CONNECT_ENABLED else None
-    results = auth.run_payouts(PAYOUT_MINIMUM_CENTS, period, transfer_fn=transfer)
-    return {"ok": True, "period": period, "payouts": results}
-
-
-class MarkPaidRequest(BaseModel):
-    note: str = ""
+    results = auth.run_payouts(PAYOUT_MINIMUM_CENTS, transfer_fn=transfer)
+    return {"ok": True, "payouts": results}
 
 
 @app.post("/api/admin/payouts/{payout_id}/mark-paid")
