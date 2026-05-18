@@ -599,6 +599,18 @@ def _credit_referral_commission(user_id: int, session_data: dict) -> None:
               file=sys.stderr, flush=True)
 
 
+def _stripe_transfer(creator_row, amount_cents: int) -> str:
+    """Transfer `amount_cents` to a creator's Connect account. Returns the
+    Stripe transfer id; raises on failure (run_payouts catches and rolls back)."""
+    tr = _stripe().Transfer.create(
+        amount=amount_cents,
+        currency="usd",
+        destination=creator_row["stripe_account_id"],
+        description=f"bart creator payout — {creator_row['referral_code']}",
+    )
+    return tr["id"]
+
+
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
     """Stripe hits this on every subscription event. We verify the signature,
@@ -872,6 +884,40 @@ async def admin_reject_creator(app_id: int, user=Depends(auth.current_user)):
     _require_admin(user)
     if not auth.reject_creator_application(app_id):
         raise HTTPException(404, "no such pending application.")
+    return {"ok": True}
+
+
+@app.get("/api/admin/payouts")
+async def admin_list_payouts(status: str = "all", user=Depends(auth.current_user)):
+    """All payouts, newest first — admin only. ?status=pending|paid|failed|all."""
+    _require_admin(user)
+    want = None if status == "all" else status
+    return {"payouts": auth.list_payouts(status=want)}
+
+
+@app.post("/api/admin/payouts/run")
+async def admin_run_payouts(user=Depends(auth.current_user)):
+    """Run the monthly payout batch — pays every creator at or above the
+    minimum balance. Stripe Connect creators are transferred automatically;
+    everyone else gets a pending payout for the manual queue."""
+    _require_admin(user)
+    period = auth._current_period()
+    transfer = _stripe_transfer if STRIPE_CONNECT_ENABLED else None
+    results = auth.run_payouts(PAYOUT_MINIMUM_CENTS, period, transfer_fn=transfer)
+    return {"ok": True, "period": period, "payouts": results}
+
+
+class MarkPaidRequest(BaseModel):
+    note: str = ""
+
+
+@app.post("/api/admin/payouts/{payout_id}/mark-paid")
+async def admin_mark_payout_paid(payout_id: int, req: MarkPaidRequest,
+                                 user=Depends(auth.current_user)):
+    """Settle a pending (manual) payout once the money has been sent."""
+    _require_admin(user)
+    if not auth.mark_payout_paid(payout_id, note=req.note):
+        raise HTTPException(404, "no such pending payout.")
     return {"ok": True}
 
 
