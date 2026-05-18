@@ -435,6 +435,69 @@
   .foot .links a { color: var(--ink-mute); text-decoration: none; }
   .foot .links a:hover { color: var(--accent); }
 
+  /* ─── pricing card ─── */
+  .pricing-card {
+    margin: 44px auto 0;
+    max-width: 880px;
+    background: var(--cream-hi);
+    border-radius: 26px;
+    padding: 44px 48px;
+    box-shadow:
+      inset 0 0 0 1px var(--cream-edge),
+      0 30px 60px rgba(30,20,14,0.08);
+    display: grid;
+    grid-template-columns: 1fr 1.05fr;
+    gap: 48px;
+    align-items: center;
+  }
+  .pricing-left { text-align: left; }
+  .pricing-amount {
+    font-family: var(--font-sans);
+    font-weight: 800;
+    letter-spacing: -0.06em;
+    color: var(--ink);
+    font-size: clamp(80px, 9vw, 116px);
+    line-height: 0.9;
+  }
+  .pricing-amount .dollar {
+    font-size: 0.42em; font-weight: 700;
+    vertical-align: top; margin-right: 2px;
+  }
+  .pricing-per {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    color: var(--ink-mute);
+    letter-spacing: 0.04em;
+    margin-top: 10px;
+  }
+  .pricing-trust {
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    margin-top: 14px;
+    letter-spacing: 0.06em;
+  }
+  .pricing-features {
+    list-style: none; padding: 0; margin: 0;
+    font-size: 15.5px;
+    color: var(--ink-soft);
+    line-height: 1.45;
+  }
+  .pricing-features li {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--cream-edge);
+  }
+  .pricing-features li:first-child { border-top: 1px solid var(--cream-edge); }
+  .pricing-features li .check {
+    flex: 0 0 22px; width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent-tint);
+    color: var(--accent-lo);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700;
+    margin-top: 1px;
+  }
+
   /* ─── responsive ─── */
   @media (max-width: 900px) {
     .steps { grid-template-columns: 1fr; gap: 28px; }
@@ -442,6 +505,8 @@
     .preview-side { border-right: 0; border-bottom: 1px solid var(--cream-edge); }
     .scene { height: 320px; }
     .scene .bart svg { width: 180px; }
+    .pricing-card { grid-template-columns: 1fr; gap: 28px; padding: 36px 32px; }
+    .pricing-left { text-align: center; }
   }
   @media (max-width: 600px) {
     .nav .links a:not(.cta) { display: none; }
@@ -449,6 +514,7 @@
     .hero { padding: 60px 22px 60px; }
     .section { padding: 80px 22px; }
     .driftfile { font-size: 10.5px; padding: 7px 11px 7px 10px; }
+    .pricing-card { padding: 28px 22px; }
   }
 </style>
 </head>
@@ -460,8 +526,9 @@
     <div class="links">
       <a href="#how">how it works</a>
       <a href="#what">what you get</a>
+      <a href="#pricing">pricing</a>
       <a href="/login">log in</a>
-      <a class="cta" href="/login?mode=signup">try it free</a>
+      <a class="cta" href="/login?mode=signup">get started</a>
     </div>
   </div>
 </nav>
@@ -493,7 +560,7 @@
       start studying
       <svg class="arrow" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </a>
-    <a class="cta ghost" href="#how">see how</a>
+    <a class="cta ghost" href="#pricing">$10/mo · see pricing</a>
   </div>
 </section>
 
@@ -589,12 +656,41 @@
   </div>
 </section>
 
+<section class="section reveal" id="pricing">
+  <div class="section-eyebrow">pricing</div>
+  <h2 class="section-title">one price. <em>everything.</em></h2>
+  <p class="section-lede">no free plan, no trial gimmicks. drop your materials, get your packet, cancel any time.</p>
+  <div class="pricing-card">
+    <div class="pricing-left">
+      <div class="pricing-amount">
+        <span class="dollar">$</span>10
+      </div>
+      <div class="pricing-per">/ month <span style="color: var(--accent);">·</span> billed monthly</div>
+      <a class="cta" href="/pricing" style="display: inline-flex; margin-top: 22px;">
+        subscribe — $10/mo
+        <svg class="arrow" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </a>
+      <div class="mono pricing-trust">
+        card processed by stripe — bart never sees it
+      </div>
+    </div>
+    <ul class="pricing-features">
+      <li><span class="check">✓</span>unlimited study packets, any subject</li>
+      <li><span class="check">✓</span>master plans, schematics, mnemonics</li>
+      <li><span class="check">✓</span>practice exams &amp; daily lessons</li>
+      <li><span class="check">✓</span>past runs saved &amp; shareable</li>
+      <li><span class="check">✓</span>cancel any time, no questions asked</li>
+    </ul>
+  </div>
+</section>
+
 <footer class="foot">
   <div class="big">bart<span class="dot">.</span></div>
   <div>for students who would rather <em style="font-style:normal;color:var(--accent)">learn</em> than reorganize their notes.</div>
   <div class="links">
     <a href="/login">log in</a>
     <a href="/login?mode=signup">sign up</a>
+    <a href="/pricing">pricing</a>
     <a href="#how">how it works</a>
     <a href="#" onclick="event.preventDefault()">privacy</a>
     <a href="#" onclick="event.preventDefault()">contact</a>

@@ -113,6 +113,41 @@ def init_db() -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id "
                 "ON users(google_id) WHERE google_id IS NOT NULL"
             )
+        # Stripe / subscription columns — added in a second pass so existing rows
+        # are back-filled with is_grandfathered=1 (every account that exists at
+        # deploy time gets unlimited free access forever).
+        billing_added = False
+        if "stripe_customer_id" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_stripe_customer "
+                "ON users(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL"
+            )
+            billing_added = True
+        if "subscription_status" not in user_cols:
+            # values: free | active | past_due | canceled | incomplete | trialing
+            db.execute("ALTER TABLE users ADD COLUMN subscription_status TEXT DEFAULT 'free'")
+            billing_added = True
+        if "subscription_id" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN subscription_id TEXT")
+            billing_added = True
+        if "current_period_end" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN current_period_end TEXT")
+            billing_added = True
+        if "is_grandfathered" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN is_grandfathered INTEGER DEFAULT 0")
+            # Back-fill: only the owner gets free-forever access. Everyone else
+            # (existing accounts and future signups) follows the paywall.
+            db.execute(
+                "UPDATE users SET is_grandfathered = 1 WHERE email = ?",
+                ("loctran0323@gmail.com",),
+            )
+            billing_added = True
+        if billing_added:
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_subscription_id "
+                "ON users(subscription_id) WHERE subscription_id IS NOT NULL"
+            )
 
 
 @contextmanager
@@ -164,6 +199,61 @@ def find_user_by_email(email: str) -> Optional[sqlite3.Row]:
 def find_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
     with _connect() as db:
         return db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+# ─── billing ─────────────────────────────────────────────────────────────────
+
+# Subscription states that grant /api/run access. "trialing" included so we
+# could enable a free trial later without changing the gate logic.
+ACTIVE_STATUSES = ("active", "trialing")
+
+
+def has_run_access(user) -> bool:
+    """True iff this user is allowed to start a bart run.
+    Grandfathered users always pass. Otherwise must be in an active state."""
+    if user is None:
+        return False
+    # sqlite3.Row supports dict-like access but not .get(); be explicit.
+    try:
+        gf = user["is_grandfathered"]
+    except (IndexError, KeyError):
+        gf = 0
+    if gf:
+        return True
+    try:
+        status = user["subscription_status"] or "free"
+    except (IndexError, KeyError):
+        status = "free"
+    return status in ACTIVE_STATUSES
+
+
+def set_stripe_customer(user_id: int, customer_id: str) -> None:
+    with _connect() as db:
+        db.execute(
+            "UPDATE users SET stripe_customer_id = ? WHERE id = ?",
+            (customer_id, user_id),
+        )
+
+
+def find_user_by_stripe_customer(customer_id: str) -> Optional[sqlite3.Row]:
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM users WHERE stripe_customer_id = ?", (customer_id,)
+        ).fetchone()
+
+
+def update_subscription(
+    user_id: int,
+    subscription_id: Optional[str],
+    status: str,
+    current_period_end: Optional[str],
+) -> None:
+    with _connect() as db:
+        db.execute(
+            "UPDATE users SET subscription_id = ?, subscription_status = ?, "
+            "current_period_end = ? WHERE id = ?",
+            (subscription_id, status, current_period_end, user_id),
+        )
 
 
 def find_or_create_google_user(google_id: str, email: str, name: str = "") -> sqlite3.Row:

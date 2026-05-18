@@ -586,7 +586,12 @@
         help.textContent = j.detail || `google sign-in failed (${r.status})`;
         return;
       }
-      window.location.href = "/app";
+      // Honor ?next=… if it's a same-origin path; default to /app.
+      {
+        const n = new URLSearchParams(location.search).get("next");
+        const safe = (n && n.startsWith("/") && !n.startsWith("//")) ? n : "/app";
+        window.location.href = safe;
+      }
     } catch (e) {
       help.classList.add("error");
       help.textContent = "network error during google sign-in.";
@@ -658,7 +663,12 @@
         target.textContent = j.detail || "something went wrong.";
         return;
       }
-      window.location.href = "/app";
+      // Honor ?next=… if it's a same-origin path; default to /app.
+      {
+        const n = new URLSearchParams(location.search).get("next");
+        const safe = (n && n.startsWith("/") && !n.startsWith("//")) ? n : "/app";
+        window.location.href = safe;
+      }
     } catch (err) {
       btn.classList.remove("loading");
       document.getElementById("submit-label").textContent = mode === "signup" ? "create account" : "log in";

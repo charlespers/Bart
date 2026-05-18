@@ -484,7 +484,232 @@ function Settings({ onBack }) {
         we don't see your password — just the session token claude.ai gives us.
       </div>
 
+      <SubscriptionCard />
       <ChangePasswordCard />
+    </div>
+  );
+}
+
+/* ─────────── Settings: subscription ─────────── */
+function SubscriptionCard() {
+  const [billing, setBilling] = useState(null);
+  const [phase, setPhase] = useState("idle");
+  const [errMsg, setErrMsg] = useState(null);
+
+  function load() {
+    fetch("/api/billing/status", { credentials: "same-origin" })
+      .then(r => r.ok ? r.json() : null)
+      .then(setBilling)
+      .catch(() => {});
+  }
+  useEffect(() => { load(); }, []);
+
+  // Surface a success toast when returning from Stripe checkout.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("subscribed") === "1") {
+      setPhase("just-subscribed");
+      url.searchParams.delete("subscribed");
+      window.history.replaceState({}, "", url.pathname + (url.search || ""));
+      // give the webhook a beat to land, then refresh status
+      setTimeout(load, 1500);
+    }
+  }, []);
+
+  async function subscribe() {
+    setPhase("starting"); setErrMsg(null);
+    try {
+      const r = await fetch("/api/billing/checkout", { method: "POST", credentials: "same-origin" });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setPhase("error");
+        setErrMsg(j.detail || `couldn't start checkout (${r.status})`);
+        return;
+      }
+      const { url } = await r.json();
+      window.location.href = url;
+    } catch (e) {
+      setPhase("error");
+      setErrMsg(`network error: ${e.message}`);
+    }
+  }
+
+  async function manage() {
+    setPhase("opening-portal"); setErrMsg(null);
+    try {
+      const r = await fetch("/api/billing/portal", { method: "POST", credentials: "same-origin" });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setPhase("error");
+        setErrMsg(j.detail || `couldn't open portal (${r.status})`);
+        return;
+      }
+      const { url } = await r.json();
+      window.location.href = url;
+    } catch (e) {
+      setPhase("error");
+      setErrMsg(`network error: ${e.message}`);
+    }
+  }
+
+  if (billing === null) return null;
+  const gf     = billing.is_grandfathered;
+  const status = billing.status || "free";
+  const active = status === "active" || status === "trialing";
+
+  return (
+    <div style={{
+      marginTop: 18, padding: "20px 22px",
+      background: "var(--cream-hi)",
+      borderRadius: 14,
+      boxShadow: "inset 0 0 0 1px var(--cream-edge)",
+    }}>
+      <div style={{
+        fontFamily: "var(--font-mono)", fontSize: 10.5,
+        color: "var(--ink-faint)", letterSpacing: "0.16em",
+        textTransform: "uppercase", marginBottom: 8,
+      }}>
+        plan
+      </div>
+
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12,
+        fontSize: 17, color: "var(--ink)", marginBottom: 6,
+      }}>
+        <span style={{
+          display: "inline-block", width: 9, height: 9, borderRadius: 999,
+          background: (gf || active) ? "var(--ok)" : "var(--ink-faint)",
+        }} />
+        {gf
+          ? "grandfathered — free forever, thanks for being early."
+          : active
+            ? "subscribed — $10/month"
+            : status === "past_due" ? "past due — update payment"
+            : status === "canceled" ? "canceled"
+            : "free — subscribe to run bart"}
+      </div>
+
+      {phase === "just-subscribed" && (
+        <div style={{ color: "var(--ok)", fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+          ✓ thanks! your subscription is being confirmed…
+        </div>
+      )}
+
+      {!gf && !active && (
+        <>
+          <div style={{ color: "var(--ink-mute)", fontSize: 14, lineHeight: 1.55, marginBottom: 14 }}>
+            unlimited packets, cancel any time. payment is handled by stripe — we don't see your card.
+          </div>
+          <button className="run-btn" onClick={subscribe}
+                  disabled={phase === "starting"}
+                  style={{ padding: "12px 22px" }}>
+            {phase === "starting" ? "redirecting…" : "subscribe — $10/month"}
+          </button>
+        </>
+      )}
+
+      {active && (
+        <div style={{ marginTop: 8 }}>
+          <a href="#" onClick={e => { e.preventDefault(); manage(); }}
+             style={{
+               fontFamily: "var(--font-mono)", fontSize: 11,
+               color: "var(--ink-faint)", textDecoration: "none",
+               letterSpacing: "0.08em",
+             }}>
+            {phase === "opening-portal" ? "opening…" : "manage subscription ↗"}
+          </a>
+          {billing.current_period_end && (
+            <div className="muted mono" style={{ fontSize: 11, marginTop: 8, color: "var(--ink-faint)" }}>
+              renews / ends {new Date(billing.current_period_end).toLocaleDateString()}
+            </div>
+          )}
+        </div>
+      )}
+
+      {errMsg && (
+        <div style={{ color: "var(--accent-lo)", fontSize: 13, marginTop: 10 }}>
+          {errMsg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────── Paywall modal (shown when /api/run returns 402) ─────────── */
+function PaywallModal({ onClose }) {
+  const [phase, setPhase] = useState("idle");
+  const [errMsg, setErrMsg] = useState(null);
+
+  async function subscribe() {
+    setPhase("starting"); setErrMsg(null);
+    try {
+      const r = await fetch("/api/billing/checkout", { method: "POST", credentials: "same-origin" });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setPhase("error");
+        setErrMsg(j.detail || `couldn't start checkout (${r.status})`);
+        return;
+      }
+      const { url } = await r.json();
+      window.location.href = url;
+    } catch (e) {
+      setPhase("error");
+      setErrMsg(`network error: ${e.message}`);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      background: "rgba(34,30,25,0.55)",
+      backdropFilter: "blur(2px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: 24,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: "min(440px, 100%)",
+        background: "var(--cream-hi)",
+        borderRadius: 18,
+        boxShadow: "0 30px 60px rgba(34,30,25,0.25), inset 0 0 0 1px var(--cream-edge)",
+        padding: "28px 28px 24px",
+      }}>
+        <div style={{
+          fontFamily: "var(--font-mono)", fontSize: 10.5,
+          color: "var(--ink-faint)", letterSpacing: "0.16em",
+          textTransform: "uppercase", marginBottom: 6,
+        }}>
+          subscribe to run
+        </div>
+        <h3 style={{
+          fontSize: 26, fontWeight: 700, color: "var(--ink)",
+          letterSpacing: "-0.015em", lineHeight: 1.15, marginBottom: 12, marginTop: 0,
+        }}>
+          bart is <em style={{ fontStyle: "normal", color: "var(--accent)" }}>$10/month</em>
+        </h3>
+        <div style={{ color: "var(--ink-mute)", fontSize: 15, lineHeight: 1.55, marginBottom: 18 }}>
+          unlimited packets. master plans, schematics, mnemonics, daily lessons, practice exams. cancel any time.
+        </div>
+        <button className="run-btn" onClick={subscribe}
+                disabled={phase === "starting"}
+                style={{ padding: "12px 22px", width: "100%" }}>
+          {phase === "starting" ? "redirecting…" : "subscribe — $10/month"}
+        </button>
+        <div style={{ textAlign: "center", marginTop: 12 }}>
+          <a href="#" onClick={e => { e.preventDefault(); onClose(); }}
+             style={{
+               fontFamily: "var(--font-mono)", fontSize: 11,
+               color: "var(--ink-faint)", textDecoration: "none",
+               letterSpacing: "0.08em",
+             }}>
+            maybe later
+          </a>
+        </div>
+        {errMsg && (
+          <div style={{ color: "var(--accent-lo)", fontSize: 13, marginTop: 10 }}>
+            {errMsg}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1198,6 +1423,7 @@ function App() {
   const [stageEnteredAt, setStageEnteredAt] = useState(null);
   const [nowTick, setNowTick]       = useState(Date.now());
   const [showDetails, setShowDetails] = useState(false);
+  const [showPaywall, setShowPaywall] = useState(false);
   // real-progress signal from bart's stdout: orchestrator prints `[N/M] filename`
   // for each artifact it finishes. When this is set, it overrides stage tweens.
   // firstDoneAt + lastDoneAt + runStartedAt let us derive a per-artifact rate
@@ -1267,10 +1493,16 @@ function App() {
         pct = Math.max(11, Math.min(94, Math.round(10 + ratio * 85)));
 
         // ETA: snapshot was (total - done) × mean at lastDoneAt; tick down by
-        // however much time has passed since. Clamp to ≥ 2s so it doesn't sit
-        // on zero while the slow artifact finishes.
+        // however much time has passed since. Once we're 30% past expected,
+        // stop pretending — switch to a "longer than usual" signal instead of
+        // parking on a misleading "~2s remaining".
         const snapshotMs = (total - done) * meanArtifactMs;
-        remaining = Math.max(2, Math.round((snapshotMs - sinceLast) / 1000));
+        const remainingMs = snapshotMs - sinceLast;
+        if (sinceLast > meanArtifactMs * 1.3) {
+          remaining = "slow";   // sentinel — fmtRemaining renders "longer than usual…"
+        } else {
+          remaining = Math.max(2, Math.round(remainingMs / 1000));
+        }
       }
 
       const label = done >= total
@@ -1301,13 +1533,13 @@ function App() {
   }
   function fmtRemaining(sec) {
     if (sec == null) return "estimating…";
+    if (sec === "slow") return "longer than usual…";
     if (sec < 60) return `~${sec}s`;
     const m = Math.floor(sec / 60), s = sec % 60;
     return s === 0 ? `~${m}m` : `~${m}m ${s}s`;
   }
 
   const fileInput = useRef(null);
-  function openFilePicker() { fileInput.current?.click(); }
   function onPick(e) {
     const fs = Array.from(e.target.files || []);
     if (fs.length) addFiles(fs);
@@ -1359,6 +1591,15 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subject, days: safeDays, focus, preset }),
       });
+      if (rr.status === 402) {
+        // Paywall — send them straight to /pricing. Tiny delay so the message
+        // is readable before the redirect kicks in.
+        const err = await rr.json().catch(() => ({}));
+        appendMsg(err.detail || "subscribe to run bart — taking you to pricing…");
+        setPhase("idle");
+        setTimeout(() => { window.location.href = "/pricing"; }, 900);
+        return;
+      }
       if (!rr.ok) {
         const err = await rr.json().catch(() => ({ detail: `run failed (${rr.status})` }));
         appendMsg(err.detail || `run failed (${rr.status})`);
@@ -1537,8 +1778,10 @@ function App() {
         {/* drop box */}
         <label
           className={"drop-box" + (over ? " is-over" : "")}
-          onClick={openFilePicker}
         >
+          {/* the <label> auto-forwards clicks to the <input> below — no
+              explicit onClick needed. Adding one would double-fire the
+              picker and cancel the first one. */}
           <span className="drop-glyph" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
               <path d="M12 16V4M12 4l-4 4M12 4l4 4M5 20h14"
@@ -1714,7 +1957,7 @@ function App() {
                     </span>
                   )}
                 </span>
-                <span>{fmtRemaining(remaining)} remaining</span>
+                <span>{fmtRemaining(remaining)}{typeof remaining === "number" ? " remaining" : ""}</span>
               </div>
               <div style={{ marginTop: 16, textAlign: "right" }}>
                 <a href="#" onClick={e => { e.preventDefault(); setShowDetails(v => !v); }}
@@ -1786,6 +2029,8 @@ function App() {
           />
         </TweakSection>
       </TweaksPanel>
+
+      {showPaywall && <PaywallModal onClose={() => setShowPaywall(false)} />}
     </>
   );
 }

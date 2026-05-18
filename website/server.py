@@ -55,6 +55,12 @@ import auth
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 
+# Stripe config — all from env. Set via fly secrets before deploying.
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_MONTHLY = os.environ.get("STRIPE_PRICE_MONTHLY", "")
+APP_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "https://studywithbart.com")
+
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -335,6 +341,156 @@ async def google_config():
     return {"client_id": GOOGLE_CLIENT_ID}
 
 
+# ─── billing (Stripe) ────────────────────────────────────────────────────────
+
+def _stripe():
+    """Lazy-init: return the stripe module configured with our key, or raise 503.
+    Lazy because we don't want server startup to fail if Stripe isn't set up yet."""
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(503, "stripe isn't configured on the server.")
+    import stripe as _s
+    _s.api_key = STRIPE_SECRET_KEY
+    return _s
+
+
+def _ensure_stripe_customer(user) -> str:
+    """Return the user's stripe_customer_id, creating one in Stripe if needed."""
+    if user["stripe_customer_id"]:
+        return user["stripe_customer_id"]
+    s = _stripe()
+    customer = s.Customer.create(
+        email=user["email"],
+        name=user["name"] or None,
+        metadata={"user_id": str(user["id"])},
+    )
+    auth.set_stripe_customer(user["id"], customer.id)
+    return customer.id
+
+
+@app.get("/api/billing/status")
+async def billing_status(user=Depends(auth.current_user)):
+    """Lightweight status the UI reads to decide which Settings card to show."""
+    return {
+        "is_grandfathered": bool(user["is_grandfathered"]),
+        "status": user["subscription_status"] or "free",
+        "current_period_end": user["current_period_end"],
+        "has_run_access": auth.has_run_access(user),
+    }
+
+
+@app.post("/api/billing/checkout")
+@_limiter.limit("10/minute")
+async def billing_checkout(request: Request, user=Depends(auth.current_user)):
+    """Create a Stripe Checkout session for the monthly plan; return its URL.
+    The browser redirects to it; Stripe collects payment; we get the result
+    from a webhook (not the redirect, since the redirect is forgeable)."""
+    if not STRIPE_PRICE_MONTHLY:
+        raise HTTPException(503, "subscription price isn't configured.")
+    if auth.has_run_access(user):
+        # Already covered (grandfathered or active) — no point billing them.
+        raise HTTPException(400, "you already have access — no subscription needed.")
+    s = _stripe()
+    customer_id = _ensure_stripe_customer(user)
+    session = s.checkout.Session.create(
+        mode="subscription",
+        customer=customer_id,
+        line_items=[{"price": STRIPE_PRICE_MONTHLY, "quantity": 1}],
+        success_url=f"{APP_PUBLIC_URL}/app/settings?subscribed=1",
+        cancel_url=f"{APP_PUBLIC_URL}/pricing?canceled=1",
+        allow_promotion_codes=True,
+        client_reference_id=str(user["id"]),
+    )
+    return {"url": session.url}
+
+
+@app.post("/api/billing/portal")
+@_limiter.limit("10/minute")
+async def billing_portal(request: Request, user=Depends(auth.current_user)):
+    """Create a Stripe Customer Portal session — the hosted page where users
+    can update payment method, see invoices, and cancel."""
+    if not user["stripe_customer_id"]:
+        raise HTTPException(400, "no stripe customer on file yet — subscribe first.")
+    s = _stripe()
+    session = s.billing_portal.Session.create(
+        customer=user["stripe_customer_id"],
+        return_url=f"{APP_PUBLIC_URL}/app/settings",
+    )
+    return {"url": session.url}
+
+
+def _period_end_from_sub(sub_obj) -> Optional[str]:
+    """Stripe's current_period_end is a Unix timestamp. Store ISO for sanity."""
+    ts = sub_obj.get("current_period_end") if isinstance(sub_obj, dict) else getattr(sub_obj, "current_period_end", None)
+    if not ts:
+        return None
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    """Stripe hits this on every subscription event. We verify the signature,
+    then mirror the subscription state into our DB so /api/run can gate on it.
+
+    Signature verification is critical — without it, anyone can POST here and
+    grant themselves a subscription. Stripe signs with STRIPE_WEBHOOK_SECRET."""
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(503, "stripe webhook secret not configured.")
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    s = _stripe()
+    try:
+        event = s.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except Exception as e:
+        print(f"[stripe-webhook] signature verification failed: {e}",
+              file=sys.stderr, flush=True)
+        raise HTTPException(400, "bad signature")
+
+    etype = event["type"]
+    obj   = event["data"]["object"]
+    print(f"[stripe-webhook] {etype}", file=sys.stderr, flush=True)
+
+    if etype == "checkout.session.completed":
+        # Successful subscription purchase. client_reference_id is our user.id;
+        # also stamp the customer_id in case we didn't have it yet.
+        user_id_str = obj.get("client_reference_id")
+        customer_id = obj.get("customer")
+        subscription_id = obj.get("subscription")
+        if user_id_str and customer_id:
+            try:
+                user_id = int(user_id_str)
+                auth.set_stripe_customer(user_id, customer_id)
+                if subscription_id:
+                    sub = s.Subscription.retrieve(subscription_id)
+                    auth.update_subscription(
+                        user_id=user_id,
+                        subscription_id=sub.id,
+                        status=sub.status,
+                        current_period_end=_period_end_from_sub(sub),
+                    )
+            except Exception as e:
+                print(f"[stripe-webhook] checkout.session.completed handler error: {e}",
+                      file=sys.stderr, flush=True)
+
+    elif etype in ("customer.subscription.created",
+                   "customer.subscription.updated",
+                   "customer.subscription.deleted"):
+        customer_id = obj.get("customer")
+        u = auth.find_user_by_stripe_customer(customer_id) if customer_id else None
+        if u is not None:
+            status = obj.get("status")
+            if etype == "customer.subscription.deleted":
+                status = "canceled"
+            auth.update_subscription(
+                user_id=u["id"],
+                subscription_id=obj.get("id"),
+                status=status or "free",
+                current_period_end=_period_end_from_sub(obj),
+            )
+
+    return {"received": True}
+
+
 @app.get("/api/auth/me")
 async def me(user=Depends(auth.current_user)):
     return {"user": _user_payload(user)}
@@ -445,6 +601,14 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
     if _run_lock.locked():
         raise HTTPException(
             409, "bart is busy with another run — try again in a minute."
+        )
+
+    # Paywall — bypass if grandfathered, else require an active subscription.
+    # 402 Payment Required is the canonical status; the UI listens for it and
+    # routes to the subscribe modal / pricing page.
+    if not auth.has_run_access(user):
+        raise HTTPException(
+            402, "subscribe to run bart — $10/month, cancel anytime."
         )
 
     materials_dir = _user_materials(user["id"])
@@ -1094,7 +1258,14 @@ async def root_index():
 
 
 @app.get("/login")
-async def login_page():
+async def login_page(request: Request, user=Depends(auth.current_user_optional)):
+    # Already signed in? Skip the form. Honor ?next=... if it's a same-site path
+    # (must start with / and not //) so /login?next=/pricing routes correctly.
+    if user is not None:
+        nxt = request.query_params.get("next") or "/app"
+        if not nxt.startswith("/") or nxt.startswith("//"):
+            nxt = "/app"
+        return RedirectResponse(url=nxt, status_code=302)
     return FileResponse(HERE / "login.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 

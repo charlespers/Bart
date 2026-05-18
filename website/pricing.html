@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bart. — subscribe</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,ital,wght@8..60,1,400;8..60,1,500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/tokens.css" />
+<style>
+  body { overflow-x: hidden; }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(900px 600px at 12% 8%,    rgba(255,255,255,0.55), transparent 60%),
+      radial-gradient(900px 700px at 88% 100%,  rgba(201,100,66,0.06), transparent 60%);
+  }
+
+  /* ─── topbar ─── */
+  .nav {
+    position: sticky; top: 0; z-index: 30;
+    backdrop-filter: blur(10px) saturate(1.05);
+    background: rgba(244,241,234,0.74);
+    border-bottom: 1px solid rgba(217,211,196,0.55);
+  }
+  .nav-inner {
+    max-width: 1200px; margin: 0 auto;
+    padding: 16px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .nav .mark {
+    font-family: var(--font-sans); font-weight: 800;
+    color: var(--ink); font-size: 22px; letter-spacing: -0.025em;
+    text-decoration: none;
+  }
+  .nav .mark .dot { color: var(--accent); }
+  .nav .right {
+    font-family: var(--font-mono); font-size: 12.5px;
+    color: var(--ink-mute); display: flex; gap: 18px; align-items: center;
+  }
+  .nav .right a { color: var(--ink-mute); text-decoration: none; }
+  .nav .right a:hover { color: var(--accent); }
+  .nav .right .you {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--ink); font-weight: 500;
+  }
+  .nav .right .you .av {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent-tint); color: var(--accent-lo);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 11px;
+  }
+
+  /* ─── page header ─── */
+  .stage {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 56px 32px 120px;
+    position: relative; z-index: 1;
+  }
+  .stage h1 {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: clamp(36px, 5.4vw, 60px);
+    letter-spacing: -0.032em;
+    line-height: 1.05;
+    color: var(--ink);
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+  .stage h1 em {
+    font-family: var(--font-serif);
+    font-style: italic;
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .stage .lede {
+    font-size: 17px; color: var(--ink-mute);
+    max-width: 580px; line-height: 1.55;
+    margin: 0;
+    text-wrap: pretty;
+  }
+
+  /* toast (after returning from Stripe with ?canceled=1) */
+  .toast {
+    margin-top: 22px;
+    padding: 12px 16px;
+    background: rgba(201,100,66,0.08);
+    border-radius: 12px;
+    color: var(--accent-lo);
+    font-size: 14px;
+    box-shadow: inset 0 0 0 1px rgba(201,100,66,0.18);
+  }
+
+  /* ─── two-column ─── */
+  .grid {
+    margin-top: 56px;
+    display: grid;
+    grid-template-columns: 1.05fr 1fr;
+    gap: 56px;
+    align-items: start;
+  }
+
+  /* ── left: plan / what you get ── */
+  .plan { position: relative; }
+  .plan .price-row {
+    display: flex; align-items: baseline; gap: 8px;
+    margin-bottom: 8px;
+  }
+  .plan .price {
+    font-family: var(--font-sans);
+    font-weight: 800;
+    font-size: clamp(72px, 11vw, 132px);
+    letter-spacing: -0.06em;
+    color: var(--ink);
+    line-height: 0.9;
+    display: inline-flex; align-items: baseline; gap: 4px;
+  }
+  .plan .price .currency {
+    font-size: 0.42em; font-weight: 700;
+    color: var(--ink); transform: translateY(-0.5em);
+  }
+  .plan .per {
+    font-family: var(--font-mono);
+    font-size: 14px; color: var(--ink-mute);
+    letter-spacing: 0.04em;
+    align-self: flex-end; margin-bottom: 14px;
+  }
+  .plan .per .dot { color: var(--accent); }
+
+  .features {
+    display: flex; flex-direction: column;
+    margin: 28px 0 32px;
+    padding: 0;
+    list-style: none;
+  }
+  .features li {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--cream-edge);
+    font-size: 15.5px;
+    color: var(--ink-soft);
+    line-height: 1.45;
+  }
+  .features li:first-child { border-top: 1px solid var(--cream-edge); }
+  .features li .check {
+    flex: 0 0 24px; width: 24px; height: 24px;
+    border-radius: 50%;
+    background: var(--accent-tint);
+    color: var(--accent-lo);
+    display: inline-flex; align-items: center; justify-content: center;
+    margin-top: 1px;
+  }
+  .features li .check svg { width: 12px; height: 12px; }
+  .features li b { font-weight: 600; color: var(--ink); }
+
+  /* ── right: order + CTA ── */
+  .pay {
+    position: sticky; top: 90px;
+    background: var(--cream-hi);
+    border-radius: 22px;
+    padding: 32px;
+    box-shadow:
+      inset 0 0 0 1px var(--cream-edge),
+      0 30px 60px rgba(30,20,14,0.08);
+  }
+  .pay h3 {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    margin: 0 0 4px;
+  }
+  .pay .sub {
+    color: var(--ink-mute); font-size: 14px; margin-bottom: 22px;
+  }
+  .pay .sub b { color: var(--ink); font-weight: 500; }
+
+  .summary {
+    background: var(--cream);
+    border-radius: 14px;
+    padding: 18px 20px;
+    margin-bottom: 22px;
+  }
+  .summary .row {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 14px;
+    color: var(--ink-soft);
+    padding: 6px 0;
+  }
+  .summary .row .left {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .summary .row .left .av {
+    width: 32px; height: 32px; border-radius: 8px;
+    background: var(--accent-tint); color: var(--accent-lo);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 700; font-family: var(--font-mono); font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  .summary .row .l {
+    font-size: 14px; color: var(--ink); font-weight: 500;
+  }
+  .summary .row .l .meta {
+    display: block;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--ink-mute); margin-top: 1px; letter-spacing: 0.02em;
+  }
+  .summary .row .v { font-family: var(--font-mono); color: var(--ink); }
+  .summary .total {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 10px 0 2px;
+    border-top: 1px solid var(--cream-edge);
+    margin-top: 8px;
+  }
+  .summary .total .lbl {
+    font-family: var(--font-sans); font-weight: 600; font-size: 15px; color: var(--ink);
+  }
+  .summary .total .amt {
+    font-family: var(--font-sans); font-weight: 700;
+    font-size: 24px; letter-spacing: -0.02em; color: var(--ink);
+  }
+  .summary .total .amt small {
+    font-family: var(--font-mono); font-weight: 500;
+    font-size: 11px; color: var(--ink-mute);
+    letter-spacing: 0.04em; margin-left: 4px;
+  }
+
+  /* trust strip — stripe handles cards, so we tell users that */
+  .trust {
+    display: flex; flex-direction: column; gap: 6px;
+    margin-bottom: 18px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--ink-mute);
+    letter-spacing: 0.04em;
+  }
+  .trust .row {
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .trust .row::before {
+    content: "✓"; color: var(--accent); font-weight: 700;
+  }
+
+  .submit {
+    width: 100%;
+    border: 0;
+    background: var(--accent);
+    color: var(--cream-hi);
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 16px;
+    padding: 16px;
+    border-radius: 12px;
+    cursor: pointer;
+    margin-top: 4px;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.35) inset,
+      0 10px 24px rgba(201,100,66,0.28),
+      0 1px 2px rgba(154,70,40,0.4);
+    transition: transform .14s ease, background .14s ease;
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  }
+  .submit:hover { background: var(--accent-hi); transform: translateY(-1px); }
+  .submit:active { transform: translateY(0); }
+  .submit .arrow { width: 16px; height: 16px; transform: translateY(1px); }
+  .submit:disabled, .submit.loading {
+    color: rgba(251,249,244,0.6); pointer-events: none;
+  }
+  .submit.loading::after {
+    content: "";
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--cream-hi);
+    border-top-color: transparent;
+    animation: spin 0.8s linear infinite;
+    margin-left: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .legal {
+    margin-top: 16px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+    line-height: 1.6;
+    text-align: center;
+  }
+  .legal a { color: var(--ink-mute); text-decoration: underline; text-decoration-color: var(--cream-edge); text-underline-offset: 3px; }
+  .legal a:hover { color: var(--accent); }
+
+  .login-prompt {
+    background: var(--cream);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+    font-size: 14px;
+    color: var(--ink-mute);
+    line-height: 1.5;
+  }
+  .login-prompt a {
+    color: var(--accent); text-decoration: none; font-weight: 500;
+  }
+  .login-prompt a:hover { text-decoration: underline; }
+
+  .errmsg {
+    color: var(--accent-lo);
+    font-size: 13px;
+    margin-top: 10px;
+  }
+
+  /* bart corner cameo */
+  .corner-bart {
+    position: absolute;
+    right: -10px; top: -50px;
+    width: 88px; height: auto;
+    transform: rotate(8deg);
+    filter: drop-shadow(0 8px 20px rgba(154,70,40,0.18));
+    animation: bart-breathe 4.5s ease-in-out infinite;
+  }
+  @keyframes bart-breathe {
+    0%,100% { transform: rotate(8deg) translateY(0) scale(1.00, 1.00); }
+    50%     { transform: rotate(8deg) translateY(-4px) scale(1.015, 0.985); }
+  }
+
+  /* faq */
+  .faq {
+    margin-top: 96px;
+    border-top: 1px solid var(--cream-edge);
+    padding-top: 64px;
+  }
+  .faq h2 {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: clamp(28px, 3.6vw, 40px);
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    margin: 0 0 36px;
+  }
+  .faq h2 em { font-family: var(--font-serif); font-style: italic; color: var(--accent); font-weight: 500; }
+  .faq-list { display: grid; grid-template-columns: 1fr 1fr; gap: 24px 48px; }
+  .q { border-bottom: 1px solid var(--cream-edge); padding-bottom: 18px; }
+  .q .qt {
+    font-family: var(--font-sans); font-weight: 600;
+    color: var(--ink); font-size: 16px; letter-spacing: -0.01em;
+    margin-bottom: 6px;
+  }
+  .q .qa {
+    color: var(--ink-mute); font-size: 14.5px; line-height: 1.55;
+    text-wrap: pretty;
+  }
+
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; gap: 40px; }
+    .pay { position: static; }
+    .faq-list { grid-template-columns: 1fr; gap: 18px; }
+    .corner-bart { display: none; }
+  }
+  @media (max-width: 600px) {
+    .nav-inner { padding: 14px 20px; }
+    .stage { padding: 32px 20px 80px; }
+    .pay { padding: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="mark" href="/">bart<span class="dot">.</span></a>
+    <div class="right" id="nav-right">
+      <a href="/app">app</a>
+      <span id="you-slot"></span>
+    </div>
+  </div>
+</nav>
+
+<main class="stage">
+  <h1>one price. <em>everything.</em></h1>
+  <p class="lede">drop your materials, get your packet. cancel any time.</p>
+  <div id="toast-slot"></div>
+
+  <div class="grid">
+    <!-- LEFT: plan -->
+    <section class="plan">
+      <div class="price-row">
+        <span class="price">
+          <span class="currency">$</span>10
+        </span>
+        <span class="per">/ month <span class="dot">·</span> billed monthly</span>
+      </div>
+
+      <ul class="features">
+        <li>
+          <span class="check"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5l2.5 2.5L10 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <div><b>unlimited study packets</b>, any subject</div>
+        </li>
+        <li>
+          <span class="check"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5l2.5 2.5L10 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <div><b>master plans, schematics, mnemonics</b></div>
+        </li>
+        <li>
+          <span class="check"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5l2.5 2.5L10 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <div><b>practice exams &amp; daily lessons</b></div>
+        </li>
+        <li>
+          <span class="check"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5l2.5 2.5L10 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <div><b>past runs saved</b> &amp; shareable with friends</div>
+        </li>
+        <li>
+          <span class="check"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5l2.5 2.5L10 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <div><b>cancel any time</b>, no questions asked</div>
+        </li>
+      </ul>
+    </section>
+
+    <!-- RIGHT: order + CTA -->
+    <aside class="pay">
+      <svg class="corner-bart" viewBox="0 0 220 200">
+        <defs>
+          <radialGradient id="cb-body" cx="36%" cy="28%" r="80%">
+            <stop offset="0%" stop-color="#fbf9f4"/>
+            <stop offset="50%" stop-color="#f4f1ea"/>
+            <stop offset="100%" stop-color="#d9d3c4"/>
+          </radialGradient>
+          <radialGradient id="cb-acc" cx="36%" cy="30%" r="80%">
+            <stop offset="0%" stop-color="#e88a6a"/>
+            <stop offset="55%" stop-color="#c96442"/>
+            <stop offset="100%" stop-color="#9a4628"/>
+          </radialGradient>
+        </defs>
+        <rect x="22" y="60" width="176" height="106" rx="53" fill="url(#cb-body)"/>
+        <ellipse cx="78" cy="84" rx="48" ry="14" fill="#fff" opacity="0.45"/>
+        <ellipse cx="110" cy="56" rx="11" ry="9" fill="url(#cb-acc)"/>
+        <ellipse cx="86"  cy="106" rx="5" ry="8.5" fill="#221f1b"/>
+        <ellipse cx="134" cy="106" rx="5" ry="8.5" fill="#221f1b"/>
+        <ellipse cx="84"  cy="103" rx="1.4" ry="1.9" fill="#fff" opacity="0.95"/>
+        <ellipse cx="132" cy="103" rx="1.4" ry="1.9" fill="#fff" opacity="0.95"/>
+        <path d="M 100 128 Q 110 136 120 128" fill="none" stroke="#221f1b" stroke-width="2.4" stroke-linecap="round"/>
+        <ellipse cx="68"  cy="124" rx="6" ry="2.6" fill="#c96442" opacity="0.28"/>
+        <ellipse cx="152" cy="124" rx="6" ry="2.6" fill="#c96442" opacity="0.28"/>
+      </svg>
+
+      <h3>your order</h3>
+      <div class="sub" id="acct-sub">subscribing as you</div>
+
+      <div id="login-prompt-slot"></div>
+
+      <div class="summary">
+        <div class="row">
+          <div class="left">
+            <span class="av">B</span>
+            <span class="l">bart<span class="meta">monthly subscription</span></span>
+          </div>
+          <span class="v">$10.00</span>
+        </div>
+        <div class="total">
+          <span class="lbl">total today</span>
+          <span class="amt">$10.00<small>/mo</small></span>
+        </div>
+      </div>
+
+      <div class="trust">
+        <span class="row">card processed by stripe — we never see it</span>
+        <span class="row">cancel from settings in one click</span>
+      </div>
+
+      <button class="submit" id="submit" type="button">
+        <span id="submit-label">continue to checkout</span>
+        <svg class="arrow" viewBox="0 0 24 24" fill="none">
+          <path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <div class="errmsg" id="errmsg" style="display:none;"></div>
+
+      <div class="legal">
+        by subscribing you agree to a recurring <b>$10.00</b> charge until cancelled. cancel any time from your <a href="/app/settings">account settings</a>.
+      </div>
+    </aside>
+  </div>
+
+  <section class="faq">
+    <h2>questions, <em>answered.</em></h2>
+    <div class="faq-list">
+      <div class="q">
+        <div class="qt">can i cancel any time?</div>
+        <div class="qa">yes. one click in your account settings. you keep access until the end of the billing period and every packet you've made stays yours.</div>
+      </div>
+      <div class="q">
+        <div class="qt">what happens to my files?</div>
+        <div class="qa">stored privately on the server and never used to train anything. you can wipe everything from settings at any time.</div>
+      </div>
+      <div class="q">
+        <div class="qt">do you support my subject?</div>
+        <div class="qa">any subject with readable text. organic chem, real analysis, constitutional law, anatomy, mandarin — drop your stuff and try it.</div>
+      </div>
+      <div class="q">
+        <div class="qt">how is payment handled?</div>
+        <div class="qa">stripe processes every card. bart never sees your card number — we just get a "this user is paid" signal back from stripe via webhook.</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+  const submitBtn   = document.getElementById('submit');
+  const submitLbl   = document.getElementById('submit-label');
+  const acctSub     = document.getElementById('acct-sub');
+  const youSlot     = document.getElementById('you-slot');
+  const loginSlot   = document.getElementById('login-prompt-slot');
+  const errMsg      = document.getElementById('errmsg');
+  const toastSlot   = document.getElementById('toast-slot');
+
+  function showErr(msg) { errMsg.textContent = msg; errMsg.style.display = 'block'; }
+  function clrErr()     { errMsg.textContent = ''; errMsg.style.display = 'none'; }
+
+  // ── canceled-from-stripe toast ──
+  if (new URLSearchParams(location.search).get('canceled') === '1') {
+    toastSlot.innerHTML = '<div class="toast">no charge — you backed out of checkout. ready when you are.</div>';
+  }
+
+  // ── load current user state ──
+  let me = null;
+  fetch('/api/auth/me', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      me = d && d.user;
+      if (me) {
+        const initial = (me.email || '?').charAt(0).toUpperCase();
+        youSlot.innerHTML = '<span class="you"><span class="av">' + initial + '</span>' + me.email + '</span>';
+        acctSub.innerHTML = 'subscribing as <b>' + me.email + '</b>';
+      } else {
+        // logged-out: show prompt + change button into a login-then-subscribe
+        loginSlot.innerHTML = '<div class="login-prompt">'
+          + 'you\'ll need an account first — <a href="/login?next=/pricing">log in or sign up</a>, then come back to subscribe.'
+          + '</div>';
+        submitLbl.textContent = 'log in to continue';
+      }
+    })
+    .catch(() => {});
+
+  // ── start checkout ──
+  async function startCheckout() {
+    if (!me) {
+      window.location.href = '/login?next=/pricing';
+      return;
+    }
+    clrErr();
+    submitBtn.classList.add('loading');
+    submitLbl.textContent = 'redirecting to stripe…';
+    try {
+      const r = await fetch('/api/billing/checkout', { method: 'POST', credentials: 'same-origin' });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 400 && (j.detail || '').includes('already have access')) {
+          // grandfathered or already subscribed — just go to the app.
+          window.location.href = '/app';
+          return;
+        }
+        showErr(j.detail || ('checkout failed (' + r.status + ')'));
+        submitBtn.classList.remove('loading');
+        submitLbl.textContent = 'try again';
+        return;
+      }
+      const { url } = await r.json();
+      window.location.href = url;
+    } catch (e) {
+      showErr('network error: ' + e.message);
+      submitBtn.classList.remove('loading');
+      submitLbl.textContent = 'try again';
+    }
+  }
+  submitBtn.addEventListener('click', startCheckout);
+</script>
+
+</body>
+</html>
