@@ -65,6 +65,12 @@ APP_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "https://studywithbart.com")
 # Opus on the heavy authoring step and keeps the $10/mo tier profitable with
 # the creator commission stacked on (see the creator-accounts design spec).
 WEB_PRIMARY_MODEL = os.environ.get("BART_WEB_PRIMARY_MODEL", "claude-sonnet-4-6")
+# Creator payouts. PAYOUT_MINIMUM_CENTS is the balance a creator must reach
+# before a payout run pays them. STRIPE_CONNECT_ENABLED switches the dashboard
+# between Connect onboarding and manual-handle entry.
+PAYOUT_MINIMUM_CENTS = max(0, int(
+    os.environ.get("BART_PAYOUT_MINIMUM_CENTS", "2500")))
+STRIPE_CONNECT_ENABLED = os.environ.get("BART_STRIPE_CONNECT", "0") == "1"
 
 
 HERE = Path(__file__).resolve().parent
@@ -735,19 +741,94 @@ async def creator_apply(req: CreatorApplyRequest, request: Request,
 
 @app.get("/api/creator/me")
 async def creator_me(user=Depends(auth.current_user)):
-    """The signed-in user's creator status: their dashboard (referral link,
-    referrals, earnings) once approved, otherwise their application status."""
+    """The signed-in user's creator status: full dashboard payload once
+    approved (referral link, earnings, payout state, payout history),
+    otherwise their application status."""
     creator = auth.get_creator_for_user(user)
     if creator is not None:
-        summary = auth.creator_summary(creator)
-        summary["is_creator"] = True
-        summary["referral_url"] = f"{APP_PUBLIC_URL}/r/{summary['referral_code']}"
-        return summary
+        earnings = auth.creator_earnings(creator)
+        payouts = auth.list_payouts(creator_id=creator["id"])[:20]
+        return {
+            "is_creator": True,
+            "name": creator["name"],
+            "referral_code": creator["referral_code"],
+            "referral_url": f"{APP_PUBLIC_URL}/r/{creator['referral_code']}",
+            "commission_cents": auth.CREATOR_COMMISSION_CENTS,
+            "payout_minimum_cents": PAYOUT_MINIMUM_CENTS,
+            "connect_mode": STRIPE_CONNECT_ENABLED,
+            "payout_method": creator["payout_method"],
+            "payout_details": creator["payout_details"],
+            "payouts_enabled": bool(creator["payouts_enabled"]),
+            "has_stripe_account": bool(creator["stripe_account_id"]),
+            "earnings": earnings,
+            "payouts": payouts,
+        }
     app = auth.latest_application_for_email(user["email"] or "")
     return {
         "is_creator": False,
         "application_status": app["status"] if app is not None else None,
     }
+
+
+class PayoutMethodRequest(BaseModel):
+    details: str = ""
+
+
+@app.post("/api/creator/payout-method")
+async def creator_payout_method(req: PayoutMethodRequest,
+                                user=Depends(auth.current_user)):
+    """Save a manual payout handle (PayPal/Venmo email) for the creator."""
+    creator = auth.get_creator_for_user(user)
+    if creator is None:
+        raise HTTPException(403, "you're not a bart creator.")
+    details = (req.details or "").strip()
+    if not details:
+        raise HTTPException(400, "enter a payout handle.")
+    auth.set_creator_payout_method(creator["id"], details)
+    return {"ok": True}
+
+
+@app.post("/api/creator/connect/start")
+async def creator_connect_start(user=Depends(auth.current_user)):
+    """Begin Stripe Connect Express onboarding — create the connected account
+    if needed, then return a hosted onboarding URL for the browser to open."""
+    if not STRIPE_CONNECT_ENABLED:
+        raise HTTPException(409, "stripe payouts aren't enabled — your bart "
+                                 "payout is handled manually.")
+    creator = auth.get_creator_for_user(user)
+    if creator is None:
+        raise HTTPException(403, "you're not a bart creator.")
+    stripe = _stripe()
+    account_id = creator["stripe_account_id"]
+    if not account_id:
+        acct = stripe.Account.create(
+            type="express",
+            email=creator["email"],
+            capabilities={"transfers": {"requested": True}},
+        )
+        account_id = acct["id"]
+        auth.set_creator_stripe_account(creator["id"], account_id)
+    link = stripe.AccountLink.create(
+        account=account_id,
+        refresh_url=f"{APP_PUBLIC_URL}/creators?connect=refresh",
+        return_url=f"{APP_PUBLIC_URL}/creators?connect=done",
+        type="account_onboarding",
+    )
+    return {"url": link["url"]}
+
+
+@app.get("/api/creator/connect/refresh")
+async def creator_connect_refresh(user=Depends(auth.current_user)):
+    """Re-sync the creator's Connect account status from Stripe."""
+    creator = auth.get_creator_for_user(user)
+    if creator is None:
+        raise HTTPException(403, "you're not a bart creator.")
+    if not creator["stripe_account_id"]:
+        return {"payouts_enabled": False}
+    acct = _stripe().Account.retrieve(creator["stripe_account_id"])
+    enabled = bool(acct.get("payouts_enabled") and acct.get("charges_enabled"))
+    auth.set_creator_payouts_enabled(creator["id"], enabled)
+    return {"payouts_enabled": enabled}
 
 
 @app.get("/api/admin/creator-applications")
