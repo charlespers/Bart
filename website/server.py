@@ -127,9 +127,24 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _streams: dict[str, asyncio.Queue] = {}
 _procs: dict[str, asyncio.subprocess.Process] = {}
-_run_lock = asyncio.Lock()
+# Per-user locks — one concurrent run per user (prevents accidental double-fire
+# from clobbering the user's own output dir). Per-user, NOT global, so users
+# don't queue behind each other.
+_user_locks: dict[int, asyncio.Lock] = {}
+# Global concurrency cap — how many bart subprocesses can run at once across
+# the whole server. Sized to the box; tune via BART_MAX_CONCURRENT_RUNS.
+_MAX_CONCURRENT_RUNS = int(os.environ.get("BART_MAX_CONCURRENT_RUNS", "6"))
+_run_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_RUNS)
 # token -> {user_id, subject, focus, preset, days, materials_dir, output_dir}
 _run_meta: dict[str, dict] = {}
+
+
+def _user_lock(user_id: int) -> asyncio.Lock:
+    lock = _user_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_locks[user_id] = lock
+    return lock
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 ETA_RE = re.compile(r"est\.?\s*time:\s*~?\s*(\d+(?:\.\d+)?)\s*(min(?:ute)?s?|m\b|sec(?:ond)?s?|s\b)", re.IGNORECASE)
@@ -216,6 +231,37 @@ def _latest_run_dir(user_id: int) -> Path | None:
         key=lambda p: p.name,
     )
     return runs[-1] if runs else None
+
+
+# How many recent runs to keep per user before GC kicks in. Tune via env.
+# Generated packets are ~5–10 MB each, so 10 ≈ 50–100 MB/user — leaves
+# headroom on a 3 GB volume for several hundred users.
+KEEP_RUNS_PER_USER = int(os.environ.get("BART_KEEP_RUNS_PER_USER", "10"))
+
+
+def _gc_user_runs(user_id: int, keep: int = KEEP_RUNS_PER_USER) -> int:
+    """Delete a user's oldest runs beyond `keep`, skipping shared/favorited
+    ones. Returns the number of runs removed. Safe to call any time —
+    no-ops if the user is under the limit."""
+    victims = auth.runs_eligible_for_gc(user_id, keep)
+    if not victims:
+        return 0
+    out = _user_output(user_id)
+    removed = 0
+    for run_id in victims:
+        run_dir = out / run_id
+        try:
+            if run_dir.is_dir():
+                shutil.rmtree(run_dir)
+            auth.delete_run_row(run_id, user_id)
+            removed += 1
+        except Exception as e:
+            print(f"[gc] failed to delete {run_id} for user={user_id}: {e}",
+                  file=sys.stderr, flush=True)
+    if removed:
+        print(f"[gc] removed {removed} old run(s) for user={user_id}",
+              file=sys.stderr, flush=True)
+    return removed
 
 
 def _archive_materials_into_latest_run(user_id: int) -> tuple[int, str] | None:
@@ -633,9 +679,11 @@ class RunRequest(BaseModel):
 
 @app.post("/api/run")
 async def start_run(req: RunRequest, user=Depends(auth.current_user)):
-    if _run_lock.locked():
+    # Per-user single-run gate — prevents accidental double-fire from this same
+    # user clobbering their own output dir. Other users are unaffected.
+    if _user_lock(user["id"]).locked():
         raise HTTPException(
-            409, "bart is busy with another run — try again in a minute."
+            409, "you already have a run in progress — wait for it to finish."
         )
 
     # Paywall — bypass if grandfathered, else require an active subscription.
@@ -722,17 +770,30 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
     # Per-user workspace — bart/paths.py picks these up at import time.
     env["BART_MATERIALS"] = str(materials_dir)
     env["BART_OUTPUT"] = str(output_dir)
+    # Per-user bart config — bart/config.py reads this instead of the legacy
+    # shared ROOT/.bart_config.json. This is what removes the global lock.
+    env["BART_CONFIG"] = str(config_path)
     # Per-user claude credentials. HOME override means the spawned `claude`
     # CLI reads <workspace>/.claude/, not the host's ~/.claude/, so each user
     # runs against their own claude.ai session.
     env["HOME"] = str(CONFIG_ROOT / str(user["id"]))
-    # Run from ROOT so `python -m bart` can import the bart package, and so
-    # bart's .bart_config.json sits where the CLI expects it. The run lock
-    # guarantees only one user owns ROOT/.bart_config.json at a time.
-    cwd = ROOT
-    (ROOT / ".bart_config.json").write_text(config_path.read_text())
+    # cwd is per-user so any incidental write goes into that user's workspace,
+    # not ROOT. PYTHONPATH=ROOT keeps `python -m bart` resolvable from cwd.
+    cwd = CONFIG_ROOT / str(user["id"])
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(ROOT)
 
-    await _run_lock.acquire()
+    user_lock = _user_lock(user["id"])
+    # Race against /api/run firing twice for the same user before the first
+    # call's lock acquire — re-check here under the lock.
+    if user_lock.locked():
+        raise HTTPException(
+            409, "you already have a run in progress — wait for it to finish."
+        )
+    await user_lock.acquire()
+    # Block on the global semaphore — fast path when below the cap, queues
+    # politely when at the cap. Released in the reader's finally.
+    await _run_semaphore.acquire()
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -742,9 +803,11 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
             env=env,
         )
     except FileNotFoundError as e:
-        _run_lock.release()
+        _run_semaphore.release()
+        user_lock.release()
         raise HTTPException(500, f"could not launch bart: {e}")
     _procs[token] = proc
+    _run_meta[token]["user_lock"] = user_lock
 
     async def reader():
         try:
@@ -812,6 +875,13 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
                     except Exception as e:
                         print(f"[run-recorder] FAILED to record {run_id}: {e}",
                               file=sys.stderr, flush=True)
+                # GC after each new run lands. Skipped on the exception path
+                # (record_run failed), since we want a stable DB before pruning.
+                try:
+                    _gc_user_runs(user_id)
+                except Exception as e:
+                    print(f"[gc] error during post-run gc for user={user_id}: {e}",
+                          file=sys.stderr, flush=True)
 
             if rc == 0:
                 await queue.put({"kind": "bart",
@@ -823,9 +893,11 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
             await queue.put({"kind": "sys", "line": f"[server error reading stdout: {e}]"})
         finally:
             await queue.put(None)
-            _run_meta.pop(token, None)
-            if _run_lock.locked():
-                _run_lock.release()
+            meta = _run_meta.pop(token, None)
+            ul = meta.get("user_lock") if meta else None
+            if ul is not None and ul.locked():
+                ul.release()
+            _run_semaphore.release()
 
     asyncio.create_task(reader())
     return {"token": token, "cmd": cmd}
@@ -1283,6 +1355,90 @@ async def remove_favorite(run_id: str, user=Depends(auth.current_user)):
 @app.get("/api/leaderboard")
 async def leaderboard(user=Depends(auth.current_user)):
     return {"rows": auth.leaderboard_for(user["id"])}
+
+
+# ─── admin ───────────────────────────────────────────────────────────────────
+
+# Only the owner sees admin endpoints. Grandfathered != admin (early users got
+# free access, but they're not operators).
+ADMIN_EMAILS = {"loctran0323@gmail.com"}
+
+
+def _require_admin(user) -> None:
+    if (user["email"] or "").lower() not in ADMIN_EMAILS:
+        raise HTTPException(404, "not found")  # 404 not 403 — don't advertise existence
+
+
+def _read_meminfo() -> dict:
+    """Parse /proc/meminfo on Linux (Fly). Returns MB. Empty dict off-Linux."""
+    try:
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                kb = int(rest.strip().split()[0])
+                info[key] = kb // 1024  # MB
+        total = info.get("MemTotal", 0)
+        available = info.get("MemAvailable", 0)
+        return {
+            "total_mb": total,
+            "available_mb": available,
+            "used_mb": total - available if total else 0,
+            "used_pct": round((total - available) / total * 100, 1) if total else 0,
+        }
+    except (OSError, ValueError, IndexError):
+        return {}
+
+
+def _wal_size_bytes() -> int:
+    wal = Path(str(auth.DB_PATH) + "-wal")
+    try:
+        return wal.stat().st_size
+    except OSError:
+        return 0
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(user=Depends(auth.current_user)):
+    _require_admin(user)
+    # Semaphore internals — `_value` is available permits, `_waiters` is the
+    # queue of callers blocked on .acquire(). Both are private but stable
+    # across CPython 3.8+ and asyncio has no public equivalent yet.
+    sem_available = _run_semaphore._value
+    sem_waiting = len(_run_semaphore._waiters) if _run_semaphore._waiters else 0
+    active_runs = _MAX_CONCURRENT_RUNS - sem_available
+    # Disk on /data (the Fly volume). Off-Fly we fall back to the website dir.
+    disk_target = Path("/data") if Path("/data").is_dir() else HERE
+    du = shutil.disk_usage(disk_target)
+    # Top runs-per-user — load-bearing for GC tuning.
+    try:
+        top_users = auth.runs_per_user_top(20)
+    except Exception as e:
+        top_users = [{"error": str(e)}]
+    return {
+        "concurrency": {
+            "max": _MAX_CONCURRENT_RUNS,
+            "active": active_runs,
+            "queued": sem_waiting,
+            "per_user_locks_held": sum(1 for v in _user_locks.values() if v.locked()),
+        },
+        "memory": _read_meminfo(),
+        "disk": {
+            "path": str(disk_target),
+            "total_gb": round(du.total / 1e9, 2),
+            "used_gb": round(du.used / 1e9, 2),
+            "free_gb": round(du.free / 1e9, 2),
+            "used_pct": round(du.used / du.total * 100, 1),
+        },
+        "db": {
+            "size_mb": round(Path(auth.DB_PATH).stat().st_size / 1e6, 2) if Path(auth.DB_PATH).exists() else 0,
+            "wal_mb": round(_wal_size_bytes() / 1e6, 2),
+        },
+        "gc": {
+            "keep_per_user": KEEP_RUNS_PER_USER,
+        },
+        "top_users_by_runs": top_users,
+    }
 
 
 # ─── page routing ────────────────────────────────────────────────────────────

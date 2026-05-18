@@ -152,9 +152,18 @@ def init_db() -> None:
 
 @contextmanager
 def _connect():
-    db = sqlite3.connect(DB_PATH)
+    # timeout=10 — if another connection is mid-write, retry for up to 10s
+    # instead of immediately raising "database is locked". busy_timeout below
+    # is the SQLite-internal equivalent; both are belt-and-suspenders.
+    db = sqlite3.connect(DB_PATH, timeout=10)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
+    # WAL: readers don't block writers and vice-versa — the win for a
+    # concurrent web server. synchronous=NORMAL is the recommended pair
+    # (still fsyncs on commit, just not on every page write).
+    db.execute("PRAGMA journal_mode = WAL")
+    db.execute("PRAGMA synchronous = NORMAL")
+    db.execute("PRAGMA busy_timeout = 5000")
     try:
         yield db
         db.commit()
@@ -395,6 +404,47 @@ def list_runs(user_id: int) -> list[dict]:
             (user_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def runs_eligible_for_gc(user_id: int, keep: int) -> list[str]:
+    """Return oldest-first run_ids that should be deleted to keep at most `keep`
+    runs for this user. Excludes runs that are shared (share_token set) or
+    favorited by anyone — those are someone's saved content, so we'd rather
+    keep a few extra MB than silently delete them out from under a friend.
+    """
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT r.run_id FROM runs r "
+            "WHERE r.user_id = ? "
+            "  AND (r.share_token IS NULL) "
+            "  AND NOT EXISTS (SELECT 1 FROM favorites f WHERE f.run_id = r.run_id) "
+            "ORDER BY r.created_at DESC",
+            (user_id,),
+        ).fetchall()
+    # Skip the newest `keep`; everything older is fair game.
+    return [r["run_id"] for r in rows[keep:]]
+
+
+def runs_per_user_top(limit: int = 20) -> list[dict]:
+    """Top users by run count — for admin/GC tuning."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT u.id, u.email, COUNT(r.run_id) AS runs "
+            "FROM users u LEFT JOIN runs r ON r.user_id = u.id "
+            "GROUP BY u.id ORDER BY runs DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [{"user_id": r["id"], "email": r["email"], "runs": r["runs"]} for r in rows]
+
+
+def delete_run_row(run_id: str, user_id: int) -> bool:
+    """Delete a run row owned by user_id. Cascades to favorites (via FK)."""
+    with _connect() as db:
+        cur = db.execute(
+            "DELETE FROM runs WHERE run_id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        return cur.rowcount > 0
 
 
 def run_owner(run_id: str) -> Optional[int]:

@@ -17,7 +17,14 @@ from rich.prompt import Confirm, Prompt
 from .branding import ACCENT, INK
 from .paths import ROOT
 
-CONFIG_PATH = ROOT / ".bart_config.json"
+# Per-process config path. Defaults to ROOT/.bart_config.json (the CLI's
+# single-user layout). The website server overrides this via BART_CONFIG so
+# concurrent runs don't trample each other's config.
+CONFIG_PATH = (
+    Path(os.environ["BART_CONFIG"]).resolve()
+    if os.environ.get("BART_CONFIG")
+    else ROOT / ".bart_config.json"
+)
 
 
 class Config(BaseModel):

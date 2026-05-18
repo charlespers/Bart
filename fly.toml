@@ -18,7 +18,11 @@ primary_region = 'iad'
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  # Keep one machine warm so deploys / hardware blips don't black out the site.
+  # NOTE: do NOT raise this above 1 without first moving bart.db off SQLite
+  # and the materials/output volume off Fly volumes — both are single-region,
+  # single-machine attached and would corrupt under concurrent machines.
+  min_machines_running = 1
 
   [[http_service.checks]]
     interval = '30s'
@@ -29,4 +33,4 @@ primary_region = 'iad'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '1gb'
+  memory = '2gb'
