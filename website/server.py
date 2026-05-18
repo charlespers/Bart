@@ -52,6 +52,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 import auth
+import emailer
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 
@@ -304,6 +305,22 @@ def _user_payload(row) -> dict:
     return {"id": row["id"], "email": row["email"], "name": row["name"]}
 
 
+# Cookie a referral link drops so a creator gets credited even if the visitor
+# signs up days later. 90-day life — long enough to bridge "saw it / bought it".
+REFERRAL_COOKIE = "bart_ref"
+_REFERRAL_COOKIE_MAX_AGE = 90 * 24 * 3600
+
+
+def _referral_from_request(request: Request) -> Optional[str]:
+    """The referral code carried by this request's cookie — but only when it
+    maps to a real active creator. Anything else is dropped so we never store
+    a junk code on a user row."""
+    code = (request.cookies.get(REFERRAL_COOKIE) or "").strip().upper()
+    if code and auth.referral_code_is_valid(code):
+        return code
+    return None
+
+
 @app.post("/api/auth/signup")
 @_limiter.limit("3/hour")
 async def signup(req: SignupRequest, request: Request, response: Response):
@@ -313,7 +330,10 @@ async def signup(req: SignupRequest, request: Request, response: Response):
         raise HTTPException(400, "password must be at least 6 characters.")
     if auth.find_user_by_email(req.email):
         raise HTTPException(409, "an account with that email already exists.")
-    user_id = auth.create_user(req.email, req.password, req.name)
+    user_id = auth.create_user(
+        req.email, req.password, req.name,
+        referred_by=_referral_from_request(request),
+    )
     sid = auth.create_session(user_id)
     auth.set_session_cookie(response, sid, secure=request.url.scheme == "https")
     row = auth.find_user_by_id(user_id)
@@ -374,7 +394,9 @@ async def auth_google(req: GoogleAuthRequest, request: Request, response: Respon
     if not (google_sub and email):
         raise HTTPException(401, "google token missing required fields.")
 
-    user = auth.find_or_create_google_user(google_sub, email, name)
+    user = auth.find_or_create_google_user(
+        google_sub, email, name, referred_by=_referral_from_request(request),
+    )
     sid = auth.create_session(user["id"])
     auth.set_session_cookie(response, sid, secure=request.url.scheme == "https")
     return {"user": {"id": user["id"], "email": user["email"], "name": user["name"]}}
@@ -505,6 +527,42 @@ def _period_end_from_sub(sub_obj) -> Optional[str]:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _credit_referral_commission(user_id: int, session_data: dict) -> None:
+    """Pay a creator their share of a *verified* subscription payment.
+
+    Called only from inside the signature-verified Stripe webhook, after
+    Stripe has actually collected the money — never on a forgeable redirect.
+    No-op when the subscriber wasn't referred, or the referral code is stale.
+    Idempotent: keyed on the Stripe checkout-session id, so a webhook Stripe
+    retries never credits a creator twice."""
+    try:
+        user = auth.find_user_by_id(user_id)
+        if user is None:
+            return
+        code = auth._row_get(user, "referred_by")
+        if not code:
+            return
+        creator = auth.get_creator_by_code(code)
+        if creator is None:
+            return
+        amount_cents = int(session_data.get("amount_total") or 0)
+        if amount_cents <= 0:
+            return
+        currency = session_data.get("currency") or "usd"
+        commission = round(amount_cents * auth.CREATOR_COMMISSION_RATE)
+        ref = str(session_data.get("id") or f"session-user-{user_id}")
+        if auth.record_commission(
+            creator_id=creator["id"], referred_user_id=user_id,
+            amount_cents=commission, currency=currency, stripe_ref=ref,
+        ):
+            print(f"[creator] credited code {creator['referral_code']} "
+                  f"{commission}¢ for verified payment by user {user_id}",
+                  file=sys.stderr, flush=True)
+    except Exception as e:  # noqa: BLE001 — commission bookkeeping is best-effort
+        print(f"[creator] commission credit failed: {e}",
+              file=sys.stderr, flush=True)
+
+
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
     """Stripe hits this on every subscription event. We verify the signature,
@@ -550,6 +608,13 @@ async def stripe_webhook(request: Request):
                         status=sub.status,
                         current_period_end=_period_end_from_sub(sub),
                     )
+                # Creator commission — credited ONLY here, inside the
+                # signature-verified webhook, i.e. only after Stripe has
+                # actually collected the payment. If this subscriber arrived
+                # through a creator's referral link, pay that creator their
+                # share. Idempotent on the checkout-session id, so a retried
+                # webhook never double-credits.
+                _credit_referral_commission(user_id, data)
             except Exception as e:
                 print(f"[stripe-webhook] checkout.session.completed handler error: {e}",
                       file=sys.stderr, flush=True)
@@ -584,6 +649,115 @@ async def usage(user=Depends(auth.current_user)):
     polls this so the student always sees how many premium runs remain;
     Gemma runs are unlimited and never counted."""
     return auth.claude_run_usage(user)
+
+
+# ─── creator program ─────────────────────────────────────────────────────────
+
+class CreatorApplyRequest(BaseModel):
+    name: str = ""
+    email: str = ""
+    audience: str = ""   # where / how they reach students
+    links: str = ""      # channel / profile URLs
+    pitch: str = ""      # why they'd be a good creator
+
+
+@app.post("/api/creator/apply")
+@_limiter.limit("5/hour")
+async def creator_apply(req: CreatorApplyRequest, request: Request,
+                        user=Depends(auth.current_user_optional)):
+    """Anyone can apply to the creator program. The application is stored and
+    emailed to the bart team (bartcompanyai@gmail.com) for review."""
+    name = (req.name or "").strip()
+    email = (req.email or "").strip().lower()
+    if not email and user is not None:
+        email = (user["email"] or "").strip().lower()
+    if not name:
+        raise HTTPException(400, "please tell us your name.")
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(400, "we need a valid email to reach you at.")
+    if len((req.pitch or "").strip()) < 10:
+        raise HTTPException(400, "tell us a little about your audience and why bart.")
+
+    # Already an approved creator? Nothing to apply for.
+    if user is not None and auth.get_creator_for_user(user) is not None:
+        raise HTTPException(409, "you're already a bart creator — sign in to see your link.")
+    if auth.get_creator_by_email(email) is not None:
+        raise HTTPException(409, "you're already a bart creator — sign in to see your link.")
+    # One pending application at a time.
+    prior = auth.latest_application_for_email(email)
+    if prior is not None and prior["status"] == "pending":
+        raise HTTPException(409, "your application is already in review — we'll be in touch.")
+
+    app_id = auth.create_creator_application(
+        name=name, email=email, audience=req.audience, links=req.links,
+        pitch=req.pitch, user_id=user["id"] if user else None,
+    )
+    app_row = auth.get_creator_application(app_id)
+    # Email the team. Delivery failures are swallowed by the emailer — the
+    # application is safely in the DB and visible in the admin queue regardless.
+    emailer.notify_creator_application(dict(app_row))
+    return {"ok": True, "application_id": app_id}
+
+
+@app.get("/api/creator/me")
+async def creator_me(user=Depends(auth.current_user)):
+    """The signed-in user's creator status: their dashboard (referral link,
+    referrals, earnings) once approved, otherwise their application status."""
+    creator = auth.get_creator_for_user(user)
+    if creator is not None:
+        summary = auth.creator_summary(creator)
+        summary["is_creator"] = True
+        summary["referral_url"] = f"{APP_PUBLIC_URL}/r/{summary['referral_code']}"
+        return summary
+    app = auth.latest_application_for_email(user["email"] or "")
+    return {
+        "is_creator": False,
+        "application_status": app["status"] if app is not None else None,
+    }
+
+
+@app.get("/api/admin/creator-applications")
+async def admin_creator_applications(status: str = "pending",
+                                     user=Depends(auth.current_user)):
+    """Review queue — admin only. ?status=pending|approved|rejected|all."""
+    _require_admin(user)
+    want = None if status == "all" else status
+    return {"applications": auth.list_creator_applications(want)}
+
+
+@app.post("/api/admin/creator-applications/{app_id}/approve")
+async def admin_approve_creator(app_id: int, user=Depends(auth.current_user)):
+    """Approve an application — mints the creator + a unique referral code,
+    and emails the applicant their link."""
+    _require_admin(user)
+    creator = auth.approve_creator_application(app_id)
+    if creator is None:
+        raise HTTPException(404, "no such application.")
+    code = creator["referral_code"]
+    referral_url = f"{APP_PUBLIC_URL}/r/{code}"
+    emailer.send_email(
+        creator["email"],
+        "you're in — welcome to the bart creator program",
+        (
+            f"Hi {creator['name'] or 'there'},\n\n"
+            "Your application to the bart creator program was approved.\n\n"
+            f"Your referral link:\n  {referral_url}\n\n"
+            "Share it anywhere. When someone subscribes through it, you earn "
+            f"{int(auth.CREATOR_COMMISSION_RATE * 100)}% of their payment — "
+            "credited automatically once the payment clears.\n\n"
+            "Sign in and open the creator page to see your referrals and "
+            "earnings any time.\n\n— the bart team\n"
+        ),
+    )
+    return {"ok": True, "referral_code": code, "referral_url": referral_url}
+
+
+@app.post("/api/admin/creator-applications/{app_id}/reject")
+async def admin_reject_creator(app_id: int, user=Depends(auth.current_user)):
+    _require_admin(user)
+    if not auth.reject_creator_application(app_id):
+        raise HTTPException(404, "no such pending application.")
+    return {"ok": True}
 
 
 class ChangePasswordRequest(BaseModel):
@@ -1511,6 +1685,21 @@ async def admin_stats(user=Depends(auth.current_user)):
 @app.get("/")
 async def root_index():
     return FileResponse(HERE / "splash.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/r/{code}")
+async def referral_link(code: str):
+    """A creator's referral link. Drops a 90-day cookie attributing the visit
+    to that creator, then sends the visitor to the splash page. The cookie is
+    read at signup; the creator is only ever paid after a verified payment."""
+    safe = (code or "").strip().upper()[:32]
+    resp = RedirectResponse(url="/", status_code=302)
+    if auth.referral_code_is_valid(safe):
+        resp.set_cookie(
+            REFERRAL_COOKIE, safe,
+            max_age=_REFERRAL_COOKIE_MAX_AGE, httponly=True, samesite="lax",
+        )
+    return resp
 
 
 @app.get("/login")

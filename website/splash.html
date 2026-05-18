@@ -508,8 +508,28 @@
     margin-top: 1px;
   }
 
+  /* ─── two engines (claude + gemma) ─── */
+  .engines {
+    margin-top: 28px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  .engine {
+    background: var(--cream-hi); border: 1px solid var(--cream-edge);
+    border-radius: 16px; padding: 22px 22px;
+  }
+  .engine .tag {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
+  }
+  .engine h3 {
+    margin: 8px 0 6px; font-size: 18px; font-weight: 700;
+    letter-spacing: -0.02em; color: var(--ink);
+  }
+  .engine p { margin: 0; font-size: 14px; color: var(--ink-mute); line-height: 1.55; }
+
   /* ─── responsive ─── */
   @media (max-width: 900px) {
+    .engines { grid-template-columns: 1fr; }
     .steps { grid-template-columns: 1fr; gap: 28px; }
     .preview-body { grid-template-columns: 1fr; }
     .preview-side { border-right: 0; border-bottom: 1px solid var(--cream-edge); }
@@ -537,6 +557,7 @@
       <a href="#how">how it works</a>
       <a href="#what">what you get</a>
       <a href="#pricing">pricing</a>
+      <a href="/creators">creators</a>
       <a href="/login">log in</a>
       <a class="cta" href="/login?mode=signup">get started</a>
     </div>
@@ -685,12 +706,28 @@
       </div>
     </div>
     <ul class="pricing-features">
-      <li><span class="check">✓</span>unlimited study packets, any subject</li>
-      <li><span class="check">✓</span>master plans, schematics, mnemonics</li>
-      <li><span class="check">✓</span>practice exams &amp; daily lessons</li>
+      <li><span class="check">✓</span>12 premium packets / month — top-tier Claude quality</li>
+      <li><span class="check">✓</span>unlimited free packets on the local Gemma&nbsp;4 engine</li>
+      <li><span class="check">✓</span>master plans, schematics, mnemonics, practice exams</li>
       <li><span class="check">✓</span>past runs saved &amp; shareable</li>
       <li><span class="check">✓</span>cancel any time, no questions asked</li>
     </ul>
+  </div>
+
+  <div class="engines">
+    <div class="engine">
+      <div class="tag">premium engine</div>
+      <h3>Claude</h3>
+      <p>The sharpest packets bart can write — Anthropic's top models.
+        Your plan includes 12 premium runs every month.</p>
+    </div>
+    <div class="engine">
+      <div class="tag">free · unlimited</div>
+      <h3>Gemma 4</h3>
+      <p>Google's open-weight model, running locally — pick it from the
+        run screen for unlimited free packets, even after your premium
+        runs are used up.</p>
+    </div>
   </div>
 </section>
 
@@ -701,6 +738,7 @@
     <a href="/login">log in</a>
     <a href="/login?mode=signup">sign up</a>
     <a href="/pricing">pricing</a>
+    <a href="/creators">creator program</a>
     <a href="#how">how it works</a>
     <a href="#" onclick="event.preventDefault()">privacy</a>
     <a href="#" onclick="event.preventDefault()">contact</a>

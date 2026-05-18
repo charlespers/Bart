@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bart. — creator program</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,ital,wght@8..60,1,400;8..60,1,500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/tokens.css" />
+<style>
+  body { overflow-x: hidden; }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(900px 600px at 12% 8%,   rgba(255,255,255,0.55), transparent 60%),
+      radial-gradient(900px 700px at 88% 100%, rgba(201,100,66,0.06), transparent 60%);
+  }
+
+  /* nav */
+  .nav {
+    position: sticky; top: 0; z-index: 30;
+    backdrop-filter: blur(10px) saturate(1.05);
+    background: rgba(244,241,234,0.74);
+    border-bottom: 1px solid rgba(217,211,196,0.55);
+  }
+  .nav-inner {
+    max-width: 1200px; margin: 0 auto; padding: 16px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .nav .mark { font-size: 22px; text-decoration: none; }
+  .nav .right {
+    font-family: var(--font-mono); font-size: 12.5px;
+    color: var(--ink-mute); display: flex; gap: 18px; align-items: center;
+  }
+  .nav .right a { color: var(--ink-mute); text-decoration: none; }
+  .nav .right a:hover { color: var(--accent); }
+
+  .stage {
+    max-width: 980px; margin: 0 auto;
+    padding: 56px 32px 120px; position: relative; z-index: 1;
+  }
+  h1 {
+    font-family: var(--font-sans); font-weight: 700;
+    font-size: clamp(36px, 5.4vw, 58px); letter-spacing: -0.032em;
+    line-height: 1.05; color: var(--ink); margin: 0 0 14px; text-wrap: balance;
+  }
+  h1 em {
+    font-family: var(--font-serif); font-style: italic;
+    color: var(--accent); font-weight: 500;
+  }
+  .lede {
+    font-size: 17px; color: var(--ink-mute); max-width: 600px;
+    line-height: 1.6; margin: 0; text-wrap: pretty;
+  }
+
+  /* how it works */
+  .steps {
+    margin: 48px 0 8px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px;
+  }
+  @media (max-width: 760px) { .steps { grid-template-columns: 1fr 1fr; } }
+  .step {
+    background: var(--cream-hi); border: 1px solid var(--cream-edge);
+    border-radius: 16px; padding: 20px 18px;
+  }
+  .step .n {
+    font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+    color: var(--accent); letter-spacing: 0.08em;
+  }
+  .step h3 { margin: 8px 0 4px; font-size: 16px; color: var(--ink); }
+  .step p { margin: 0; font-size: 13.5px; color: var(--ink-mute); line-height: 1.5; }
+
+  /* panels */
+  .panel {
+    margin-top: 44px; background: var(--cream-hi);
+    border: 1px solid var(--cream-edge); border-radius: 20px;
+    padding: 32px 30px;
+  }
+  .panel h2 {
+    margin: 0 0 6px; font-size: 22px; font-weight: 700;
+    letter-spacing: -0.02em; color: var(--ink);
+  }
+  .panel .sub { margin: 0 0 22px; font-size: 14px; color: var(--ink-mute); }
+
+  /* form */
+  .field { margin-bottom: 16px; }
+  .field label {
+    display: block; font-size: 12.5px; font-weight: 600;
+    color: var(--ink-soft); margin-bottom: 6px;
+  }
+  .field input, .field textarea {
+    width: 100%; font-family: var(--font-sans); font-size: 14.5px;
+    color: var(--ink); background: var(--cream);
+    border: 1.5px solid var(--cream-edge); border-radius: 11px;
+    padding: 11px 13px; outline: none; transition: border-color .14s;
+  }
+  .field textarea { resize: vertical; min-height: 92px; }
+  .field input:focus, .field textarea:focus { border-color: var(--accent); }
+  .form-msg { font-size: 13.5px; margin-top: 6px; min-height: 18px; }
+  .form-msg.err { color: var(--accent-lo); }
+  .form-msg.ok  { color: var(--ok); }
+
+  /* dashboard */
+  .ref-link {
+    display: flex; gap: 10px; align-items: stretch;
+    margin: 6px 0 22px;
+  }
+  .ref-link input {
+    flex: 1; font-family: var(--font-mono); font-size: 14px;
+    color: var(--ink); background: var(--cream);
+    border: 1.5px solid var(--cream-edge); border-radius: 11px;
+    padding: 12px 14px;
+  }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 560px) { .stats { grid-template-columns: 1fr; } }
+  .stat {
+    background: var(--cream); border: 1px solid var(--cream-edge);
+    border-radius: 14px; padding: 18px;
+  }
+  .stat .v {
+    font-size: 30px; font-weight: 800; color: var(--ink);
+    letter-spacing: -0.03em; line-height: 1;
+  }
+  .stat .l {
+    font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+    text-transform: uppercase; letter-spacing: 0.07em; margin-top: 8px;
+  }
+  .banner {
+    margin-top: 44px; padding: 18px 22px; border-radius: 16px;
+    background: rgba(201,100,66,0.08); color: var(--accent-lo);
+    font-size: 14.5px; box-shadow: inset 0 0 0 1px rgba(201,100,66,0.18);
+  }
+  .hide { display: none !important; }
+  .muted { color: var(--ink-mute); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="mark" href="/">bart<span class="dot">.</span></a>
+    <div class="right">
+      <a href="/pricing">pricing</a>
+      <a href="/app">app</a>
+    </div>
+  </div>
+</nav>
+
+<main class="stage">
+  <h1>the bart <em>creator</em> program</h1>
+  <p class="lede">
+    Got an audience of students? Share bart and earn. Approved creators get a
+    unique referral link — when someone subscribes through it, you earn
+    <b>30% of every payment</b>, credited automatically once the payment clears.
+  </p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="n">01</div>
+      <h3>Apply</h3>
+      <p>Tell us about your audience. It takes a minute.</p>
+    </div>
+    <div class="step">
+      <div class="n">02</div>
+      <h3>Get approved</h3>
+      <p>We review every application and email you back.</p>
+    </div>
+    <div class="step">
+      <div class="n">03</div>
+      <h3>Share your link</h3>
+      <p>You get a unique referral link to post anywhere.</p>
+    </div>
+    <div class="step">
+      <div class="n">04</div>
+      <h3>Earn</h3>
+      <p>30% of every verified subscription payment.</p>
+    </div>
+  </div>
+
+  <!-- in-review banner -->
+  <div class="banner hide" id="pending-banner">
+    Your creator application is <b>in review</b>. We'll email you as soon as
+    it's approved — keep an eye on your inbox.
+  </div>
+
+  <!-- application form (non-creators) -->
+  <section class="panel" id="apply-panel">
+    <h2>Apply to become a creator</h2>
+    <p class="sub">We email every application to our team and get back to you.</p>
+    <form id="apply-form" autocomplete="on">
+      <div class="field">
+        <label for="f-name">Your name</label>
+        <input id="f-name" name="name" type="text" required maxlength="120" />
+      </div>
+      <div class="field">
+        <label for="f-email">Email <span class="muted">(where we'll reach you)</span></label>
+        <input id="f-email" name="email" type="email" required maxlength="200" />
+      </div>
+      <div class="field">
+        <label for="f-audience">Your audience <span class="muted">(platform &amp; size)</span></label>
+        <input id="f-audience" name="audience" type="text" maxlength="300"
+               placeholder="e.g. 40k subscribers on YouTube, study-tips channel" />
+      </div>
+      <div class="field">
+        <label for="f-links">Links <span class="muted">(channel / profile URLs)</span></label>
+        <input id="f-links" name="links" type="text" maxlength="500"
+               placeholder="youtube.com/@you, instagram.com/you" />
+      </div>
+      <div class="field">
+        <label for="f-pitch">Why would you be a great bart creator?</label>
+        <textarea id="f-pitch" name="pitch" required maxlength="2000"
+                  placeholder="Tell us about who you reach and how you'd share bart."></textarea>
+      </div>
+      <button type="submit" class="cta" id="apply-btn">
+        submit application
+        <svg class="arrow" viewBox="0 0 24 24" fill="none">
+          <path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor"
+                stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <div class="form-msg" id="form-msg"></div>
+    </form>
+  </section>
+
+  <!-- creator dashboard (approved creators) -->
+  <section class="panel hide" id="dash-panel">
+    <h2 id="dash-hello">Your creator dashboard</h2>
+    <p class="sub">Share this link anywhere. You earn on every verified payment.</p>
+    <div class="ref-link">
+      <input id="ref-url" type="text" readonly />
+      <button type="button" class="cta" id="copy-btn">copy</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="v" id="s-signups">0</div><div class="l">Sign-ups</div></div>
+      <div class="stat"><div class="v" id="s-subs">0</div><div class="l">Subscribed</div></div>
+      <div class="stat"><div class="v" id="s-earn">$0</div><div class="l">Earned</div></div>
+    </div>
+    <p class="muted" style="margin-top:18px" id="dash-foot"></p>
+  </section>
+</main>
+
+<script>
+(function () {
+  var applyPanel  = document.getElementById('apply-panel');
+  var dashPanel   = document.getElementById('dash-panel');
+  var pendingBan  = document.getElementById('pending-banner');
+  var form        = document.getElementById('apply-form');
+  var msg         = document.getElementById('form-msg');
+  var applyBtn    = document.getElementById('apply-btn');
+
+  function show(el) { el.classList.remove('hide'); }
+  function hide(el) { el.classList.add('hide'); }
+
+  function renderDashboard(d) {
+    hide(applyPanel); hide(pendingBan); show(dashPanel);
+    if (d.name) document.getElementById('dash-hello').textContent =
+      'Welcome back, ' + d.name.split(' ')[0] + '.';
+    document.getElementById('ref-url').value = d.referral_url || '';
+    document.getElementById('s-signups').textContent = d.signups || 0;
+    document.getElementById('s-subs').textContent    = d.subscribed || 0;
+    document.getElementById('s-earn').textContent    = '$' + (d.earnings_usd || 0);
+    var pct = Math.round((d.commission_rate || 0.3) * 100);
+    document.getElementById('dash-foot').textContent =
+      'You earn ' + pct + '% of every verified payment from a subscriber who ' +
+      'signed up through your link. Payments shown update once Stripe confirms them.';
+  }
+
+  // Decide which state to show.
+  fetch('/api/creator/me', { credentials: 'same-origin' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (!d) return;                       // not logged in → show the form
+      if (d.is_creator) { renderDashboard(d); return; }
+      if (d.application_status === 'pending') {
+        show(pendingBan); hide(applyPanel);
+      }
+    })
+    .catch(function () {});
+
+  // Copy referral link.
+  var copyBtn = document.getElementById('copy-btn');
+  if (copyBtn) copyBtn.addEventListener('click', function () {
+    var inp = document.getElementById('ref-url');
+    inp.select();
+    navigator.clipboard.writeText(inp.value).then(function () {
+      copyBtn.textContent = 'copied';
+      setTimeout(function () { copyBtn.textContent = 'copy'; }, 1600);
+    }).catch(function () {});
+  });
+
+  // Submit application.
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    msg.textContent = ''; msg.className = 'form-msg';
+    var body = {
+      name:     document.getElementById('f-name').value.trim(),
+      email:    document.getElementById('f-email').value.trim(),
+      audience: document.getElementById('f-audience').value.trim(),
+      links:    document.getElementById('f-links').value.trim(),
+      pitch:    document.getElementById('f-pitch').value.trim()
+    };
+    applyBtn.disabled = true;
+    fetch('/api/creator/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      applyBtn.disabled = false;
+      if (res.ok) {
+        msg.className = 'form-msg ok';
+        msg.textContent = 'Application sent — we\'ll email you after we review it.';
+        form.reset();
+        hide(applyPanel); show(pendingBan);
+      } else {
+        msg.className = 'form-msg err';
+        msg.textContent = (res.j && res.j.detail) || 'Something went wrong — try again.';
+      }
+    }).catch(function () {
+      applyBtn.disabled = false;
+      msg.className = 'form-msg err';
+      msg.textContent = 'Could not reach the server — try again.';
+    });
+  });
+})();
+</script>
+</body>
+</html>

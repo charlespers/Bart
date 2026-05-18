@@ -72,6 +72,29 @@ flyctl scale memory 2048   # bump RAM to 2 GB if runs are slow
 flyctl secrets set FOO=bar # set an env var, restarts the app
 ```
 
+## Environment variables
+
+Set these with `flyctl secrets set KEY=value` (the app restarts on change).
+
+**Billing (Stripe).**
+- `STRIPE_SECRET_KEY` — your Stripe secret key.
+- `STRIPE_WEBHOOK_SECRET` — signing secret for the `/api/stripe/webhook` endpoint.
+- `STRIPE_PRICE_MONTHLY` — the price id of the $10/month plan.
+- `APP_PUBLIC_URL` — public site URL (default `https://studywithbart.com`); used in Stripe redirect URLs and creator referral links.
+
+**Creator program email.** Applications are emailed to `bartcompanyai@gmail.com`. Configure an SMTP account so the mail actually sends — without it, applications are still saved and shown in the admin panel, just not emailed.
+- `SMTP_USER` — sending account, e.g. `bartcompanyai@gmail.com`.
+- `SMTP_PASS` — an app password for that account.
+- `SMTP_HOST` / `SMTP_PORT` — default `smtp.gmail.com` / `587` (STARTTLS).
+- `BART_CREATOR_COMMISSION_RATE` — creator's share of each verified payment (default `0.30`).
+
+Approve or reject applications at `/admin-creators` (admin account only).
+
+**Other.**
+- `GOOGLE_CLIENT_ID` — enables Google sign-in (optional).
+- `BART_CLAUDE_RUNS_PER_MONTH` — premium-run allowance per subscriber (default `12`).
+- `BART_MAX_CONCURRENT_RUNS` — server-wide concurrent run cap (default `6`).
+
 ## Costs (rough)
 
 - **VM**: shared-cpu-1x with 1 GB RAM, auto-sleep when idle → **free** in most months (under the free tier limit).

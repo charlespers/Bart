@@ -91,6 +91,55 @@ CREATE TABLE IF NOT EXISTS favorites (
   FOREIGN KEY (run_id)   REFERENCES runs(run_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, saved_at DESC);
+
+-- creator program: applications anyone can submit; we review them.
+CREATE TABLE IF NOT EXISTS creator_applications (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL,
+  email       TEXT NOT NULL,
+  audience    TEXT,            -- where / how they reach students
+  links       TEXT,            -- channel / profile URLs
+  pitch       TEXT,            -- why they'd be a good creator
+  status      TEXT NOT NULL DEFAULT 'pending'
+              CHECK (status IN ('pending','approved','rejected')),
+  user_id     INTEGER,         -- the account that applied, when logged in
+  created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  decided_at  TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_creator_apps_status
+  ON creator_applications(status, created_at DESC);
+
+-- approved creators: each carries a unique referral code.
+CREATE TABLE IF NOT EXISTS creators (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id       INTEGER UNIQUE,
+  name          TEXT,
+  email         TEXT NOT NULL,
+  referral_code TEXT NOT NULL UNIQUE,
+  status        TEXT NOT NULL DEFAULT 'active',
+  created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_creators_code ON creators(referral_code);
+CREATE INDEX IF NOT EXISTS idx_creators_email ON creators(email);
+
+-- commissions: one row per verified payment from a referred subscriber.
+-- stripe_ref is the idempotency key — a webhook delivered twice never
+-- double-credits a creator.
+CREATE TABLE IF NOT EXISTS commissions (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  creator_id       INTEGER NOT NULL,
+  referred_user_id INTEGER,
+  amount_cents     INTEGER NOT NULL DEFAULT 0,
+  currency         TEXT NOT NULL DEFAULT 'usd',
+  stripe_ref       TEXT UNIQUE,
+  created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE,
+  FOREIGN KEY (referred_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_commissions_creator
+  ON commissions(creator_id, created_at DESC);
 """
 
 
@@ -153,6 +202,16 @@ def init_db() -> None:
         if "usage_period" not in user_cols:
             db.execute("ALTER TABLE users ADD COLUMN usage_period TEXT")
             billing_added = True
+        # Creator program — the referral code (if any) that brought this user.
+        # Set once at signup; read when their payment is verified to credit
+        # the referring creator.
+        if "referred_by" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN referred_by TEXT")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_referred_by "
+                "ON users(referred_by) WHERE referred_by IS NOT NULL"
+            )
+            billing_added = True
         if billing_added:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_subscription_id "
@@ -198,12 +257,15 @@ def verify_password(pw: str, hashed: str | None) -> bool:
 
 # ─── users ───────────────────────────────────────────────────────────────────
 
-def create_user(email: str, password: str, name: str = "") -> int:
+def create_user(email: str, password: str, name: str = "",
+                 referred_by: str | None = None) -> int:
     email = email.strip().lower()
+    ref = (referred_by or "").strip() or None
     with _connect() as db:
         cur = db.execute(
-            "INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)",
-            (email, name.strip() or None, hash_password(password)),
+            "INSERT INTO users (email, name, password_hash, referred_by) "
+            "VALUES (?, ?, ?, ?)",
+            (email, name.strip() or None, hash_password(password), ref),
         )
         return cur.lastrowid
 
@@ -371,7 +433,8 @@ def consume_claude_run(user_id: int) -> None:
             )
 
 
-def find_or_create_google_user(google_id: str, email: str, name: str = "") -> sqlite3.Row:
+def find_or_create_google_user(google_id: str, email: str, name: str = "",
+                               referred_by: str | None = None) -> sqlite3.Row:
     """Look up a Google-authenticated user, or create one. Matching rules:
       1. exact match on google_id → return that row
       2. exact match on email → link by stamping google_id onto the existing row
@@ -393,8 +456,10 @@ def find_or_create_google_user(google_id: str, email: str, name: str = "") -> sq
         # migration. verify_password() rejects empty/falsy hashes so this is
         # equivalent to "no password" from a login perspective.
         cur = db.execute(
-            "INSERT INTO users (email, name, password_hash, google_id) VALUES (?, ?, '', ?)",
-            (email, name.strip() or None, google_id),
+            "INSERT INTO users (email, name, password_hash, google_id, referred_by) "
+            "VALUES (?, ?, '', ?, ?)",
+            (email, name.strip() or None, google_id,
+             (referred_by or "").strip() or None),
         )
         return db.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
 
@@ -798,3 +863,239 @@ def leaderboard_for(user_id: int) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# ─── creator program ───────────────────────────────────────────────────────────
+
+# Share of each verified subscription payment paid to the referring creator.
+# Tunable per-deployment; 0.30 = 30%.
+CREATOR_COMMISSION_RATE = max(0.0, min(1.0, float(
+    os.environ.get("BART_CREATOR_COMMISSION_RATE", "0.30"))))
+
+# Referral codes: unambiguous uppercase alphabet (no 0/O, 1/I) — easy to read,
+# type, and say aloud.
+_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_CODE_LEN = 8
+
+
+def _gen_referral_code() -> str:
+    """A referral code unique across the creators table."""
+    with _connect() as db:
+        for _ in range(40):
+            code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LEN))
+            hit = db.execute(
+                "SELECT 1 FROM creators WHERE referral_code = ?", (code,)
+            ).fetchone()
+            if hit is None:
+                return code
+    # Astronomically unlikely — fall back to a longer code.
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LEN + 6))
+
+
+# ── applications ──
+
+def create_creator_application(
+    name: str, email: str, audience: str = "", links: str = "",
+    pitch: str = "", user_id: Optional[int] = None,
+) -> int:
+    """Store a creator-program application. Returns the new application id."""
+    with _connect() as db:
+        cur = db.execute(
+            "INSERT INTO creator_applications "
+            "(name, email, audience, links, pitch, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name.strip(), email.strip().lower(), audience.strip(),
+             links.strip(), pitch.strip(), user_id),
+        )
+        return cur.lastrowid
+
+
+def latest_application_for_email(email: str) -> Optional[sqlite3.Row]:
+    """Most recent application for an email — used to show applicants their
+    status and to stop duplicate pending applications."""
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM creator_applications WHERE email = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (email.strip().lower(),),
+        ).fetchone()
+
+
+def list_creator_applications(status: Optional[str] = "pending") -> list[dict]:
+    """Applications for the admin review queue. status=None → all."""
+    with _connect() as db:
+        if status:
+            rows = db.execute(
+                "SELECT * FROM creator_applications WHERE status = ? "
+                "ORDER BY created_at DESC",
+                (status,),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM creator_applications ORDER BY created_at DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_creator_application(app_id: int) -> Optional[sqlite3.Row]:
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM creator_applications WHERE id = ?", (app_id,)
+        ).fetchone()
+
+
+# ── creators ──
+
+def get_creator_by_code(code: str) -> Optional[sqlite3.Row]:
+    if not code:
+        return None
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM creators WHERE referral_code = ? AND status = 'active'",
+            (code.strip().upper(),),
+        ).fetchone()
+
+
+def referral_code_is_valid(code: str) -> bool:
+    """True iff `code` maps to an active creator — guards what we'll store on
+    a user's `referred_by` and credit later."""
+    return get_creator_by_code(code) is not None
+
+
+def get_creator_by_email(email: str) -> Optional[sqlite3.Row]:
+    if not email:
+        return None
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM creators WHERE email = ?", (email.strip().lower(),)
+        ).fetchone()
+
+
+def get_creator_for_user(user) -> Optional[sqlite3.Row]:
+    """The creator record for a logged-in user — matched by account id or by
+    the email they applied/were approved with."""
+    if user is None:
+        return None
+    try:
+        uid = user["id"]
+        email = (user["email"] or "").strip().lower()
+    except (KeyError, IndexError, TypeError):
+        return None
+    with _connect() as db:
+        row = db.execute(
+            "SELECT * FROM creators WHERE user_id = ?", (uid,)
+        ).fetchone()
+        if row is None and email:
+            row = db.execute(
+                "SELECT * FROM creators WHERE email = ?", (email,)
+            ).fetchone()
+            # Opportunistically bind the account so future lookups are direct.
+            if row is not None and row["user_id"] is None:
+                db.execute(
+                    "UPDATE creators SET user_id = ? WHERE id = ?", (uid, row["id"])
+                )
+        return row
+
+
+def approve_creator_application(app_id: int) -> Optional[dict]:
+    """Approve an application: mark it approved and create the creator record
+    (idempotent — re-approving returns the existing creator). Returns a dict
+    with the creator + referral_code, or None if the application is missing."""
+    app = get_creator_application(app_id)
+    if app is None:
+        return None
+    email = (app["email"] or "").strip().lower()
+    with _connect() as db:
+        existing = db.execute(
+            "SELECT * FROM creators WHERE email = ?", (email,)
+        ).fetchone()
+        if existing is not None:
+            db.execute(
+                "UPDATE creator_applications SET status = 'approved', "
+                "decided_at = CURRENT_TIMESTAMP WHERE id = ?", (app_id,),
+            )
+            return dict(existing)
+    code = _gen_referral_code()
+    # Link to an account if one already exists for this email.
+    linked = find_user_by_email(email)
+    with _connect() as db:
+        cur = db.execute(
+            "INSERT INTO creators (user_id, name, email, referral_code) "
+            "VALUES (?, ?, ?, ?)",
+            (linked["id"] if linked else None, app["name"], email, code),
+        )
+        db.execute(
+            "UPDATE creator_applications SET status = 'approved', "
+            "decided_at = CURRENT_TIMESTAMP WHERE id = ?", (app_id,),
+        )
+        row = db.execute(
+            "SELECT * FROM creators WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+    return dict(row)
+
+
+def reject_creator_application(app_id: int) -> bool:
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE creator_applications SET status = 'rejected', "
+            "decided_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'",
+            (app_id,),
+        )
+        return cur.rowcount > 0
+
+
+# ── commissions ──
+
+def record_commission(
+    creator_id: int, referred_user_id: Optional[int], amount_cents: int,
+    currency: str, stripe_ref: str,
+) -> bool:
+    """Credit a creator for a verified payment. Idempotent on `stripe_ref` —
+    a webhook delivered twice (Stripe retries) never double-pays. Returns
+    True iff a new commission row was actually inserted."""
+    if not stripe_ref:
+        return False
+    with _connect() as db:
+        dup = db.execute(
+            "SELECT 1 FROM commissions WHERE stripe_ref = ?", (stripe_ref,)
+        ).fetchone()
+        if dup is not None:
+            return False
+        db.execute(
+            "INSERT INTO commissions "
+            "(creator_id, referred_user_id, amount_cents, currency, stripe_ref) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (creator_id, referred_user_id, max(0, int(amount_cents)),
+             (currency or "usd").lower(), stripe_ref),
+        )
+    return True
+
+
+def creator_summary(creator) -> dict:
+    """Public-facing stats for a creator's dashboard: referral link inputs,
+    how many people they've referred, how many subscribed, and lifetime
+    earnings."""
+    code = creator["referral_code"]
+    cid = creator["id"]
+    with _connect() as db:
+        signups = db.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE referred_by = ?", (code,)
+        ).fetchone()["n"]
+        comm = db.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents "
+            "FROM commissions WHERE creator_id = ?", (cid,)
+        ).fetchone()
+        subscribed = db.execute(
+            "SELECT COUNT(DISTINCT referred_user_id) AS n "
+            "FROM commissions WHERE creator_id = ?", (cid,)
+        ).fetchone()["n"]
+    return {
+        "referral_code": code,
+        "name": creator["name"],
+        "signups": signups,
+        "subscribed": subscribed,
+        "payments": comm["n"],
+        "earnings_cents": comm["cents"],
+        "earnings_usd": round(comm["cents"] / 100.0, 2),
+        "commission_rate": CREATOR_COMMISSION_RATE,
+    }
