@@ -141,6 +141,25 @@ CREATE TABLE IF NOT EXISTS commissions (
 CREATE INDEX IF NOT EXISTS idx_commissions_creator
   ON commissions(creator_id, created_at DESC);
 
+-- payouts: one row per batch payment of accumulated commissions to a creator.
+-- A payout claims its commission rows by stamping commissions.payout_id.
+CREATE TABLE IF NOT EXISTS payouts (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  creator_id         INTEGER NOT NULL,
+  amount_cents       INTEGER NOT NULL,
+  currency           TEXT NOT NULL DEFAULT 'usd',
+  method             TEXT NOT NULL,            -- 'stripe' | 'manual'
+  status             TEXT NOT NULL,            -- 'pending' | 'paid' | 'failed'
+  stripe_transfer_id TEXT,
+  note               TEXT,
+  period             TEXT,                     -- 'YYYY-MM' the payout covers
+  created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  paid_at            TEXT,
+  FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_payouts_creator
+  ON payouts(creator_id, created_at DESC);
+
 -- trial codes: single-use coupons that grant one free premium (Claude)
 -- packet generation. Codes are minted only by an admin. A code is consumed
 -- globally on first redemption — `redeemed_by` stamps which account spent
@@ -240,6 +259,26 @@ def init_db() -> None:
         # granted by redeeming a single-use trial code. Spent one-per-run.
         if "trial_credits" not in user_cols:
             db.execute("ALTER TABLE users ADD COLUMN trial_credits INTEGER DEFAULT 0")
+        # Creator payouts — Stripe Connect account + payout preferences, and
+        # the link from each commission to the payout that settled it.
+        creator_cols = {row["name"] for row in
+                        db.execute("PRAGMA table_info(creators)").fetchall()}
+        if "stripe_account_id" not in creator_cols:
+            db.execute("ALTER TABLE creators ADD COLUMN stripe_account_id TEXT")
+        if "payout_method" not in creator_cols:
+            db.execute("ALTER TABLE creators ADD COLUMN payout_method TEXT")
+        if "payout_details" not in creator_cols:
+            db.execute("ALTER TABLE creators ADD COLUMN payout_details TEXT")
+        if "payouts_enabled" not in creator_cols:
+            db.execute("ALTER TABLE creators ADD COLUMN payouts_enabled INTEGER DEFAULT 0")
+        commission_cols = {row["name"] for row in
+                           db.execute("PRAGMA table_info(commissions)").fetchall()}
+        if "payout_id" not in commission_cols:
+            db.execute("ALTER TABLE commissions ADD COLUMN payout_id INTEGER")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_commissions_payout "
+                "ON commissions(payout_id)"
+            )
         if billing_added:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_subscription_id "
