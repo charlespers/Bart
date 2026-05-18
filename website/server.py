@@ -798,17 +798,17 @@ async def creator_connect_start(user=Depends(auth.current_user)):
     creator = auth.get_creator_for_user(user)
     if creator is None:
         raise HTTPException(403, "you're not a bart creator.")
-    stripe = _stripe()
+    s = _stripe()
     account_id = creator["stripe_account_id"]
     if not account_id:
-        acct = stripe.Account.create(
+        acct = s.Account.create(
             type="express",
             email=creator["email"],
             capabilities={"transfers": {"requested": True}},
         )
         account_id = acct["id"]
         auth.set_creator_stripe_account(creator["id"], account_id)
-    link = stripe.AccountLink.create(
+    link = s.AccountLink.create(
         account=account_id,
         refresh_url=f"{APP_PUBLIC_URL}/creators?connect=refresh",
         return_url=f"{APP_PUBLIC_URL}/creators?connect=done",
@@ -825,7 +825,7 @@ async def creator_connect_refresh(user=Depends(auth.current_user)):
         raise HTTPException(403, "you're not a bart creator.")
     if not creator["stripe_account_id"]:
         return {"payouts_enabled": False}
-    acct = _stripe().Account.retrieve(creator["stripe_account_id"])
+    acct = dict(_stripe().Account.retrieve(creator["stripe_account_id"]))
     enabled = bool(acct.get("payouts_enabled") and acct.get("charges_enabled"))
     auth.set_creator_payouts_enabled(creator["id"], enabled)
     return {"payouts_enabled": enabled}
