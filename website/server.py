@@ -369,7 +369,34 @@ def _ensure_stripe_customer(user) -> str:
 
 @app.get("/api/billing/status")
 async def billing_status(user=Depends(auth.current_user)):
-    """Lightweight status the UI reads to decide which Settings card to show."""
+    """Lightweight status the UI reads to decide which Settings card to show.
+
+    Self-healing: if the user has a stripe_customer_id but their status looks
+    stale (free / null) — likely the webhook missed — query Stripe live and
+    back-fill our DB. Keeps the UI honest without depending on retries."""
+    needs_sync = (
+        user["stripe_customer_id"]
+        and (user["subscription_status"] in (None, "", "free"))
+        and STRIPE_SECRET_KEY
+    )
+    if needs_sync:
+        try:
+            s = _stripe()
+            subs = s.Subscription.list(customer=user["stripe_customer_id"], limit=1, status="all")
+            if subs.data:
+                sub = subs.data[0]
+                auth.update_subscription(
+                    user_id=user["id"],
+                    subscription_id=sub.id,
+                    status=sub.status,
+                    current_period_end=_period_end_from_sub(sub),
+                )
+                # Refresh local copy so the response reflects the update.
+                user = auth.find_user_by_id(user["id"])
+        except Exception as e:
+            print(f"[billing-status] live-sync failed for user={user['id']}: {e}",
+                  file=sys.stderr, flush=True)
+
     return {
         "is_grandfathered": bool(user["is_grandfathered"]),
         "status": user["subscription_status"] or "free",
@@ -419,8 +446,12 @@ async def billing_portal(request: Request, user=Depends(auth.current_user)):
 
 
 def _period_end_from_sub(sub_obj) -> Optional[str]:
-    """Stripe's current_period_end is a Unix timestamp. Store ISO for sanity."""
-    ts = sub_obj.get("current_period_end") if isinstance(sub_obj, dict) else getattr(sub_obj, "current_period_end", None)
+    """Stripe's current_period_end is a Unix timestamp. Store ISO for sanity.
+    Avoid .get() — StripeObject overrides it in unexpected ways."""
+    try:
+        ts = sub_obj["current_period_end"]
+    except (KeyError, AttributeError, TypeError):
+        ts = getattr(sub_obj, "current_period_end", None)
     if not ts:
         return None
     from datetime import datetime, timezone
@@ -448,14 +479,18 @@ async def stripe_webhook(request: Request):
 
     etype = event["type"]
     obj   = event["data"]["object"]
+    # StripeObject subclasses dict but overrides .get / .pop in ways that raise
+    # AttributeError for anything not in the underlying dict. Normalise to a
+    # plain dict so .get(default) works as expected.
+    data  = dict(obj)
     print(f"[stripe-webhook] {etype}", file=sys.stderr, flush=True)
 
     if etype == "checkout.session.completed":
         # Successful subscription purchase. client_reference_id is our user.id;
         # also stamp the customer_id in case we didn't have it yet.
-        user_id_str = obj.get("client_reference_id")
-        customer_id = obj.get("customer")
-        subscription_id = obj.get("subscription")
+        user_id_str     = data.get("client_reference_id")
+        customer_id     = data.get("customer")
+        subscription_id = data.get("subscription")
         if user_id_str and customer_id:
             try:
                 user_id = int(user_id_str)
@@ -475,15 +510,15 @@ async def stripe_webhook(request: Request):
     elif etype in ("customer.subscription.created",
                    "customer.subscription.updated",
                    "customer.subscription.deleted"):
-        customer_id = obj.get("customer")
+        customer_id = data.get("customer")
         u = auth.find_user_by_stripe_customer(customer_id) if customer_id else None
         if u is not None:
-            status = obj.get("status")
+            status = data.get("status")
             if etype == "customer.subscription.deleted":
                 status = "canceled"
             auth.update_subscription(
                 user_id=u["id"],
-                subscription_id=obj.get("id"),
+                subscription_id=data.get("id"),
                 status=status or "free",
                 current_period_end=_period_end_from_sub(obj),
             )

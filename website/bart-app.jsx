@@ -610,16 +610,30 @@ function SubscriptionCard() {
 
       {active && (
         <div style={{ marginTop: 8 }}>
-          <a href="#" onClick={e => { e.preventDefault(); manage(); }}
-             style={{
-               fontFamily: "var(--font-mono)", fontSize: 11,
-               color: "var(--ink-faint)", textDecoration: "none",
-               letterSpacing: "0.08em",
-             }}>
-            {phase === "opening-portal" ? "opening…" : "manage subscription ↗"}
-          </a>
+          <div style={{ color: "var(--ink-mute)", fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>
+            opens the stripe billing portal — update card, see invoices, or cancel.
+          </div>
+          <button onClick={manage}
+                  disabled={phase === "opening-portal"}
+                  style={{
+                    padding: "10px 18px",
+                    fontFamily: "var(--font-sans)",
+                    fontWeight: 600,
+                    fontSize: 14,
+                    color: "var(--ink)",
+                    background: "var(--cream)",
+                    border: "0",
+                    borderRadius: 999,
+                    cursor: "pointer",
+                    boxShadow: "inset 0 0 0 1.5px var(--cream-edge)",
+                    transition: "box-shadow .14s ease, background .14s ease",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.boxShadow = "inset 0 0 0 1.5px var(--ink-faint)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.boxShadow = "inset 0 0 0 1.5px var(--cream-edge)"; }}>
+            {phase === "opening-portal" ? "opening stripe…" : "manage billing →"}
+          </button>
           {billing.current_period_end && (
-            <div className="muted mono" style={{ fontSize: 11, marginTop: 8, color: "var(--ink-faint)" }}>
+            <div className="muted mono" style={{ fontSize: 11, marginTop: 14, color: "var(--ink-faint)" }}>
               renews / ends {new Date(billing.current_period_end).toLocaleDateString()}
             </div>
           )}
