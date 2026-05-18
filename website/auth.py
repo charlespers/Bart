@@ -1196,6 +1196,49 @@ def creator_summary(creator) -> dict:
     }
 
 
+def creator_earnings(creator) -> dict:
+    """Full earnings + referral breakdown for the creator dashboard.
+
+    `pending_balance_cents` is the sum of commissions not yet attached to a
+    payout — that is what a payout run pays out. `monthly_run_rate_cents`
+    projects next month's income at $2 per currently-active subscriber."""
+    code = creator["referral_code"]
+    cid = creator["id"]
+    period = _current_period()
+    with _connect() as db:
+        lifetime = db.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) AS c "
+            "FROM commissions WHERE creator_id = ?", (cid,)
+        ).fetchone()["c"]
+        pending = db.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) AS c FROM commissions "
+            "WHERE creator_id = ? AND payout_id IS NULL", (cid,)
+        ).fetchone()["c"]
+        this_month = db.execute(
+            "SELECT COALESCE(SUM(amount_cents), 0) AS c FROM commissions "
+            "WHERE creator_id = ? AND substr(created_at, 1, 7) = ?",
+            (cid, period)
+        ).fetchone()["c"]
+        total_referred = db.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE referred_by = ?", (code,)
+        ).fetchone()["n"]
+        active = db.execute(
+            "SELECT COUNT(*) AS n FROM users "
+            "WHERE referred_by = ? AND subscription_status = 'active'", (code,)
+        ).fetchone()["n"]
+    return {
+        "lifetime_earnings_cents": lifetime,
+        "pending_balance_cents": pending,
+        "paid_out_cents": lifetime - pending,
+        "this_month_cents": this_month,
+        "total_referred": total_referred,
+        "active_subscribers": active,
+        "monthly_run_rate_cents": active * CREATOR_COMMISSION_CENTS,
+        "conversion_pct": round(100.0 * active / total_referred, 1)
+                          if total_referred else 0.0,
+    }
+
+
 # ─── trial codes ───────────────────────────────────────────────────────────────
 
 # Trial codes are deliberately longer than referral codes (10 vs 8 chars) so

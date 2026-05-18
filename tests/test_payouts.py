@@ -74,3 +74,24 @@ def test_init_db_is_idempotent(tmp_path):
     auth.init_db()   # second call must not raise
     auth.init_db()
     assert "payout_id" in _columns(auth, "commissions")
+
+
+def test_creator_earnings_breakdown(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    # two referred users, one subscribed-active, one not
+    u1 = auth.create_user("u1@example.com", "pw123456", referred_by=code)
+    u2 = auth.create_user("u2@example.com", "pw123456", referred_by=code)
+    auth.update_subscription(u1, "sub_1", "active", None)
+    # three $2 commissions for u1 over three months
+    for i in range(3):
+        auth.record_commission(creator["id"], u1, 200, "usd", f"cs_{i}")
+    e = auth.creator_earnings(auth.get_creator_by_code(code))
+    assert e["lifetime_earnings_cents"] == 600
+    assert e["pending_balance_cents"] == 600     # none paid out yet
+    assert e["paid_out_cents"] == 0
+    assert e["total_referred"] == 2
+    assert e["active_subscribers"] == 1
+    assert e["monthly_run_rate_cents"] == 200    # 1 active sub * $2
+    assert e["conversion_pct"] == 50.0
