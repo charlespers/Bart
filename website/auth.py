@@ -1215,6 +1215,16 @@ def creator_earnings(creator) -> dict:
             "SELECT COALESCE(SUM(amount_cents), 0) AS c FROM commissions "
             "WHERE creator_id = ? AND payout_id IS NULL", (cid,)
         ).fetchone()["c"]
+        paid_out = db.execute(
+            "SELECT COALESCE(SUM(c.amount_cents), 0) AS c "
+            "FROM commissions c JOIN payouts p ON c.payout_id = p.id "
+            "WHERE c.creator_id = ? AND p.status = 'paid'", (cid,)
+        ).fetchone()["c"]
+        awaiting_payout = db.execute(
+            "SELECT COALESCE(SUM(c.amount_cents), 0) AS c "
+            "FROM commissions c JOIN payouts p ON c.payout_id = p.id "
+            "WHERE c.creator_id = ? AND p.status = 'pending'", (cid,)
+        ).fetchone()["c"]
         this_month = db.execute(
             "SELECT COALESCE(SUM(amount_cents), 0) AS c FROM commissions "
             "WHERE creator_id = ? AND substr(created_at, 1, 7) = ?",
@@ -1230,7 +1240,8 @@ def creator_earnings(creator) -> dict:
     return {
         "lifetime_earnings_cents": lifetime,
         "pending_balance_cents": pending,
-        "paid_out_cents": lifetime - pending,
+        "awaiting_payout_cents": awaiting_payout,
+        "paid_out_cents": paid_out,
         "this_month_cents": this_month,
         "total_referred": total_referred,
         "active_subscribers": active,
@@ -1284,16 +1295,23 @@ def run_payouts(minimum_cents: int, period: str,
                 transfer_fn=None) -> list[dict]:
     """Pay out every creator whose unpaid-commission balance >= minimum_cents.
 
-    For each eligible creator: create a `payouts` row, atomically claim that
-    creator's unpaid commission rows (stamping `commissions.payout_id`), then —
-    if the creator has Connect enabled and `transfer_fn` is given — attempt the
-    transfer. `transfer_fn(creator_row, amount_cents)` returns a transfer id or
-    raises; on a raise the payout is marked 'failed' and its commissions are
-    un-claimed so the balance is restored for the next run. Creators without
-    Connect (or when `transfer_fn` is None) get a 'pending' manual payout.
+    Phase 1 (one transaction): for each eligible creator, insert a 'pending'
+    payouts row and claim the creator's unpaid commissions by stamping
+    payout_id.  The transaction commits before any external call is made.
+
+    Phase 2 (per payout, outside Phase-1 transaction): attempt the Stripe
+    transfer if applicable.  Success: UPDATE payout to 'paid'.  Failure:
+    un-claim commissions and mark payout 'failed'.  Manual payouts stay
+    'pending' — an admin settles them via mark_payout_paid.
+
+    This two-phase design means: if the process dies after Stripe moves money
+    but before the settle UPDATE, the payout stays pending (commissions are
+    claimed) so a re-run will NOT double-pay.
 
     Returns one result dict per payout created."""
-    results: list[dict] = []
+    work: list[tuple] = []  # (payout_id, creator_row, ids, total, method, use_stripe)
+
+    # ── Phase 1: claim commissions and create pending payout rows ─────────────
     with _connect() as db:
         creators = db.execute(
             "SELECT * FROM creators WHERE status = 'active'").fetchall()
@@ -1318,30 +1336,44 @@ def run_payouts(minimum_cents: int, period: str,
                 f"({','.join('?' * len(ids))})",
                 (payout_id, *ids),
             )
-            status, transfer_id = "pending", None
-            if use_stripe:
-                try:
-                    transfer_id = transfer_fn(creator, total)
-                    status = "paid"
-                except Exception as e:  # noqa: BLE001 — roll the claim back
-                    status = "failed"
+            work.append((payout_id, creator, ids, total, method, use_stripe))
+    # Phase-1 transaction commits here — payout rows exist as 'pending' and
+    # commissions are claimed durably before any Stripe call.
+
+    # ── Phase 2: execute transfers, settle or roll back each payout ───────────
+    results: list[dict] = []
+    for payout_id, creator, ids, total, method, use_stripe in work:
+        status, transfer_id = "pending", None
+        if use_stripe:
+            try:
+                transfer_id = transfer_fn(creator, total)
+                with _connect() as db:
+                    db.execute(
+                        "UPDATE payouts SET status = 'paid', "
+                        "stripe_transfer_id = ?, paid_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ?",
+                        (transfer_id, payout_id),
+                    )
+                status = "paid"
+            except Exception as e:  # noqa: BLE001
+                with _connect() as db:
                     db.execute(
                         f"UPDATE commissions SET payout_id = NULL WHERE id IN "
                         f"({','.join('?' * len(ids))})", tuple(ids),
                     )
-                    print(f"[payout] transfer failed for creator "
-                          f"{creator['id']}: {e}", file=sys.stderr, flush=True)
-            db.execute(
-                "UPDATE payouts SET status = ?, stripe_transfer_id = ?, "
-                "paid_at = CASE WHEN ? = 'paid' THEN CURRENT_TIMESTAMP END "
-                "WHERE id = ?",
-                (status, transfer_id, status, payout_id),
-            )
-            results.append({
-                "id": payout_id, "creator_id": creator["id"],
-                "amount_cents": total, "method": method, "status": status,
-                "stripe_transfer_id": transfer_id,
-            })
+                    db.execute(
+                        "UPDATE payouts SET status = 'failed' WHERE id = ?",
+                        (payout_id,),
+                    )
+                status = "failed"
+                print(f"[payout] transfer failed for creator "
+                      f"{creator['id']}: {e}", file=sys.stderr, flush=True)
+        # Manual payouts stay 'pending' — no DB write needed here.
+        results.append({
+            "id": payout_id, "creator_id": creator["id"],
+            "amount_cents": total, "method": method, "status": status,
+            "stripe_transfer_id": transfer_id,
+        })
     return results
 
 
@@ -1363,9 +1395,11 @@ def list_payouts(creator_id: Optional[int] = None,
     """Payouts newest-first, optionally filtered by creator and/or status."""
     clauses, args = [], []
     if creator_id is not None:
-        clauses.append("creator_id = ?"); args.append(creator_id)
+        clauses.append("creator_id = ?")
+        args.append(creator_id)
     if status:
-        clauses.append("status = ?"); args.append(status)
+        clauses.append("status = ?")
+        args.append(status)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     with _connect() as db:
         return [dict(r) for r in db.execute(

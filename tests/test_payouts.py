@@ -167,3 +167,57 @@ def test_mark_payout_paid(tmp_path):
     assert rows[0]["note"] == "venmo sent"
     assert auth.mark_payout_paid(payout["id"]) is False
     assert auth.mark_payout_paid(999999) is False
+
+
+# ── I1: stripe account present but payouts_enabled=0 → manual ────────────────
+
+def test_run_payouts_stripe_account_but_not_enabled_is_manual(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = _seed_creator_with_balance(auth, 3000, "ne@example.com")
+    auth.set_creator_stripe_account(creator["id"], "acct_x")
+    # deliberately do NOT call set_creator_payouts_enabled — stays 0
+    calls = []
+    def transfer(creator_row, amount_cents):
+        calls.append((creator_row["id"], amount_cents))
+        return "tr_x"
+    results = auth.run_payouts(2500, "2026-05", transfer_fn=transfer)
+    assert len(results) == 1
+    assert calls == [], "transfer_fn must NOT be called when payouts_enabled=0"
+    assert results[0]["method"] == "manual"
+    assert results[0]["status"] == "pending"
+
+
+# ── I2: multiple creators in one run ──────────────────────────────────────────
+
+def test_run_payouts_pays_multiple_creators_in_one_run(tmp_path):
+    auth = _load_auth(tmp_path)
+    _seed_creator_with_balance(auth, 3000, "a@example.com")   # $30 — above minimum
+    _seed_creator_with_balance(auth, 4000, "b@example.com")   # $40 — above minimum
+    _seed_creator_with_balance(auth, 1000, "c@example.com")   # $10 — below minimum
+    results = auth.run_payouts(2500, "2026-05")
+    assert len(results) == 2
+    assert {r["amount_cents"] for r in results} == {3000, 4000}
+
+
+# ── I1+I3: creator_earnings distinguishes awaiting-payout from paid-out ───────
+
+def test_creator_earnings_distinguishes_awaiting_from_paid(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = _seed_creator_with_balance(auth, 3000, "aw@example.com")
+
+    # After a manual run: balance should move to awaiting_payout, not paid_out
+    results = auth.run_payouts(2500, "2026-05")
+    assert len(results) == 1
+    payout_id = results[0]["id"]
+
+    e = auth.creator_earnings(creator)
+    assert e["pending_balance_cents"] == 0
+    assert e["awaiting_payout_cents"] == 3000
+    assert e["paid_out_cents"] == 0
+
+    # After marking the payout paid: should flip to paid_out
+    assert auth.mark_payout_paid(payout_id, note="sent") is True
+
+    e = auth.creator_earnings(creator)
+    assert e["awaiting_payout_cents"] == 0
+    assert e["paid_out_cents"] == 3000
