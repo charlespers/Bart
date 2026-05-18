@@ -94,6 +94,21 @@ CONFIG_ROOT.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="bart website")
 auth.init_db()
 
+
+# Canonicalize: anyone hitting <app>.fly.dev gets 301'd to the studywithbart.com
+# equivalent. /api/health is excluded so Fly's machine health checks don't
+# follow the redirect and mark the app unhealthy.
+@app.middleware("http")
+async def redirect_to_canonical_host(request: Request, call_next):
+    host = (request.headers.get("host") or "").lower().split(":")[0]
+    if host.endswith(".fly.dev") and request.url.path != "/api/health":
+        target = f"https://studywithbart.com{request.url.path}"
+        if request.url.query:
+            target += f"?{request.url.query}"
+        return RedirectResponse(url=target, status_code=301)
+    return await call_next(request)
+
+
 # IP-based rate limiter for the public auth endpoints. Honors
 # X-Forwarded-For when uvicorn is started with --proxy-headers (set in the
 # Fly deployment); on localhost it just sees 127.0.0.1.
