@@ -61,6 +61,10 @@ STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_MONTHLY = os.environ.get("STRIPE_PRICE_MONTHLY", "")
 APP_PUBLIC_URL = os.environ.get("APP_PUBLIC_URL", "https://studywithbart.com")
+# Premium ("claude") web-run authoring model. Sonnet 4.6 is ~5x cheaper than
+# Opus on the heavy authoring step and keeps the $10/mo tier profitable with
+# the creator commission stacked on (see the creator-accounts design spec).
+WEB_PRIMARY_MODEL = os.environ.get("BART_WEB_PRIMARY_MODEL", "claude-sonnet-4-6")
 
 
 HERE = Path(__file__).resolve().parent
@@ -1019,7 +1023,7 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
         "student_level": "undergraduate",
         "style": "academic-rigorous",
         "daily_hours": 3.0,
-        "primary_model": "claude-opus-4-7",
+        "primary_model": WEB_PRIMARY_MODEL,
         "daily_model": "claude-sonnet-4-6",
         "fast_model": "claude-haiku-4-5-20251001",
         "deep_research": False,
