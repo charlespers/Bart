@@ -133,6 +133,140 @@
   }
   .hide { display: none !important; }
   .muted { color: var(--ink-mute); font-size: 13px; }
+
+  /* full dashboard extras */
+  .dash-header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    margin-bottom: 28px;
+  }
+  .dash-header-text { flex: 1; min-width: 0; }
+  .dash-header-text h2 { margin: 0 0 2px; font-size: 22px; font-weight: 700;
+    letter-spacing: -0.02em; color: var(--ink); }
+  .dash-header-text .creator-name {
+    font-size: 14px; color: var(--ink-mute); margin: 0;
+  }
+  .badge-active {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    color: var(--ok, #2d7d46); background: rgba(45,125,70,0.10);
+    border: 1px solid rgba(45,125,70,0.22); border-radius: 20px;
+    padding: 3px 10px; letter-spacing: 0.06em; white-space: nowrap;
+  }
+  .badge-active::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--ok, #2d7d46); display: block;
+  }
+
+  /* earnings cards */
+  .earn-cards {
+    display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 14px;
+    margin-bottom: 28px;
+  }
+  @media (max-width: 760px) { .earn-cards { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 440px) { .earn-cards { grid-template-columns: 1fr; } }
+  .earn-card {
+    background: var(--cream); border: 1px solid var(--cream-edge);
+    border-radius: 14px; padding: 18px 20px;
+  }
+  .earn-card.primary {
+    background: var(--accent, #c96442); border-color: var(--accent, #c96442);
+  }
+  .earn-card.primary .ec-val { color: #fff; }
+  .earn-card.primary .ec-label { color: rgba(255,255,255,0.72); }
+  .ec-val {
+    font-size: 28px; font-weight: 800; color: var(--ink);
+    letter-spacing: -0.03em; line-height: 1; margin-bottom: 8px;
+  }
+  .ec-label {
+    font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+    text-transform: uppercase; letter-spacing: 0.07em;
+  }
+
+  /* dash sections */
+  .dash-section { margin-bottom: 30px; }
+  .dash-section-title {
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 600;
+    color: var(--ink-soft, var(--ink-mute)); text-transform: uppercase;
+    letter-spacing: 0.09em; margin: 0 0 12px;
+  }
+
+  /* referral block */
+  .ref-block { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .ref-block-main { flex: 1; min-width: 240px; }
+  .qr-img {
+    width: 120px; height: 120px; border-radius: 12px;
+    border: 1px solid var(--cream-edge); background: var(--cream);
+    object-fit: contain; flex-shrink: 0;
+  }
+  .share-row {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px;
+  }
+  .share-btn {
+    font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+    padding: 7px 14px; border-radius: 9px; border: 1.5px solid var(--cream-edge);
+    background: var(--cream); color: var(--ink-mute); cursor: pointer;
+    text-decoration: none; display: inline-block; transition: border-color .14s, color .14s;
+  }
+  .share-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* perf stats grid */
+  .perf-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+  }
+  @media (max-width: 700px) { .perf-grid { grid-template-columns: 1fr 1fr; } }
+
+  /* payout setup */
+  .payout-row { display: flex; gap: 10px; align-items: stretch; margin-top: 8px; }
+  .payout-row input {
+    flex: 1; font-family: var(--font-sans); font-size: 14.5px;
+    color: var(--ink); background: var(--cream);
+    border: 1.5px solid var(--cream-edge); border-radius: 11px;
+    padding: 11px 13px; outline: none; transition: border-color .14s;
+  }
+  .payout-row input:focus { border-color: var(--accent); }
+  .payout-hint {
+    font-size: 12.5px; color: var(--ink-mute); margin-top: 7px;
+  }
+  .payout-feedback { font-size: 13.5px; margin-top: 6px; min-height: 18px; }
+  .payout-feedback.err { color: var(--accent-lo); }
+  .payout-feedback.ok  { color: var(--ok, #2d7d46); }
+  .payout-enabled-badge {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 14px; font-weight: 600; color: var(--ok, #2d7d46);
+    background: rgba(45,125,70,0.08); border: 1px solid rgba(45,125,70,0.20);
+    border-radius: 12px; padding: 10px 16px;
+  }
+
+  /* payout table */
+  .payout-table-wrap { overflow-x: auto; }
+  .payout-table {
+    width: 100%; border-collapse: collapse; font-size: 14px;
+  }
+  .payout-table th {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-mute);
+    text-align: left; padding: 0 12px 10px 0; border-bottom: 1px solid var(--cream-edge);
+  }
+  .payout-table td {
+    padding: 10px 12px 10px 0; border-bottom: 1px solid var(--cream-edge);
+    color: var(--ink); vertical-align: middle;
+  }
+  .payout-table tr:last-child td { border-bottom: none; }
+  .status-pill {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    letter-spacing: 0.05em; padding: 3px 9px; border-radius: 20px;
+    display: inline-block;
+  }
+  .status-pill.pending  { background: rgba(201,100,66,0.10); color: var(--accent-lo, #a04030); }
+  .status-pill.paid     { background: rgba(45,125,70,0.10);  color: var(--ok, #2d7d46); }
+  .status-pill.failed   { background: rgba(180,30,30,0.10);  color: #a02020; }
+
+  /* how it works info box */
+  .info-box {
+    background: var(--cream); border: 1px solid var(--cream-edge);
+    border-radius: 14px; padding: 18px 20px;
+    font-size: 14px; color: var(--ink-mute); line-height: 1.6;
+  }
 </style>
 </head>
 <body>
@@ -152,7 +286,7 @@
   <p class="lede">
     Got an audience of students? Share bart and earn. Approved creators get a
     unique referral link — when someone subscribes through it, you earn
-    <b>30% of every payment</b>, credited automatically once the payment clears.
+    <b>$2 every month</b> per active subscriber, paid out automatically each month.
   </p>
 
   <div class="steps">
@@ -174,7 +308,7 @@
     <div class="step">
       <div class="n">04</div>
       <h3>Earn</h3>
-      <p>30% of every verified subscription payment.</p>
+      <p>$2 per subscriber, every month they stay subscribed.</p>
     </div>
   </div>
 
@@ -242,18 +376,133 @@
 
   <!-- creator dashboard (approved creators) -->
   <section class="panel hide" id="dash-panel">
-    <h2 id="dash-hello">Your creator dashboard</h2>
-    <p class="sub">Share this link anywhere. You earn on every verified payment.</p>
-    <div class="ref-link">
-      <input id="ref-url" type="text" readonly />
-      <button type="button" class="cta" id="copy-btn">copy</button>
+
+    <!-- 1. Header -->
+    <div class="dash-header">
+      <div class="dash-header-text">
+        <h2>Creator dashboard</h2>
+        <p class="creator-name" id="dash-name"></p>
+      </div>
+      <span class="badge-active">active</span>
     </div>
-    <div class="stats">
-      <div class="stat"><div class="v" id="s-signups">0</div><div class="l">Sign-ups</div></div>
-      <div class="stat"><div class="v" id="s-subs">0</div><div class="l">Subscribed</div></div>
-      <div class="stat"><div class="v" id="s-earn">$0</div><div class="l">Earned</div></div>
+
+    <!-- 2. Earnings cards -->
+    <div class="dash-section">
+      <p class="dash-section-title">Earnings</p>
+      <div class="earn-cards">
+        <div class="earn-card primary">
+          <div class="ec-val" id="ec-pending">$0.00</div>
+          <div class="ec-label">Pending balance</div>
+        </div>
+        <div class="earn-card">
+          <div class="ec-val" id="ec-awaiting">$0.00</div>
+          <div class="ec-label">Awaiting payout</div>
+        </div>
+        <div class="earn-card">
+          <div class="ec-val" id="ec-paidout">$0.00</div>
+          <div class="ec-label">Paid out</div>
+        </div>
+        <div class="earn-card">
+          <div class="ec-val" id="ec-month">$0.00</div>
+          <div class="ec-label">This month</div>
+        </div>
+      </div>
     </div>
-    <p class="muted" style="margin-top:18px" id="dash-foot"></p>
+
+    <!-- 3. Referral link -->
+    <div class="dash-section">
+      <p class="dash-section-title">Your referral link</p>
+      <div class="ref-block">
+        <div class="ref-block-main">
+          <div class="ref-link">
+            <input id="ref-url" type="text" readonly placeholder="loading…" />
+            <button type="button" class="cta" id="copy-btn">copy</button>
+          </div>
+          <div class="share-row">
+            <a id="share-twitter" class="share-btn" target="_blank" rel="noopener">X / Twitter</a>
+            <a id="share-whatsapp" class="share-btn" target="_blank" rel="noopener">WhatsApp</a>
+            <a id="share-email" class="share-btn">Email</a>
+          </div>
+        </div>
+        <img id="ref-qr" class="qr-img" src="" alt="QR code for your referral link" />
+      </div>
+    </div>
+
+    <!-- 4. Performance -->
+    <div class="dash-section">
+      <p class="dash-section-title">Performance</p>
+      <div class="perf-grid">
+        <div class="stat">
+          <div class="v" id="p-referred">0</div>
+          <div class="l">Total referred</div>
+        </div>
+        <div class="stat">
+          <div class="v" id="p-active">0</div>
+          <div class="l">Active subscribers</div>
+        </div>
+        <div class="stat">
+          <div class="v" id="p-runrate">$0.00</div>
+          <div class="l">Projected / month</div>
+        </div>
+        <div class="stat">
+          <div class="v" id="p-conv">0%</div>
+          <div class="l">Conversion</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. Payout setup -->
+    <div class="dash-section" id="payout-setup-section">
+      <p class="dash-section-title">Payout setup</p>
+      <!-- connect_mode=true branch -->
+      <div id="payout-connect" class="hide">
+        <div id="payout-connect-enabled" class="hide">
+          <div class="payout-enabled-badge">&#10003; Payouts enabled — bank connected</div>
+        </div>
+        <div id="payout-connect-pending" class="hide">
+          <button type="button" class="cta" id="connect-bank-btn">Connect your bank</button>
+          <p class="payout-hint">We use Stripe to securely connect your bank account for direct payouts.</p>
+        </div>
+      </div>
+      <!-- connect_mode=false branch -->
+      <div id="payout-manual" class="hide">
+        <div class="payout-row">
+          <input id="payout-handle" type="text"
+                 placeholder="e.g. paypal@you.com or Venmo @handle" maxlength="300" />
+          <button type="button" class="cta" id="payout-save-btn">Save</button>
+        </div>
+        <p class="payout-hint" id="payout-hint-text"></p>
+        <div class="payout-feedback" id="payout-feedback"></div>
+      </div>
+    </div>
+
+    <!-- 6. Payout history -->
+    <div class="dash-section">
+      <p class="dash-section-title">Payout history</p>
+      <div id="payouts-empty" class="hide">
+        <p class="muted" id="payouts-empty-msg"></p>
+      </div>
+      <div class="payout-table-wrap" id="payouts-table-wrap">
+        <table class="payout-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Amount</th>
+              <th>Method</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="payouts-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 7. How it works -->
+    <div class="dash-section">
+      <p class="dash-section-title">How it works</p>
+      <div class="info-box" id="how-it-works-text"></div>
+    </div>
+
   </section>
 </main>
 
@@ -269,41 +518,178 @@
   function show(el) { el.classList.remove('hide'); }
   function hide(el) { el.classList.add('hide'); }
 
-  function renderDashboard(d) {
-    hide(applyPanel); hide(pendingBan); show(dashPanel);
-    if (d.name) document.getElementById('dash-hello').textContent =
-      'Welcome back, ' + d.name.split(' ')[0] + '.';
-    document.getElementById('ref-url').value = d.referral_url || '';
-    document.getElementById('s-signups').textContent = d.signups || 0;
-    document.getElementById('s-subs').textContent    = d.subscribed || 0;
-    document.getElementById('s-earn').textContent    = '$' + (d.earnings_usd || 0);
-    var dollars = (d.commission_cents || 200) / 100; // 200 mirrors server BART_CREATOR_COMMISSION_CENTS default
-    document.getElementById('dash-foot').textContent =
-      'You earn $' + dollars.toFixed(2) + ' every month each subscriber stays subscribed ' +
-      'through your link. Payments shown update once Stripe confirms them.';
+  function cents(n) {
+    return '$' + ((n || 0) / 100).toFixed(2);
   }
 
-  // Decide which state to show.
-  fetch('/api/creator/me', { credentials: 'same-origin' })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (d) {
-      if (!d) return;                       // not logged in → show the form
-      if (d.is_creator) { renderDashboard(d); return; }
-      if (d.application_status === 'pending') {
-        show(pendingBan); hide(applyPanel);
+  function renderDashboard(d) {
+    hide(applyPanel); hide(pendingBan); show(dashPanel);
+
+    // 1. Header
+    if (d.name) document.getElementById('dash-name').textContent = d.name;
+
+    var e = d.earnings || {};
+
+    // 2. Earnings cards
+    document.getElementById('ec-pending').textContent  = cents(e.pending_balance_cents);
+    document.getElementById('ec-awaiting').textContent = cents(e.awaiting_payout_cents);
+    document.getElementById('ec-paidout').textContent  = cents(e.paid_out_cents);
+    document.getElementById('ec-month').textContent    = cents(e.this_month_cents);
+
+    // 3. Referral link
+    var refUrl = d.referral_url || '';
+    document.getElementById('ref-url').value = refUrl;
+    document.getElementById('ref-qr').src =
+      'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' +
+      encodeURIComponent(refUrl);
+
+    var shareText = 'I use bart to make study packets — try it: ' + refUrl;
+    document.getElementById('share-twitter').href =
+      'https://twitter.com/intent/tweet?text=' + encodeURIComponent(shareText);
+    document.getElementById('share-whatsapp').href =
+      'https://wa.me/?text=' + encodeURIComponent(shareText);
+    document.getElementById('share-email').href =
+      'mailto:?subject=' + encodeURIComponent('Check out bart for studying') +
+      '&body=' + encodeURIComponent(shareText);
+
+    // 4. Performance
+    document.getElementById('p-referred').textContent = e.total_referred || 0;
+    document.getElementById('p-active').textContent   = e.active_subscribers || 0;
+    document.getElementById('p-runrate').textContent  = cents(e.monthly_run_rate_cents);
+    var convPct = (e.conversion_pct || 0);
+    document.getElementById('p-conv').textContent =
+      (typeof convPct === 'number' ? convPct.toFixed(1) : convPct) + '%';
+
+    // 5. Payout setup
+    var minDollars = ((d.payout_minimum_cents || 2500) / 100).toFixed(0);
+    if (d.connect_mode) {
+      show(document.getElementById('payout-connect'));
+      if (d.payouts_enabled) {
+        show(document.getElementById('payout-connect-enabled'));
+      } else {
+        show(document.getElementById('payout-connect-pending'));
       }
-    })
-    .catch(function () {});
+    } else {
+      show(document.getElementById('payout-manual'));
+      if (d.payout_details) {
+        document.getElementById('payout-handle').value = d.payout_details;
+      }
+      document.getElementById('payout-hint-text').textContent =
+        'We pay out monthly once you reach $' + minDollars + '.';
+    }
+
+    // 6. Payout history
+    var payouts = d.payouts || [];
+    if (payouts.length === 0) {
+      show(document.getElementById('payouts-empty'));
+      hide(document.getElementById('payouts-table-wrap'));
+      document.getElementById('payouts-empty-msg').textContent =
+        'No payouts yet — your first lands once you reach the $' + minDollars + ' minimum.';
+    } else {
+      hide(document.getElementById('payouts-empty'));
+      show(document.getElementById('payouts-table-wrap'));
+      var tbody = document.getElementById('payouts-tbody');
+      tbody.innerHTML = '';
+      payouts.forEach(function (p) {
+        var date = (p.created_at || '').slice(0, 10);
+        var statusClass = p.status === 'paid' ? 'paid' : (p.status === 'failed' ? 'failed' : 'pending');
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' + date + '</td>' +
+          '<td>' + cents(p.amount_cents) + '</td>' +
+          '<td>' + (p.method || '—') + '</td>' +
+          '<td><span class="status-pill ' + statusClass + '">' + (p.status || '') + '</span></td>';
+        tbody.appendChild(tr);
+      });
+    }
+
+    // 7. How it works
+    var commDollars = ((d.commission_cents || 200) / 100).toFixed(2);
+    document.getElementById('how-it-works-text').textContent =
+      'You earn $' + commDollars + ' per active subscriber, every month they stay subscribed. ' +
+      'Payouts go out monthly once your balance reaches $' + minDollars + '.';
+  }
+
+  // Fetch creator data, with optional connect refresh first.
+  function loadCreatorData() {
+    return fetch('/api/creator/me', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+        if (d.is_creator) { renderDashboard(d); return; }
+        if (d.application_status === 'pending') {
+          show(pendingBan); hide(applyPanel);
+        }
+      })
+      .catch(function () {});
+  }
+
+  // On page load: if returning from Stripe Connect onboarding, refresh first.
+  var urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('connect') === 'done') {
+    fetch('/api/creator/connect/refresh', { credentials: 'same-origin' })
+      .then(function () { return loadCreatorData(); })
+      .catch(function () { return loadCreatorData(); });
+  } else {
+    loadCreatorData();
+  }
 
   // Copy referral link.
   var copyBtn = document.getElementById('copy-btn');
   if (copyBtn) copyBtn.addEventListener('click', function () {
-    var inp = document.getElementById('ref-url');
-    inp.select();
-    navigator.clipboard.writeText(inp.value).then(function () {
-      copyBtn.textContent = 'copied';
+    var val = document.getElementById('ref-url').value;
+    navigator.clipboard.writeText(val).then(function () {
+      copyBtn.textContent = 'copied!';
       setTimeout(function () { copyBtn.textContent = 'copy'; }, 1600);
     }).catch(function () {});
+  });
+
+  // Connect bank (Stripe Connect mode).
+  var connectBankBtn = document.getElementById('connect-bank-btn');
+  if (connectBankBtn) connectBankBtn.addEventListener('click', function () {
+    connectBankBtn.disabled = true;
+    connectBankBtn.textContent = 'redirecting…';
+    fetch('/api/creator/connect/start', {
+      method: 'POST',
+      credentials: 'same-origin'
+    }).then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && j.url) { window.location = j.url; }
+        else { connectBankBtn.disabled = false; connectBankBtn.textContent = 'Connect your bank'; }
+      })
+      .catch(function () {
+        connectBankBtn.disabled = false; connectBankBtn.textContent = 'Connect your bank';
+      });
+  });
+
+  // Save manual payout handle.
+  var payoutSaveBtn = document.getElementById('payout-save-btn');
+  if (payoutSaveBtn) payoutSaveBtn.addEventListener('click', function () {
+    var handle = (document.getElementById('payout-handle').value || '').trim();
+    var fb = document.getElementById('payout-feedback');
+    fb.className = 'payout-feedback'; fb.textContent = '';
+    payoutSaveBtn.disabled = true;
+    fetch('/api/creator/payout-method', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ details: handle })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      payoutSaveBtn.disabled = false;
+      if (res.ok) {
+        fb.className = 'payout-feedback ok';
+        fb.textContent = 'Saved.';
+      } else {
+        fb.className = 'payout-feedback err';
+        fb.textContent = (res.j && res.j.detail) || 'Could not save — try again.';
+      }
+    }).catch(function () {
+      payoutSaveBtn.disabled = false;
+      fb.className = 'payout-feedback err';
+      fb.textContent = 'Could not reach the server — try again.';
+    });
   });
 
   // Redeem a trial code.
