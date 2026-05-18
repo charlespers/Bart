@@ -79,10 +79,11 @@ def _doctor_check_local(cfg, console) -> bool:
         if cfg.local_model_key:
             model = get_model(cfg.local_model_key)
         else:
-            model = pick(platform, recommended_tier(platform))
+            model = pick(platform, recommended_tier(platform),
+                         family=getattr(cfg, "local_model_family", "auto"))
         console.print(
             f"[green]✓[/green] model: [cyan]{model.display_name}[/cyan] "
-            f"[dim]({model.bytes_on_disk/1024**3:.1f} GB on disk)[/dim]"
+            f"[dim]({model.family} · {model.bytes_on_disk/1024**3:.1f} GB on disk)[/dim]"
         )
     except KeyError:
         console.print(

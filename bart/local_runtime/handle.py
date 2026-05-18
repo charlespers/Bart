@@ -50,6 +50,7 @@ def prepare(
     *,
     console,
     model_key: str | None = None,
+    family: str = "auto",
     n_ctx: int = 32768,
     parallel_slots: int = 1,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
@@ -57,6 +58,9 @@ def prepare(
     """Bring up the local runtime end-to-end.
 
     `model_key`: override the auto-pick. None → detect hardware and choose.
+    `family`: which open-weight family to auto-pick from when `model_key`
+        is None — "qwen3", "gemma4", or "auto"/"" (→ the default, Qwen3).
+        Ignored when `model_key` is given.
     `n_ctx`: server context window. Capped against model.context_window.
     `parallel_slots`: requested concurrent slots. mlx-lm forces 1.
     """
@@ -65,7 +69,7 @@ def prepare(
         model = get_model(model_key)
     else:
         tier = recommended_tier(platform)
-        model = pick(platform, tier)
+        model = pick(platform, tier, family=family)
     console.print(
         f"  [dim]hardware:[/dim] {platform.os}/{platform.arch} "
         f"[dim]{platform.accelerator}, "

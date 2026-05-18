@@ -49,6 +49,11 @@ class Config(BaseModel):
     # don't re-pick (and re-download) just because the user has freed memory
     # since first setup.
     local_model_key: str = ""
+    # auth_mode == "local" only — which open-weight family to draw from when
+    # auto-picking: "auto" (→ Qwen3, the default), "qwen3", or "gemma4". The
+    # picker walks the family's variants and selects the best fit for the
+    # detected device. Honored only when local_model_key is empty.
+    local_model_family: str = "auto"
 
     @field_validator("exam_date")
     @classmethod
@@ -222,14 +227,38 @@ def run_setup_wizard(force: bool = False) -> Config:
     local_primary = defaults.get("primary_model", "claude-opus-4-7")
     local_fast = defaults.get("fast_model", "claude-haiku-4-5-20251001")
     local_model_key = defaults.get("local_model_key", "")
+    local_model_family = defaults.get("local_model_family", "auto")
     if auth_mode == "local":
         api_key = ""  # not used in local mode
         from .local_runtime.hardware import detect, recommended_tier
-        from .local_runtime.models import pick
+        from .local_runtime.models import normalize_family, pick
+
+        # Which open-weight family to draw from. Qwen3 is the default
+        # (native tool calling + JSON mode). Gemma 4 is Google's family —
+        # many sizes; bart auto-picks the best one for this machine.
+        console.print(
+            "\n[bold][1a/6] Which open-weight family?[/bold]\n"
+            f"  [{ACCENT}]1[/{ACCENT}]  Qwen3   "
+            f"[dim](default — native tool calling + JSON mode, most reliable)[/dim]\n"
+            f"  [{ACCENT}]2[/{ACCENT}]  Gemma 4 "
+            f"[dim](Google open weights; 1B/4B/12B/27B — best fit auto-selected)[/dim]"
+        )
+        fam_default = "2" if normalize_family(local_model_family) == "gemma4" else "1"
+        fam_choice = Prompt.ask("  pick", choices=["1", "2"], default=fam_default)
+        local_model_family = "gemma4" if fam_choice == "2" else "qwen3"
+        # A family switch invalidates any previously-saved model_key (it
+        # belongs to the other family) — clear it so the picker re-resolves.
+        if local_model_key:
+            try:
+                from .local_runtime.models import get as _get_model
+                if _get_model(local_model_key).family != local_model_family:
+                    local_model_key = ""
+            except KeyError:
+                local_model_key = ""
 
         platform = detect()
         tier = recommended_tier(platform)
-        model = pick(platform, tier)
+        model = pick(platform, tier, family=local_model_family)
 
         accel_label = {
             "metal": "Apple Silicon (Metal)",
@@ -256,15 +285,21 @@ def run_setup_wizard(force: bool = False) -> Config:
         if Confirm.ask("\n  use this preselection?", default=True):
             local_model_key = model.key
         else:
-            console.print(
-                "\n  available variants:\n"
-                "    [bold]qwen3-32b-mlx-4bit[/bold]      ~18 GB  (huge tier, ≥22 GB)\n"
-                "    [bold]qwen3-30b-a3b-mlx-4bit[/bold]  ~17 GB  (large MoE, ≥16 GB, 3.3B active — fast)\n"
-                "    [bold]qwen3-14b-mlx-4bit[/bold]      ~8.5 GB (mid tier, ≥11 GB)\n"
-                "    [bold]qwen3-8b-mlx-4bit[/bold]       ~4.6 GB (small tier, ≥7 GB)\n"
-                "    [bold]qwen3-4b-mlx-4bit[/bold]       ~2.4 GB (tiny tier, ≥4 GB)\n"
-                "  [dim]on non-Apple platforms swap `mlx-4bit` → `gguf-q4km`[/dim]\n"
+            # List every variant in the chosen family, preferred format
+            # first, so the manual picker offers only relevant keys.
+            from .local_runtime.models import CATALOG as _CATALOG
+            want_fmt = "mlx" if platform.is_apple_silicon else "gguf"
+            variants = sorted(
+                (m for m in _CATALOG if m.family == model.family),
+                key=lambda m: (m.format != want_fmt, -m.bytes_on_disk),
             )
+            lines = "\n".join(
+                f"    [bold]{m.key}[/bold]  "
+                f"~{m.bytes_on_disk/1024**3:.1f} GB  "
+                f"[dim](≥{m.min_usable_gb:.0f} GB usable)[/dim]"
+                for m in variants
+            )
+            console.print("\n  available variants:\n" + lines + "\n")
             picked = Prompt.ask(
                 "  model_key", default=model.key,
             )
@@ -281,12 +316,21 @@ def run_setup_wizard(force: bool = False) -> Config:
             f"weights on first run (~{model.bytes_on_disk/1024**3:.1f} GB; "
             f"cached 24h between runs).[/dim]"
         )
-        console.print(
-            f"  [dim]quality note: Qwen3 has native tool calling and JSON "
-            f"mode, so structured artifacts (problem index, exam pattern, "
-            f"diagrams) are dramatically more reliable than the legacy "
-            f"Gemma path.[/dim]\n"
-        )
+        if model.family == "gemma4":
+            console.print(
+                f"  [dim]quality note: Gemma 4 has no native tool template — "
+                f"bart drives structured artifacts (problem index, exam "
+                f"pattern, diagrams) through grammar-constrained JSON "
+                f"instead. Gemma repos are gated on Hugging Face; if the "
+                f"download is refused, set HUGGING_FACE_HUB_TOKEN.[/dim]\n"
+            )
+        else:
+            console.print(
+                f"  [dim]quality note: Qwen3 has native tool calling and JSON "
+                f"mode, so structured artifacts (problem index, exam pattern, "
+                f"diagrams) are dramatically more reliable than the legacy "
+                f"Gemma path.[/dim]\n"
+            )
     # Exam date
     while True:
         exam_date = Prompt.ask(
@@ -376,6 +420,7 @@ def run_setup_wizard(force: bool = False) -> Config:
         primary_model=primary_model_for_cfg,
         fast_model=fast_model_for_cfg,
         local_model_key=local_model_key if auth_mode == "local" else "",
+        local_model_family=local_model_family if auth_mode == "local" else "auto",
     )
     save_config(cfg)
     console.print("\n[green]✓[/green] config saved to [cyan].bart_config.json[/cyan]\n")

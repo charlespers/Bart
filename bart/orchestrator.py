@@ -173,6 +173,7 @@ class Orchestrator:
                 self._local_runtime = _lr.prepare(
                     console=self.console,
                     model_key=self.cfg.local_model_key or None,
+                    family=self.cfg.local_model_family,
                     on_event=self._on_llm_event,
                 )
                 llm = LocalBackend(
@@ -767,8 +768,12 @@ class Orchestrator:
             cost_line = f"  cost:       [{ACCENT_HI}]covered by your Claude subscription[/{ACCENT_HI}]"
             footer = "[dim]subscription rate limits apply.[/dim]"
         elif self.cfg.auth_mode == "local":
+            from .local_runtime.models import normalize_family
+            _fam_label = {
+                "gemma4": "Gemma 4", "qwen3": "Qwen3",
+            }.get(normalize_family(self.cfg.local_model_family), "Qwen3")
             cost_line = (
-                f"  cost:       [{ACCENT_HI}]$0.00 (local — Qwen3 via "
+                f"  cost:       [{ACCENT_HI}]$0.00 (local — {_fam_label} via "
                 f"mlx-lm/llama.cpp)[/{ACCENT_HI}]"
             )
             footer = (

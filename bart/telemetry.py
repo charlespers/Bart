@@ -27,6 +27,15 @@ PRICING = {
     "qwen3-8b-gguf-q4km":     {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
     "qwen3-4b-mlx-4bit":      {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
     "qwen3-4b-gguf-q4km":     {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    # Local stack: Gemma 4 family via mlx-lm or llama-cpp-python. $0/token.
+    "gemma4-27b-mlx-4bit":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma4-27b-gguf-q4km":   {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma4-12b-mlx-4bit":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma4-12b-gguf-q4km":   {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma4-4b-mlx-4bit":     {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma4-4b-gguf-q4km":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma4-1b-mlx-4bit":     {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
+    "gemma4-1b-gguf-q4km":    {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0},
 }
 
 

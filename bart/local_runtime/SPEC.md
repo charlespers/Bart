@@ -61,8 +61,8 @@ handle.shutdown()  # idempotent; called from a `finally` block
 
 These are pinned by tests in `tests/test_local_runtime*.py`. Don't break them.
 
-1. **Apple Silicon prefers MLX.** `pick(p, tier)` returns an MLX entry on Apple Silicon when one exists at that tier; otherwise a GGUF entry.
-2. **Non-Apple never gets MLX.** `pick(p, tier)` never returns an MLX entry on a non-Apple platform.
+1. **Apple Silicon prefers MLX.** `pick(p, tier, family)` returns an MLX entry on Apple Silicon when one exists at that tier; otherwise a GGUF entry.
+2. **Non-Apple never gets MLX.** `pick(p, tier, family)` never returns an MLX entry on a non-Apple platform.
 3. **System role passes through.** `LocalBackend.complete(system="...")` sends `{"role":"system","content":"..."}` as the first message. (This is the audit-bug-#1 anchor.)
 4. **`max_tokens` is capped against `n_ctx`.** The client never asks the server to generate more tokens than fit in the remaining context window. (Audit-bug-#2 anchor.)
 5. **Retry on 5xx and network errors, fail fast on 4xx.** The client retries up to 4 times with exponential backoff; honors `Retry-After` headers; never retries 4xx. (Audit-bug-#3 anchor.)
@@ -72,6 +72,7 @@ These are pinned by tests in `tests/test_local_runtime*.py`. Don't break them.
 9. **Resumable downloads.** A network failure mid-download leaves the partial files on disk; the next `ensure_weights()` call resumes via HTTP Range.
 10. **Weights are never re-downloaded within 24h.** The cache TTL is 24h; touching on shutdown extends it to a full day from last use.
 11. **The server stops when `shutdown()` is called.** Including via `atexit` if the orchestrator is killed by SIGINT/SIGTERM.
+12. **Family routing is opt-in.** `pick(p, tier)` and `pick(p, tier, family="auto")` resolve to the default family (Qwen3). Gemma 4 is only returned when `family="gemma4"` is requested explicitly (config `local_model_family`, or `--model gemma` from the website).
 
 ## 5. Error taxonomy
 
@@ -93,16 +94,18 @@ These are pinned by tests in `tests/test_local_runtime*.py`. Don't break them.
 
 ## 6. Catalog Policy
 
-`models.py` is curated, not generated. To add a model:
+`models.py` is curated, not generated. The catalog is grouped by **family**
+(`Model.family`): Qwen3 is the default family; Gemma 4 is an opt-in family.
+To add a model:
 
 1. **License must allow free local use.** Apache 2.0, MIT, or the explicit Llama / Gemma terms.
-2. **Repo must be public.** No gated repos in the default catalog (gated entries can live in `models_gated.py` later if needed).
+2. **Public repos are the default; gated repos must be opt-in.** A gated family (e.g. Gemma 4, which Hugging Face gates behind licence acceptance) must never be reachable from `pick(..., family="auto")` — only from an explicit `family=` request. The `HF_GATED` error path tells the user to set `HUGGING_FACE_HUB_TOKEN`.
 3. **Weights must be quantized to 4-bit.** Q5/Q6/Q8 are user upgrades, not defaults.
 4. **For each model, ship both an MLX entry and a GGUF entry** so the picker has a viable choice on every platform.
 5. **`bytes_on_disk` is a precheck only.** Don't tune it tight — `ensure_weights()` pads by 10% + 1 GB workspace.
 6. **`min_usable_gb` is the gate.** Set it to "comfortably fits Q4 plus 32K KV cache plus OS overhead." A 4 GB model with 32K context wants `min_usable_gb >= 7`.
 7. **Add the same key to `bart/telemetry.py` PRICING with all-zero entries.** Otherwise `record()` returns 0.0 anyway, but consistency matters.
-8. **Add a row to the `_TIER_ORDER` table.** The picker is dumb on purpose — the table is the truth.
+8. **Add a row to the family's tier table** (`_QWEN3_TIER_ORDER` / `_GEMMA4_TIER_ORDER`, registered in `_FAMILY_TIER_ORDER`). The picker is dumb on purpose — the table is the truth.
 
 ## 7. Engine selection
 

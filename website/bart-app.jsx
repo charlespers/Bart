@@ -1371,6 +1371,7 @@ function App() {
   const [subject, setSubject] = useState("");
   const [days,    setDays]    = useState(7);
   const [preset,  setPreset]  = useState("default");   // default | fast | turbo
+  const [model,   setModel]   = useState("claude");    // claude | gemma
   const [focus,   setFocus]   = useState("general — everything attached");
 
   // files — upload immediately on drop so the run can start without a preamble.
@@ -1566,6 +1567,11 @@ function App() {
     { value: "turbo",   label: "turbo",             desc: "haiku · parallel ×8" },
   ];
 
+  const modelOpts = [
+    { value: "claude", label: "claude",  desc: "your claude.ai subscription" },
+    { value: "gemma",  label: "gemma 4", desc: "local open weights · free, offline" },
+  ];
+
   function appendMsg(text, { system = true } = {}) {
     setMsgs(prev => [...prev, { id: prev.length, system, node: <>{text}</> }]);
   }
@@ -1603,7 +1609,7 @@ function App() {
       const rr = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject, days: safeDays, focus, preset }),
+        body: JSON.stringify({ subject, days: safeDays, focus, preset, model }),
       });
       if (rr.status === 402) {
         // Paywall — send them straight to /pricing. Tiny delay so the message
@@ -1733,10 +1739,12 @@ function App() {
   }
 
   const totalCost = useMemo(() => {
+    // Gemma 4 runs on local open weights — no per-token cost at all.
+    if (model === "gemma")    return "$0";
     if (preset === "default") return "$4.80";
     if (preset === "fast")    return "$1.10";
     return "$0";
-  }, [preset]);
+  }, [preset, model]);
 
   return (
     <>
@@ -1851,6 +1859,12 @@ function App() {
             value={preset}
             onChange={setPreset}
             options={presetOpts}
+          />
+          {" "}on{" "}
+          <WordSelect
+            value={model}
+            onChange={setModel}
+            options={modelOpts}
           />
           .<br/>
           focus on{" "}

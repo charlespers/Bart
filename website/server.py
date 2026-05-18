@@ -675,6 +675,12 @@ class RunRequest(BaseModel):
     days: int = 7
     focus: str = ""
     preset: str = "default"   # default | fast | turbo
+    # Which engine bart should run on:
+    #   "claude" — Claude via the user's claude.ai subscription (default)
+    #   "gemma"  — local Gemma 4 open weights (free, no API key; bart
+    #              detects the host's hardware and auto-picks + downloads
+    #              the best-fitting Gemma 4 variant on first run)
+    model: str = "claude"
 
 
 @app.post("/api/run")
@@ -701,25 +707,33 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
             400, "drop some files first, then click let bart cook."
         )
 
-    if shutil.which("claude") is None:
-        raise HTTPException(
-            503,
-            "the `claude` CLI isn't on PATH. install Claude Code from "
-            "https://claude.ai/code, run `claude /login`, then try again.",
-        )
+    # Gemma 4 runs entirely on local open weights — no `claude` CLI and no
+    # connected claude.ai account required. The Claude path keeps both
+    # preconditions.
+    use_gemma = (req.model or "claude").strip().lower() in (
+        "gemma", "gemma4", "gemma-4", "local",
+    )
 
-    if not _claude_connected(user["id"]):
-        raise HTTPException(
-            401,
-            "your claude account isn't connected — go to settings → connect.",
-        )
+    if not use_gemma:
+        if shutil.which("claude") is None:
+            raise HTTPException(
+                503,
+                "the `claude` CLI isn't on PATH. install Claude Code from "
+                "https://claude.ai/code, run `claude /login`, then try again.",
+            )
+
+        if not _claude_connected(user["id"]):
+            raise HTTPException(
+                401,
+                "your claude account isn't connected — go to settings → connect.",
+            )
 
     days = max(1, min(60, req.days))
     from datetime import date, timedelta
     exam = (date.today() + timedelta(days=days)).isoformat()
 
     config = {
-        "auth_mode": "claude-code",
+        "auth_mode": "local" if use_gemma else "claude-code",
         "api_key": "",
         "exam_date": exam,
         "subject": (req.subject or "your course").strip()[:200],
@@ -731,19 +745,25 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
         "daily_model": "claude-sonnet-4-6",
         "fast_model": "claude-haiku-4-5-20251001",
         "deep_research": False,
+        # auth_mode=="local": empty model_key → bart detects the host's
+        # hardware and auto-picks the best-fitting Gemma 4 variant.
         "local_model_key": "",
+        "local_model_family": "gemma4" if use_gemma else "auto",
     }
     config_path = _user_config_path(user["id"])
     config_path.write_text(json.dumps(config, indent=2))
 
     output_dir = _user_output(user["id"])
 
+    # The local Gemma 4 inference server is single-slot — fan-out would just
+    # queue behind one slot, so request 1. Claude keeps the ×4 fan-out.
+    max_parallel = "1" if use_gemma else "4"
     if VENV_PY.exists():
         cmd = [str(VENV_PY), "-m", "bart", "run",
-               "--max-parallel", "4", "--days", str(days)]
+               "--max-parallel", max_parallel, "--days", str(days)]
     else:
         cmd = [str(RUN_SCRIPT), "run",
-               "--max-parallel", "4", "--days", str(days)]
+               "--max-parallel", max_parallel, "--days", str(days)]
     if req.preset == "fast":
         cmd.append("--fast")
     elif req.preset == "turbo":
@@ -757,6 +777,7 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
         "subject": config["subject"],
         "focus": config["guidance"],
         "preset": req.preset,
+        "model": "gemma" if use_gemma else "claude",
         "days": days,
         "source_count": len(sources),
         "materials_dir": str(materials_dir),
@@ -773,6 +794,14 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
     # Per-user bart config — bart/config.py reads this instead of the legacy
     # shared ROOT/.bart_config.json. This is what removes the global lock.
     env["BART_CONFIG"] = str(config_path)
+    if use_gemma:
+        # Gemma 4 weights are large (up to ~16 GB). The HOME override below
+        # would otherwise sandbox the model cache per-user and force every
+        # user to re-download. Point all local runs at one shared cache so
+        # the weights are fetched exactly once for the whole deployment.
+        shared_cache = ROOT / ".model-cache"
+        shared_cache.mkdir(parents=True, exist_ok=True)
+        env["BART_CACHE_DIR"] = str(shared_cache)
     # Per-user claude credentials. HOME override means the spawned `claude`
     # CLI reads <workspace>/.claude/, not the host's ~/.claude/, so each user
     # runs against their own claude.ai session.

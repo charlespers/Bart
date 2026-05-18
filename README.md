@@ -401,23 +401,30 @@ The disk cache means re-runs over the same materials are basically free. bart pr
 
 ---
 
-## Auth: API key *or* Claude subscription
+## Auth: API key, Claude subscription, *or* local open weights
 
-bart supports two ways to talk to Claude:
+bart supports three ways to generate a packet:
 
 **1. Claude Code subscription** *(recommended if you have Pro/Max/Team)*. If the `claude` CLI from [claude.ai/code](https://claude.ai/code) is on your PATH and you've logged in once, bart can route every call through it. No API key needed; usage is covered by your existing subscription. The setup wizard auto-detects this and offers it as the first option.
 
 **2. Anthropic API key**. Get one at [console.anthropic.com](https://console.anthropic.com) (free credits on signup). Pay-per-token, but enables prompt caching and exact cost tracking. The wizard saves the key to `.bart_config.json` (mode `0600`, stays on your machine).
 
-| | subscription mode | API mode |
-|---|---|---|
-| Per-run cost | $0 (covered by subscription) | $5–$15 typical |
-| Setup | already done if `claude` is logged in | paste an API key once |
-| Prompt caching | no (subscription tier handles speed) | yes |
-| Cost telemetry | not tracked | exact USD per call |
-| Rate limits | subscription tier | API tier |
+**3. Local open-weight model** *(free, offline, no account)*. bart runs an open-weight LLM on your own hardware — it detects your CPU/GPU/RAM, picks the best-fitting model variant, installs the inference engine (mlx-lm on Apple Silicon, llama-cpp-python elsewhere), and downloads the weights automatically on first run. Two families are available:
 
-You can switch between modes anytime with `./run setup`.
+- **Qwen3** — the default. Native tool calling + JSON mode, so structured artifacts are highly reliable.
+- **Gemma 4** — Google's open-weight family, in four sizes (1B / 4B / 12B / 27B). bart auto-selects the largest variant that fits your device. Gemma repos are gated on Hugging Face — if a download is refused, set `HUGGING_FACE_HUB_TOKEN` (free token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)).
+
+Pick the family in `./run setup`, or set `local_model_family` (`"qwen3"` / `"gemma4"`) in `.bart_config.json`.
+
+| | subscription mode | API mode | local mode |
+|---|---|---|---|
+| Per-run cost | $0 (covered by subscription) | $5–$15 typical | $0 (your hardware) |
+| Setup | already done if `claude` is logged in | paste an API key once | bart auto-installs everything |
+| Prompt caching | no (subscription tier handles speed) | yes | disk cache |
+| Cost telemetry | not tracked | exact USD per call | $0 |
+| Rate limits | subscription tier | API tier | none (single local server) |
+
+You can switch between modes anytime with `./run setup`. The web app also exposes a **claude / gemma 4** toggle on the run row — pick "gemma 4" to run entirely on free local weights.
 
 ---
 

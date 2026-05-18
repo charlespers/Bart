@@ -190,6 +190,16 @@ MODEL_CTX_WINDOW: dict[str, int] = {
     "qwen3-30b-a3b-gguf-q4km": 262_144,
     "qwen3-32b-mlx-4bit":     131_072,
     "qwen3-32b-gguf-q4km":    131_072,
+    # Local Gemma 4 family — 128K context (32K on the 1B variant). Mirrors
+    # bart/local_runtime/models.py's per-model `context_window`.
+    "gemma4-1b-mlx-4bit":     32_768,
+    "gemma4-1b-gguf-q4km":    32_768,
+    "gemma4-4b-mlx-4bit":     131_072,
+    "gemma4-4b-gguf-q4km":    131_072,
+    "gemma4-12b-mlx-4bit":    131_072,
+    "gemma4-12b-gguf-q4km":   131_072,
+    "gemma4-27b-mlx-4bit":    131_072,
+    "gemma4-27b-gguf-q4km":   131_072,
 }
 
 
