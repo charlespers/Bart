@@ -96,3 +96,74 @@ def test_creator_earnings_breakdown(tmp_path):
     assert e["monthly_run_rate_cents"] == 200    # 1 active sub * $2
     assert e["conversion_pct"] == 50.0
     assert e["this_month_cents"] == 600   # all three commissions are this month
+
+
+def _seed_creator_with_balance(auth, cents, email="c@example.com"):
+    creator = auth.approve_creator_application(
+        auth.create_creator_application(
+            name="C", email=email, audience="x", links="x", pitch="x"))
+    uid = auth.create_user(f"sub-{email}", "pw123456",
+                           referred_by=creator["referral_code"])
+    n, rem = divmod(cents, 200)
+    for i in range(n):
+        auth.record_commission(creator["id"], uid, 200, "usd", f"cs-{email}-{i}")
+    if rem:
+        auth.record_commission(creator["id"], uid, rem, "usd", f"cs-{email}-r")
+    return auth.get_creator_by_code(creator["referral_code"])
+
+
+def test_run_payouts_skips_creators_below_minimum(tmp_path):
+    auth = _load_auth(tmp_path)
+    _seed_creator_with_balance(auth, 2000, "low@example.com")  # $20 < $25
+    results = auth.run_payouts(minimum_cents=2500, period="2026-05")
+    assert results == []
+
+
+def test_run_payouts_manual_creates_pending_and_claims_commissions(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = _seed_creator_with_balance(auth, 3000, "ok@example.com")  # $30
+    results = auth.run_payouts(minimum_cents=2500, period="2026-05")
+    assert len(results) == 1
+    assert results[0]["amount_cents"] == 3000
+    assert results[0]["status"] == "pending"   # no transfer_fn -> manual
+    assert auth.creator_earnings(creator)["pending_balance_cents"] == 0
+    assert auth.run_payouts(minimum_cents=2500, period="2026-05") == []
+
+
+def test_run_payouts_stripe_success_marks_paid(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = _seed_creator_with_balance(auth, 4000, "s@example.com")
+    auth.set_creator_stripe_account(creator["id"], "acct_123")
+    auth.set_creator_payouts_enabled(creator["id"], True)
+    calls = []
+    def transfer(creator_row, amount_cents):
+        calls.append((creator_row["id"], amount_cents))
+        return "tr_abc"
+    results = auth.run_payouts(2500, "2026-05", transfer_fn=transfer)
+    assert calls == [(creator["id"], 4000)]
+    assert results[0]["status"] == "paid"
+    assert results[0]["stripe_transfer_id"] == "tr_abc"
+
+
+def test_run_payouts_stripe_failure_rolls_back(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = _seed_creator_with_balance(auth, 4000, "f@example.com")
+    auth.set_creator_stripe_account(creator["id"], "acct_x")
+    auth.set_creator_payouts_enabled(creator["id"], True)
+    def transfer(creator_row, amount_cents):
+        raise RuntimeError("stripe down")
+    results = auth.run_payouts(2500, "2026-05", transfer_fn=transfer)
+    assert results[0]["status"] == "failed"
+    assert auth.creator_earnings(creator)["pending_balance_cents"] == 4000
+
+
+def test_mark_payout_paid(tmp_path):
+    auth = _load_auth(tmp_path)
+    _seed_creator_with_balance(auth, 3000, "m@example.com")
+    payout = auth.run_payouts(2500, "2026-05")[0]
+    assert auth.mark_payout_paid(payout["id"], note="venmo sent") is True
+    rows = auth.list_payouts()
+    assert rows[0]["status"] == "paid" and rows[0]["paid_at"] is not None
+    assert rows[0]["note"] == "venmo sent"
+    assert auth.mark_payout_paid(payout["id"]) is False
+    assert auth.mark_payout_paid(999999) is False

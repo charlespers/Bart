@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -1237,6 +1238,140 @@ def creator_earnings(creator) -> dict:
         "conversion_pct": round(100.0 * active / total_referred, 1)
                           if total_referred else 0.0,
     }
+
+
+# ─── creator payout-setting helpers ──────────────────────────────────────────
+
+def set_creator_stripe_account(creator_id: int, account_id: str) -> None:
+    """Store the creator's Stripe Connect account id."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE creators SET stripe_account_id = ?, payout_method = 'stripe' "
+            "WHERE id = ?", (account_id, creator_id),
+        )
+
+
+def set_creator_payouts_enabled(creator_id: int, enabled: bool) -> None:
+    """Flag whether the creator's Connect account can receive transfers."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE creators SET payouts_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, creator_id),
+        )
+
+
+def set_creator_payout_method(creator_id: int, details: str) -> None:
+    """Save a manual payout handle (e.g. a PayPal/Venmo email)."""
+    with _connect() as db:
+        db.execute(
+            "UPDATE creators SET payout_method = 'manual', payout_details = ? "
+            "WHERE id = ?", ((details or "").strip() or None, creator_id),
+        )
+
+
+# ─── payout pipeline ──────────────────────────────────────────────────────────
+
+def _unpaid_commission_ids(db, creator_id: int) -> tuple[list[int], int]:
+    """Return (ids, total_cents) of a creator's not-yet-paid-out commissions."""
+    rows = db.execute(
+        "SELECT id, amount_cents FROM commissions "
+        "WHERE creator_id = ? AND payout_id IS NULL", (creator_id,)
+    ).fetchall()
+    return [r["id"] for r in rows], sum(r["amount_cents"] for r in rows)
+
+
+def run_payouts(minimum_cents: int, period: str,
+                transfer_fn=None) -> list[dict]:
+    """Pay out every creator whose unpaid-commission balance >= minimum_cents.
+
+    For each eligible creator: create a `payouts` row, atomically claim that
+    creator's unpaid commission rows (stamping `commissions.payout_id`), then —
+    if the creator has Connect enabled and `transfer_fn` is given — attempt the
+    transfer. `transfer_fn(creator_row, amount_cents)` returns a transfer id or
+    raises; on a raise the payout is marked 'failed' and its commissions are
+    un-claimed so the balance is restored for the next run. Creators without
+    Connect (or when `transfer_fn` is None) get a 'pending' manual payout.
+
+    Returns one result dict per payout created."""
+    results: list[dict] = []
+    with _connect() as db:
+        creators = db.execute(
+            "SELECT * FROM creators WHERE status = 'active'").fetchall()
+        for creator in creators:
+            ids, total = _unpaid_commission_ids(db, creator["id"])
+            if total < minimum_cents or not ids:
+                continue
+            use_stripe = bool(
+                transfer_fn is not None
+                and creator["stripe_account_id"]
+                and creator["payouts_enabled"])
+            method = "stripe" if use_stripe else "manual"
+            cur = db.execute(
+                "INSERT INTO payouts "
+                "(creator_id, amount_cents, currency, method, status, period) "
+                "VALUES (?, ?, 'usd', ?, 'pending', ?)",
+                (creator["id"], total, method, period),
+            )
+            payout_id = cur.lastrowid
+            db.execute(
+                f"UPDATE commissions SET payout_id = ? WHERE id IN "
+                f"({','.join('?' * len(ids))})",
+                (payout_id, *ids),
+            )
+            status, transfer_id = "pending", None
+            if use_stripe:
+                try:
+                    transfer_id = transfer_fn(creator, total)
+                    status = "paid"
+                except Exception as e:  # noqa: BLE001 — roll the claim back
+                    status = "failed"
+                    db.execute(
+                        f"UPDATE commissions SET payout_id = NULL WHERE id IN "
+                        f"({','.join('?' * len(ids))})", tuple(ids),
+                    )
+                    print(f"[payout] transfer failed for creator "
+                          f"{creator['id']}: {e}", file=sys.stderr, flush=True)
+            db.execute(
+                "UPDATE payouts SET status = ?, stripe_transfer_id = ?, "
+                "paid_at = CASE WHEN ? = 'paid' THEN CURRENT_TIMESTAMP END "
+                "WHERE id = ?",
+                (status, transfer_id, status, payout_id),
+            )
+            results.append({
+                "id": payout_id, "creator_id": creator["id"],
+                "amount_cents": total, "method": method, "status": status,
+                "stripe_transfer_id": transfer_id,
+            })
+    return results
+
+
+def mark_payout_paid(payout_id: int, note: str = "") -> bool:
+    """Settle a still-pending payout (manual path). Returns True iff a pending
+    payout was actually updated — already-paid/failed/unknown ids return False."""
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE payouts SET status = 'paid', paid_at = CURRENT_TIMESTAMP, "
+            "note = COALESCE(NULLIF(?, ''), note) "
+            "WHERE id = ? AND status = 'pending'",
+            ((note or "").strip(), payout_id),
+        )
+        return cur.rowcount > 0
+
+
+def list_payouts(creator_id: Optional[int] = None,
+                 status: Optional[str] = None) -> list[dict]:
+    """Payouts newest-first, optionally filtered by creator and/or status."""
+    clauses, args = [], []
+    if creator_id is not None:
+        clauses.append("creator_id = ?"); args.append(creator_id)
+    if status:
+        clauses.append("status = ?"); args.append(status)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with _connect() as db:
+        return [dict(r) for r in db.execute(
+            f"SELECT * FROM payouts{where} ORDER BY created_at DESC, id DESC",
+            tuple(args),
+        ).fetchall()]
 
 
 # ─── trial codes ───────────────────────────────────────────────────────────────
