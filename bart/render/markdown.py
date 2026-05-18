@@ -95,6 +95,14 @@ def render(md_text: str) -> tuple[str, list[RenderWarning], dict]:
     try:
         html = md.convert(md_text)
     except Exception as e:  # noqa: BLE001
+        import sys, traceback
+        # Surface the full traceback to stderr so we can diagnose render
+        # failures from flyctl logs without needing to repro locally.
+        print(
+            f"[md-render] PRIMARY FAILED: {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}",
+            file=sys.stderr, flush=True,
+        )
         warnings.append(RenderWarning("markdown_exception", f"{type(e).__name__}: {e}"))
         # Three escalating recovery passes. Each strips more extensions until
         # one converts. The arithmatex tokenizer (math spans), smarty
@@ -137,6 +145,12 @@ def render(md_text: str) -> tuple[str, list[RenderWarning], dict]:
                             for t in toc_flat]
                 return html, warnings, {"toc": toc_flat, "headings": headings}
             except Exception as e2:  # noqa: BLE001
+                import sys, traceback
+                print(
+                    f"[md-render] RECOVERY '{label}' FAILED: "
+                    f"{type(e2).__name__}: {e2}\n{traceback.format_exc()}",
+                    file=sys.stderr, flush=True,
+                )
                 warnings.append(RenderWarning(
                     "markdown_recovery_attempt_failed",
                     f"{label}: {type(e2).__name__}: {e2}",
