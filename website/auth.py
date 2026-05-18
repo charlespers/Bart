@@ -183,8 +183,12 @@ def find_or_create_google_user(google_id: str, email: str, name: str = "") -> sq
         if row:
             db.execute("UPDATE users SET google_id = ? WHERE id = ?", (google_id, row["id"]))
             return db.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+        # Empty string (not NULL) — the existing DB was created when password_hash
+        # was NOT NULL, and SQLite won't drop that constraint without a full table
+        # migration. verify_password() rejects empty/falsy hashes so this is
+        # equivalent to "no password" from a login perspective.
         cur = db.execute(
-            "INSERT INTO users (email, name, password_hash, google_id) VALUES (?, ?, NULL, ?)",
+            "INSERT INTO users (email, name, password_hash, google_id) VALUES (?, ?, '', ?)",
             (email, name.strip() or None, google_id),
         )
         return db.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
