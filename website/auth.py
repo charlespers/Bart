@@ -921,10 +921,12 @@ def leaderboard_for(user_id: int) -> list[dict]:
 
 # ─── creator program ───────────────────────────────────────────────────────────
 
-# Share of each verified subscription payment paid to the referring creator.
-# Tunable per-deployment; 0.30 = 30%.
-CREATOR_COMMISSION_RATE = max(0.0, min(1.0, float(
-    os.environ.get("BART_CREATOR_COMMISSION_RATE", "0.30"))))
+# Flat commission paid to the referring creator for each verified subscription
+# payment — $2.00 by default. Paid every billing cycle the referred user keeps
+# paying, so a creator earns $2/mo per active subscriber for as long as they
+# stay subscribed. Tunable per-deployment.
+CREATOR_COMMISSION_CENTS = max(0, int(
+    os.environ.get("BART_CREATOR_COMMISSION_CENTS", "200")))
 
 # Referral codes: unambiguous uppercase alphabet (no 0/O, 1/I) — easy to read,
 # type, and say aloud.
@@ -1151,7 +1153,7 @@ def creator_summary(creator) -> dict:
         "payments": comm["n"],
         "earnings_cents": comm["cents"],
         "earnings_usd": round(comm["cents"] / 100.0, 2),
-        "commission_rate": CREATOR_COMMISSION_RATE,
+        "commission_cents": CREATOR_COMMISSION_CENTS,
     }
 
 

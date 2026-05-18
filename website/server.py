@@ -573,7 +573,9 @@ def _credit_referral_commission(user_id: int, session_data: dict) -> None:
         if amount_cents <= 0:
             return
         currency = session_data.get("currency") or "usd"
-        commission = round(amount_cents * auth.CREATOR_COMMISSION_RATE)
+        # Flat $2 per verified payment, capped at the amount actually
+        # collected so a discounted/zero payment never overpays.
+        commission = min(auth.CREATOR_COMMISSION_CENTS, amount_cents)
         ref = str(session_data.get("id") or f"session-user-{user_id}")
         if auth.record_commission(
             creator_id=creator["id"], referred_user_id=user_id,
@@ -771,8 +773,8 @@ async def admin_approve_creator(app_id: int, user=Depends(auth.current_user)):
             "Your application to the bart creator program was approved.\n\n"
             f"Your referral link:\n  {referral_url}\n\n"
             "Share it anywhere. When someone subscribes through it, you earn "
-            f"{int(auth.CREATOR_COMMISSION_RATE * 100)}% of their payment — "
-            "credited automatically once the payment clears.\n\n"
+            f"${auth.CREATOR_COMMISSION_CENTS / 100:.0f} every month they stay "
+            "subscribed — credited automatically once each payment clears.\n\n"
             "Sign in and open the creator page to see your referrals and "
             "earnings any time.\n\n— the bart team\n"
         ),

@@ -133,18 +133,24 @@ def test_commission_credits_creator(tmp_path):
     auth = _load_auth(tmp_path)
     creator = auth.approve_creator_application(_apply(auth))
     uid = auth.create_user("s@example.com", "pw123456", "S")
-    # $10.00 payment → 30% → $3.00.
-    rate = auth.CREATOR_COMMISSION_RATE
-    commission = round(1000 * rate)
+    # Flat $2.00 commission per verified payment.
+    assert auth.CREATOR_COMMISSION_CENTS == 200
     inserted = auth.record_commission(
         creator_id=creator["id"], referred_user_id=uid,
-        amount_cents=commission, currency="usd", stripe_ref="cs_test_1",
+        amount_cents=auth.CREATOR_COMMISSION_CENTS, currency="usd",
+        stripe_ref="cs_test_1",
     )
     assert inserted is True
     summary = auth.creator_summary(auth.get_creator_by_code(creator["referral_code"]))
-    assert summary["earnings_cents"] == commission
+    assert summary["earnings_cents"] == 200
     assert summary["payments"] == 1
     assert summary["subscribed"] == 1
+
+
+def test_commission_cents_is_env_overridable_and_positive(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert isinstance(auth.CREATOR_COMMISSION_CENTS, int)
+    assert auth.CREATOR_COMMISSION_CENTS >= 0
 
 
 def test_commission_is_idempotent_on_stripe_ref(tmp_path):
@@ -175,7 +181,7 @@ def test_creator_summary_counts_signups(tmp_path):
     auth.create_user("s3@example.com", "pw123456")  # not referred
     summary = auth.creator_summary(auth.get_creator_by_code(code))
     assert summary["signups"] == 2
-    assert 0.0 < summary["commission_rate"] <= 1.0
+    assert summary["commission_cents"] == 200
 
 
 # ── Emailer (graceful when SMTP not configured) ────────────────────────
