@@ -664,7 +664,11 @@ async def stripe_webhook(request: Request):
 
 @app.get("/api/auth/me")
 async def me(user=Depends(auth.current_user)):
-    return {"user": _user_payload(user), "usage": auth.claude_run_usage(user)}
+    return {
+        "user": _user_payload(user),
+        "usage": auth.claude_run_usage(user),
+        "trial_credits": auth.trial_credits(user),
+    }
 
 
 @app.get("/api/usage")
@@ -784,6 +788,49 @@ async def admin_reject_creator(app_id: int, user=Depends(auth.current_user)):
     return {"ok": True}
 
 
+# ─── trial codes (single-use free-packet coupons) ────────────────────────────
+
+class RedeemCodeRequest(BaseModel):
+    code: str = ""
+
+
+@app.post("/api/codes/redeem")
+@_limiter.limit("10/minute")
+async def redeem_code(req: RedeemCodeRequest, request: Request,
+                      user=Depends(auth.current_user)):
+    """Redeem a single-use trial code. Grants the signed-in account one free
+    premium (Claude) packet generation. A code works exactly once, ever —
+    no matter which account redeems it."""
+    try:
+        result = auth.redeem_trial_code(req.code, user["id"])
+    except auth.TrialCodeError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "trial_credits": result["trial_credits"]}
+
+
+class MintCodesRequest(BaseModel):
+    note: str = ""
+    count: int = 1
+
+
+@app.post("/api/admin/trial-codes")
+async def admin_mint_trial_codes(req: MintCodesRequest,
+                                 user=Depends(auth.current_user)):
+    """Mint one or more single-use trial codes — admin only. Minting here is
+    the ONLY way a trial code ever comes into existence."""
+    _require_admin(user)
+    n = max(1, min(50, int(req.count or 1)))
+    codes = [auth.create_trial_code(req.note) for _ in range(n)]
+    return {"ok": True, "codes": codes}
+
+
+@app.get("/api/admin/trial-codes")
+async def admin_list_trial_codes(user=Depends(auth.current_user)):
+    """Every minted trial code and its redemption state — admin only."""
+    _require_admin(user)
+    return {"codes": auth.list_trial_codes()}
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
@@ -899,13 +946,27 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
             409, "you already have a run in progress — wait for it to finish."
         )
 
+    # Gemma 4 runs entirely on local open weights — no `claude` CLI and no
+    # connected claude.ai account required. The Claude path keeps both
+    # preconditions.
+    use_gemma = (req.model or "claude").strip().lower() in (
+        "gemma", "gemma4", "gemma-4", "local",
+    )
+
     # Paywall — bypass if grandfathered, else require an active subscription.
+    # A single-use trial code grants one free premium (Claude) packet, so an
+    # unsubscribed account holding a trial credit may run once on Claude. The
+    # credit is spent only after the run actually launches (see below).
     # 402 Payment Required is the canonical status; the UI listens for it and
     # routes to the subscribe modal / pricing page.
+    use_trial = False
     if not auth.has_run_access(user):
-        raise HTTPException(
-            402, "subscribe to run bart — $10/month, cancel anytime."
-        )
+        if not use_gemma and auth.trial_credits(user) > 0:
+            use_trial = True
+        else:
+            raise HTTPException(
+                402, "subscribe to run bart — $10/month, cancel anytime."
+            )
 
     materials_dir = _user_materials(user["id"])
     sources = [p for p in materials_dir.iterdir() if p.is_file()]
@@ -914,26 +975,21 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
             400, "drop some files first, then click let bart cook."
         )
 
-    # Gemma 4 runs entirely on local open weights — no `claude` CLI and no
-    # connected claude.ai account required. The Claude path keeps both
-    # preconditions.
-    use_gemma = (req.model or "claude").strip().lower() in (
-        "gemma", "gemma4", "gemma-4", "local",
-    )
-
     if not use_gemma:
         # Monthly Claude-run allowance. Local Gemma runs are unlimited, so a
         # subscriber who's used their premium runs can always switch the
         # model toggle to "gemma 4" and keep generating full packets — the
-        # quality of any single packet is never reduced.
-        usage = auth.claude_run_usage(user)
-        if not usage["unlimited"] and usage["remaining"] <= 0:
-            raise HTTPException(
-                429,
-                f"you've used all {usage['limit']} premium (claude) runs this "
-                f"month. switch the model to gemma 4 for unlimited free runs, "
-                f"or your allowance resets on the 1st.",
-            )
+        # quality of any single packet is never reduced. A trial-credit run
+        # has its own one-shot allowance, so the monthly meter doesn't apply.
+        if not use_trial:
+            usage = auth.claude_run_usage(user)
+            if not usage["unlimited"] and usage["remaining"] <= 0:
+                raise HTTPException(
+                    429,
+                    f"you've used all {usage['limit']} premium (claude) runs this "
+                    f"month. switch the model to gemma 4 for unlimited free runs, "
+                    f"or your allowance resets on the 1st.",
+                )
 
         if shutil.which("claude") is None:
             raise HTTPException(
@@ -1062,11 +1118,17 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
     _procs[token] = proc
     _run_meta[token]["user_lock"] = user_lock
 
-    # The run launched successfully — count it against the monthly premium
-    # allowance. Gemma runs are free and unlimited, so they're never counted.
-    # Grandfathered accounts skip the counter (consume_claude_run still runs
-    # but their quota is never checked, so it's harmless bookkeeping).
-    if not use_gemma and not auth._row_get(user, "is_grandfathered", 0):
+    # The run launched successfully — charge it. A trial-credit run spends the
+    # free credit instead of the monthly meter. Otherwise count it against the
+    # monthly premium allowance: Gemma runs are free and unlimited so they're
+    # never counted, and grandfathered accounts skip the counter (the call is
+    # harmless bookkeeping since their quota is never checked).
+    if use_trial:
+        try:
+            auth.consume_trial_credit(user["id"])
+        except Exception:  # noqa: BLE001 — never fail a launched run on bookkeeping
+            pass
+    elif not use_gemma and not auth._row_get(user, "is_grandfathered", 0):
         try:
             auth.consume_claude_run(user["id"])
         except Exception:  # noqa: BLE001 — never fail a launched run on bookkeeping

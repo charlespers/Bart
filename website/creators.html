@@ -178,6 +178,23 @@
     </div>
   </div>
 
+  <!-- redeem a trial code -->
+  <section class="panel" id="redeem-panel">
+    <h2>Have a trial code?</h2>
+    <p class="sub">
+      Got a trial code from the bart team? Redeem it for <b>one free premium
+      packet</b> — a full Claude-powered study packet, on us, no subscription
+      needed. Each code works exactly once.
+    </p>
+    <div class="ref-link">
+      <input id="redeem-code" type="text" placeholder="enter your code"
+             maxlength="32" autocomplete="off" autocapitalize="characters"
+             spellcheck="false" />
+      <button type="button" class="cta" id="redeem-btn">redeem</button>
+    </div>
+    <div class="form-msg" id="redeem-msg"></div>
+  </section>
+
   <!-- in-review banner -->
   <div class="banner hide" id="pending-banner">
     Your creator application is <b>in review</b>. We'll email you as soon as
@@ -287,6 +304,51 @@
       copyBtn.textContent = 'copied';
       setTimeout(function () { copyBtn.textContent = 'copy'; }, 1600);
     }).catch(function () {});
+  });
+
+  // Redeem a trial code.
+  var redeemBtn   = document.getElementById('redeem-btn');
+  var redeemMsg   = document.getElementById('redeem-msg');
+  var redeemInput = document.getElementById('redeem-code');
+  if (redeemBtn) redeemBtn.addEventListener('click', function () {
+    var code = (redeemInput.value || '').trim();
+    redeemMsg.className = 'form-msg';
+    redeemMsg.textContent = '';
+    if (!code) {
+      redeemMsg.className = 'form-msg err';
+      redeemMsg.textContent = 'Enter a code first.';
+      return;
+    }
+    redeemBtn.disabled = true;
+    fetch('/api/codes/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ code: code })
+    }).then(function (r) {
+      if (r.status === 401) {           // not signed in → send to login, come back here
+        window.location.href = '/login?next=/creators';
+        return null;
+      }
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      redeemBtn.disabled = false;
+      if (!res) return;
+      if (res.ok) {
+        var n = res.j.trial_credits || 1;
+        redeemMsg.className = 'form-msg ok';
+        redeemMsg.textContent = 'Redeemed — you have ' + n + ' free packet' +
+          (n === 1 ? '' : 's') + ' waiting. Open the app and let bart cook.';
+        redeemInput.value = '';
+      } else {
+        redeemMsg.className = 'form-msg err';
+        redeemMsg.textContent = (res.j && res.j.detail) || 'Could not redeem that code.';
+      }
+    }).catch(function () {
+      redeemBtn.disabled = false;
+      redeemMsg.className = 'form-msg err';
+      redeemMsg.textContent = 'Could not reach the server — try again.';
+    });
   });
 
   // Submit application.

@@ -90,6 +90,8 @@ Set these with `flyctl secrets set KEY=value` (the app restarts on change).
 
 Approve or reject applications at `/admin-creators` (admin account only).
 
+**Trial codes.** Mint single-use codes at `/admin-codes` (admin account only). Each code grants one free premium (Claude) packet generation and can be redeemed exactly once, ever, on any account — hand them to creators so they can try bart before subscribing. Recipients redeem at `/creators` ("have a trial code?"); the credit then lets them run one Claude packet without a subscription. No env vars needed — minting is gated to admin accounts.
+
 **Other.**
 - `GOOGLE_CLIENT_ID` — enables Google sign-in (optional).
 - `BART_CLAUDE_RUNS_PER_MONTH` — premium-run allowance per subscriber (default `12`).

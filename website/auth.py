@@ -140,6 +140,21 @@ CREATE TABLE IF NOT EXISTS commissions (
 );
 CREATE INDEX IF NOT EXISTS idx_commissions_creator
   ON commissions(creator_id, created_at DESC);
+
+-- trial codes: single-use coupons that grant one free premium (Claude)
+-- packet generation. Codes are minted only by an admin. A code is consumed
+-- globally on first redemption — `redeemed_by` stamps which account spent
+-- it, so it can never be redeemed again by anyone, on any account.
+CREATE TABLE IF NOT EXISTS trial_codes (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  code         TEXT NOT NULL UNIQUE,
+  note         TEXT,                       -- who it was minted for / why
+  created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  redeemed_by  INTEGER,                    -- user.id that spent the code
+  redeemed_at  TEXT,
+  FOREIGN KEY (redeemed_by) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trial_codes_code ON trial_codes(code);
 """
 
 
@@ -221,6 +236,10 @@ def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_users_signup_source "
                 "ON users(signup_source) WHERE signup_source IS NOT NULL"
             )
+        # Trial credits — free premium-packet generations this account holds,
+        # granted by redeeming a single-use trial code. Spent one-per-run.
+        if "trial_credits" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN trial_credits INTEGER DEFAULT 0")
         if billing_added:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_subscription_id "
@@ -1134,3 +1153,124 @@ def creator_summary(creator) -> dict:
         "earnings_usd": round(comm["cents"] / 100.0, 2),
         "commission_rate": CREATOR_COMMISSION_RATE,
     }
+
+
+# ─── trial codes ───────────────────────────────────────────────────────────────
+
+# Trial codes are deliberately longer than referral codes (10 vs 8 chars) so
+# they read as a distinct kind of token and never collide visually.
+_TRIAL_CODE_LEN = 10
+
+
+class TrialCodeError(Exception):
+    """Raised when a trial code can't be redeemed — unknown, or already used."""
+
+
+def _gen_trial_code() -> str:
+    """A trial code unique across the trial_codes table."""
+    with _connect() as db:
+        for _ in range(40):
+            code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_TRIAL_CODE_LEN))
+            hit = db.execute(
+                "SELECT 1 FROM trial_codes WHERE code = ?", (code,)
+            ).fetchone()
+            if hit is None:
+                return code
+    # Astronomically unlikely — fall back to a longer code.
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_TRIAL_CODE_LEN + 6))
+
+
+def create_trial_code(note: str = "") -> str:
+    """Mint a single-use trial code that grants one free premium packet.
+    Callers MUST gate this to admins — minting is the only way a code comes
+    into existence. Returns the new code."""
+    code = _gen_trial_code()
+    with _connect() as db:
+        db.execute(
+            "INSERT INTO trial_codes (code, note) VALUES (?, ?)",
+            (code, (note or "").strip() or None),
+        )
+    return code
+
+
+def get_trial_code(code: str) -> Optional[sqlite3.Row]:
+    if not code:
+        return None
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM trial_codes WHERE code = ?", (code.strip().upper(),)
+        ).fetchone()
+
+
+def list_trial_codes(limit: int = 300) -> list[dict]:
+    """Every trial code for the admin view — newest first, with the email of
+    whoever redeemed each (NULL while unredeemed)."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT t.*, u.email AS redeemed_email "
+            "FROM trial_codes t LEFT JOIN users u ON u.id = t.redeemed_by "
+            "ORDER BY t.created_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def trial_credits(user) -> int:
+    """How many free premium-packet credits this user currently holds."""
+    if user is None:
+        return 0
+    return max(0, int(_row_get(user, "trial_credits", 0)))
+
+
+def redeem_trial_code(code: str, user_id: int) -> dict:
+    """Redeem a single-use trial code for `user_id`, granting one free premium
+    packet credit. A code is consumed globally on first redemption — a second
+    redemption, by any account, raises TrialCodeError.
+
+    Atomic: claiming the code and granting the credit happen in one
+    transaction, and the `WHERE redeemed_by IS NULL` guard means a concurrent
+    double-redeem leaves exactly one winner. Returns the user's new balance.
+    """
+    norm = (code or "").strip().upper()
+    if not norm:
+        raise TrialCodeError("enter a code.")
+    with _connect() as db:
+        row = db.execute(
+            "SELECT * FROM trial_codes WHERE code = ?", (norm,)
+        ).fetchone()
+        if row is None:
+            raise TrialCodeError("that code isn't valid.")
+        if row["redeemed_by"] is not None:
+            if row["redeemed_by"] == user_id:
+                raise TrialCodeError("you've already redeemed this code.")
+            raise TrialCodeError("that code has already been used.")
+        # Claim the code. The WHERE guard makes a racing second redeemer lose.
+        claimed = db.execute(
+            "UPDATE trial_codes SET redeemed_by = ?, redeemed_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND redeemed_by IS NULL",
+            (user_id, row["id"]),
+        )
+        if claimed.rowcount != 1:
+            raise TrialCodeError("that code has already been used.")
+        db.execute(
+            "UPDATE users SET trial_credits = COALESCE(trial_credits, 0) + 1 "
+            "WHERE id = ?",
+            (user_id,),
+        )
+        bal = db.execute(
+            "SELECT COALESCE(trial_credits, 0) AS n FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()["n"]
+    return {"ok": True, "code": norm, "trial_credits": int(bal)}
+
+
+def consume_trial_credit(user_id: int) -> bool:
+    """Spend one trial credit on a launched run. Guarded so the counter never
+    goes negative — returns True iff a credit was actually decremented."""
+    with _connect() as db:
+        cur = db.execute(
+            "UPDATE users SET trial_credits = COALESCE(trial_credits, 0) - 1 "
+            "WHERE id = ? AND COALESCE(trial_credits, 0) > 0",
+            (user_id,),
+        )
+        return cur.rowcount > 0
