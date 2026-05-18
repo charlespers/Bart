@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bart. — a sample packet</title>
+<meta name="description" content="See a real bart study packet — day 3 of a 7-day organic chemistry plan, exactly as bart writes it from your own course materials." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/tokens.css" />
+<style>
+  body { overflow-x: hidden; }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(1000px 640px at 15% 4%,  rgba(255,255,255,0.55), transparent 60%),
+      radial-gradient(900px 760px at 86% 96%,  rgba(201,100,66,0.06), transparent 60%);
+  }
+
+  /* ─── topbar ─── */
+  .nav {
+    position: sticky; top: 0; z-index: 30;
+    backdrop-filter: blur(10px) saturate(1.05);
+    background: rgba(244,241,234,0.74);
+    border-bottom: 1px solid rgba(217,211,196,0.55);
+  }
+  .nav-inner {
+    max-width: 1160px; margin: 0 auto; padding: 14px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .nav .mark { font-size: 21px; text-decoration: none; }
+  .nav .right { display: flex; align-items: center; gap: 22px; }
+  .nav .right a {
+    font-family: var(--font-sans); font-size: 14px; color: var(--ink-soft);
+    text-decoration: none; font-weight: 500;
+  }
+  .nav .right a:hover { color: var(--accent); }
+  .nav .cta { padding: 9px 17px; font-size: 13px; }
+
+  /* ─── header ─── */
+  .head {
+    position: relative; z-index: 1;
+    max-width: 1160px; margin: 0 auto; padding: 52px 32px 26px;
+    text-align: center;
+  }
+  .eyebrow {
+    display: inline-block;
+    font-family: var(--font-mono); font-size: 12px;
+    letter-spacing: 0.16em; color: var(--accent-lo);
+    background: var(--accent-tint);
+    padding: 7px 14px; border-radius: 999px;
+    margin-bottom: 20px; text-transform: lowercase;
+  }
+  .head h1 {
+    margin: 0 auto; max-width: 720px;
+    font-weight: 700; font-size: clamp(30px, 4.6vw, 50px);
+    letter-spacing: -0.03em; line-height: 1.06; color: var(--ink);
+    text-wrap: balance;
+  }
+  .head h1 em {
+    font-style: normal; color: var(--accent); position: relative; white-space: nowrap;
+  }
+  .head h1 em::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 4%;
+    height: 11%; background: var(--accent-tint); z-index: -1; border-radius: 4px;
+  }
+  .head p {
+    max-width: 540px; margin: 18px auto 0;
+    color: var(--ink-mute); font-size: 16px; line-height: 1.55; text-wrap: pretty;
+  }
+
+  /* ─── the packet ─── */
+  .packet-wrap {
+    position: relative; z-index: 1;
+    max-width: 1100px; margin: 36px auto 0; padding: 0 32px;
+  }
+  .packet {
+    background: var(--cream-hi); border-radius: 22px; overflow: hidden;
+    box-shadow:
+      inset 0 0 0 1px var(--cream-edge),
+      0 30px 60px rgba(30,20,14,0.10),
+      0 6px 16px rgba(30,20,14,0.05);
+  }
+  .chrome {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px; background: var(--cream);
+    border-bottom: 1px solid var(--cream-edge);
+    font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint);
+  }
+  .chrome .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--cream-edge); }
+  .chrome .dot.r { background: #ed8580; } .chrome .dot.y { background: #f0c14d; } .chrome .dot.g { background: #8bc05c; }
+  .chrome .url { margin-left: 16px; }
+
+  .packet-body { display: grid; grid-template-columns: 248px 1fr; }
+
+  /* ── sidebar ── */
+  .side {
+    background: var(--cream); border-right: 1px solid var(--cream-edge);
+    padding: 26px 22px;
+  }
+  .side .lab {
+    font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint);
+    letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 12px;
+  }
+  .side .head-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 18px;
+  }
+  .side .head-row img { width: 30px; height: 30px; }
+  .side .head-row b { font-size: 17px; color: var(--ink); letter-spacing: -0.015em; }
+  .side .day {
+    display: flex; align-items: baseline; gap: 9px;
+    padding: 8px 8px; font-size: 13.5px; color: var(--ink-soft);
+    border-radius: 7px; text-decoration: none;
+  }
+  .side .day .n { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); }
+  .side .day.done { color: var(--ink-mute); }
+  .side .day.done .n::before { content: "✓ "; color: var(--ok); }
+  .side .day.active { color: var(--accent-lo); background: var(--accent-tint); font-weight: 600; }
+  .side .day.active .n { color: var(--accent); }
+  .side .exam {
+    margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--cream-edge);
+  }
+
+  /* ── lesson ── */
+  .lesson { padding: 36px 44px 40px; position: relative; }
+  .lesson .crumb {
+    font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint);
+    letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .lesson h2 {
+    font-family: var(--font-sans); font-weight: 700;
+    font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -0.028em;
+    color: var(--ink); margin: 9px 0 6px;
+  }
+  .lesson .obj {
+    font-family: var(--font-mono); font-size: 12px; color: var(--accent-lo);
+    margin-bottom: 22px;
+  }
+  .lesson p {
+    font-family: var(--font-serif); font-size: 16px; line-height: 1.66;
+    color: var(--ink-soft); margin: 0 0 15px; text-wrap: pretty;
+  }
+  .lesson h3 {
+    font-family: var(--font-sans); font-weight: 700; font-size: 16px;
+    letter-spacing: 0.02em; text-transform: uppercase; color: var(--ink);
+    margin: 34px 0 12px;
+  }
+  .lesson h3 .tick {
+    display: inline-block; width: 22px; height: 3px; background: var(--accent);
+    border-radius: 2px; margin-right: 9px; vertical-align: 4px;
+  }
+  .lesson strong { color: var(--ink); font-weight: 600; }
+  .cite {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--accent);
+    background: var(--accent-tint); padding: 1px 6px; border-radius: 5px;
+    vertical-align: 1px; white-space: nowrap;
+  }
+
+  /* formula */
+  .formula {
+    font-family: var(--font-serif); font-size: 18px; text-align: center;
+    color: var(--ink); background: var(--cream);
+    padding: 16px; border-radius: 10px; margin: 16px 0;
+    box-shadow: inset 0 0 0 1px var(--cream-edge);
+  }
+  .formula .acc { color: var(--accent); font-style: italic; }
+
+  /* schematic */
+  .schematic {
+    background: var(--cream); border-radius: 14px;
+    box-shadow: inset 0 0 0 1px var(--cream-edge);
+    padding: 26px 20px 14px; margin: 18px 0;
+  }
+  .schematic svg { display: block; width: 100%; height: auto; max-width: 520px; margin: 0 auto; }
+  .schematic .cap {
+    text-align: center; font-family: var(--font-mono); font-size: 11px;
+    color: var(--ink-mute); margin-top: 10px;
+  }
+
+  /* compare table */
+  .compare {
+    width: 100%; border-collapse: collapse; margin: 14px 0 4px;
+    font-family: var(--font-sans); font-size: 13.5px;
+  }
+  .compare th, .compare td {
+    text-align: left; padding: 11px 13px;
+    border-bottom: 1px solid var(--cream-edge); vertical-align: top;
+  }
+  .compare thead th {
+    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  .compare tbody th {
+    font-weight: 600; color: var(--ink-mute); width: 130px;
+    font-family: var(--font-mono); font-size: 11px;
+  }
+  .compare .sn2 { color: var(--accent-lo); }
+  .compare td b { color: var(--ink); }
+
+  /* mnemonic */
+  .mnem {
+    display: flex; gap: 14px; align-items: flex-start;
+    background: var(--accent-tint); border-radius: 14px;
+    padding: 18px 20px; margin: 22px 0;
+  }
+  .mnem .key {
+    flex: 0 0 auto; font-family: var(--font-mono); font-weight: 600;
+    font-size: 12px; color: var(--cream-hi); background: var(--accent);
+    padding: 6px 10px; border-radius: 8px; letter-spacing: 0.04em;
+  }
+  .mnem div p { margin: 0; font-family: var(--font-sans); font-size: 14px; color: var(--accent-lo); }
+  .mnem div p:first-child { font-weight: 700; margin-bottom: 3px; }
+
+  /* quick check */
+  .qc {
+    border: 1.5px solid var(--cream-edge); border-radius: 12px;
+    margin: 12px 0; background: var(--cream-hi); overflow: hidden;
+  }
+  .qc summary {
+    cursor: pointer; list-style: none; padding: 15px 18px;
+    font-family: var(--font-sans); font-size: 14.5px; color: var(--ink);
+    display: flex; gap: 12px; align-items: flex-start;
+  }
+  .qc summary::-webkit-details-marker { display: none; }
+  .qc summary .q-n {
+    flex: 0 0 auto; font-family: var(--font-mono); font-size: 11px;
+    font-weight: 600; color: var(--accent); margin-top: 1px;
+  }
+  .qc summary .reveal-tag {
+    margin-left: auto; flex: 0 0 auto; font-family: var(--font-mono);
+    font-size: 10.5px; color: var(--ink-faint); letter-spacing: 0.04em;
+  }
+  .qc[open] summary .reveal-tag { color: var(--accent); }
+  .qc[open] summary .reveal-tag::after { content: " ▾"; }
+  .qc:not([open]) summary .reveal-tag::after { content: " ▸"; }
+  .qc .answer {
+    padding: 0 18px 16px 41px;
+    font-family: var(--font-serif); font-size: 14.5px; line-height: 1.6;
+    color: var(--ink-soft);
+  }
+  .qc .answer .verdict {
+    font-family: var(--font-sans); font-weight: 700; color: var(--accent-lo);
+  }
+
+  /* in-the-packet grid */
+  .rest {
+    position: relative; z-index: 1;
+    max-width: 1100px; margin: 70px auto 0; padding: 0 32px;
+  }
+  .rest .eyebrow { display: block; text-align: center; }
+  .rest h2 {
+    text-align: center; font-weight: 700; font-size: clamp(26px, 3.4vw, 38px);
+    letter-spacing: -0.025em; color: var(--ink); margin: 0 0 8px; text-wrap: balance;
+  }
+  .rest .lede {
+    text-align: center; max-width: 520px; margin: 0 auto 36px;
+    color: var(--ink-mute); font-size: 15.5px; line-height: 1.55;
+  }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card {
+    background: var(--cream-hi); border: 1px solid var(--cream-edge);
+    border-radius: 16px; padding: 22px 20px;
+  }
+  .card .ic {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: var(--accent-tint); color: var(--accent-lo);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 15px; font-weight: 700;
+    margin-bottom: 13px;
+  }
+  .card h3 { margin: 0 0 5px; font-size: 16px; color: var(--ink); letter-spacing: -0.01em; }
+  .card p { margin: 0; font-size: 13.5px; color: var(--ink-mute); line-height: 1.5; }
+
+  /* closing CTA */
+  .close {
+    position: relative; z-index: 1;
+    max-width: 880px; margin: 64px auto 0; padding: 0 32px;
+  }
+  .close-card {
+    background: var(--ink); border-radius: 24px; padding: 48px 44px;
+    text-align: center; position: relative; overflow: hidden;
+  }
+  .close-card::before {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(600px 300px at 50% -10%, rgba(201,100,66,0.30), transparent 70%);
+  }
+  .close-card > * { position: relative; }
+  .close-card .k {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.14em;
+    color: var(--accent-hi); text-transform: lowercase; margin-bottom: 14px;
+  }
+  .close-card h2 {
+    font-weight: 700; font-size: clamp(26px, 3.6vw, 38px); letter-spacing: -0.028em;
+    color: var(--cream-hi); margin: 0 auto 10px; max-width: 480px; text-wrap: balance;
+  }
+  .close-card p {
+    color: #c8c0b3; font-size: 15.5px; line-height: 1.55;
+    max-width: 440px; margin: 0 auto 26px;
+  }
+  .close-card .price { color: var(--accent-hi); font-weight: 700; }
+
+  /* footer */
+  .foot {
+    position: relative; z-index: 1;
+    padding: 64px 32px 56px; text-align: center;
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink-mute);
+    letter-spacing: 0.04em; margin-top: 60px;
+    border-top: 1px solid var(--cream-edge);
+  }
+  .foot .links { display: flex; gap: 20px; justify-content: center; margin: 14px 0; flex-wrap: wrap; }
+  .foot .links a { color: var(--ink-mute); text-decoration: none; }
+  .foot .links a:hover { color: var(--accent); }
+
+  /* responsive */
+  @media (max-width: 860px) {
+    .packet-body { grid-template-columns: 1fr; }
+    .side { border-right: 0; border-bottom: 1px solid var(--cream-edge); }
+    .lesson { padding: 30px 24px 34px; }
+    .grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 560px) {
+    .nav .right a:not(.cta) { display: none; }
+    .nav-inner { padding: 12px 20px; }
+    .head { padding: 40px 22px 20px; }
+    .compare tbody th { width: auto; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="mark" href="/">bart<span class="dot">.</span></a>
+    <div class="right">
+      <a href="/#how">how it works</a>
+      <a href="/pricing">pricing</a>
+      <a class="cta" href="/login?mode=signup">get your packet</a>
+    </div>
+  </div>
+</nav>
+
+<header class="head">
+  <span class="eyebrow">✦ a real sample packet</span>
+  <h1>this is what bart <em>actually hands you.</em></h1>
+  <p>
+    Below is one day from a 7-day organic chemistry packet — written exactly the
+    way bart writes yours, from your own slides, notes, and past exams. Click
+    around. The day you'd open first is whichever one you choose.
+  </p>
+</header>
+
+<section class="packet-wrap">
+  <div class="packet">
+    <div class="chrome">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="url">bart · organic chemistry II · day 03 of 07</span>
+    </div>
+    <div class="packet-body">
+
+      <aside class="side">
+        <div class="head-row">
+          <img src="/assets/bart-loaf.svg" alt="bart" />
+          <b>7-day plan</b>
+        </div>
+        <div class="lab">your packet</div>
+        <a class="day done" href="#"><span class="n">01</span><span>foundations &amp; notation</span></a>
+        <a class="day done" href="#"><span class="n">02</span><span>resonance &amp; arrow-pushing</span></a>
+        <a class="day active" href="#top"><span class="n">03</span><span>SN1 / SN2 mechanisms</span></a>
+        <a class="day" href="#"><span class="n">04</span><span>stereochemistry</span></a>
+        <a class="day" href="#"><span class="n">05</span><span>directing effects</span></a>
+        <a class="day" href="#"><span class="n">06</span><span>multi-step synthesis</span></a>
+        <a class="day" href="#"><span class="n">07</span><span>full review</span></a>
+        <div class="exam">
+          <a class="day" href="#"><span class="n">★</span><span>practice exam + key</span></a>
+          <a class="day" href="#"><span class="n">⏱</span><span>60-min review guide</span></a>
+        </div>
+      </aside>
+
+      <main class="lesson" id="top">
+        <div class="crumb">day 03 · nucleophilic substitution · ≈ 90 minutes</div>
+        <h2>SN1 vs. SN2, decided on sight.</h2>
+        <div class="obj">goal — look at any substrate and call the mechanism without guessing.</div>
+
+        <p>
+          Yesterday you learned to push arrows. Today you use them. Nucleophilic
+          substitution is two reactions wearing one name, and almost every exam
+          question is really asking <strong>which one is running</strong>. Get
+          that call right and the product, the rate, and the stereochemistry all
+          fall out for free.
+        </p>
+        <p>
+          Start with the kinetics, because the rate law is the cleanest tell.
+          SN2 is one concerted step — the nucleophile and the substrate meet in
+          the rate-determining step, so both appear in the rate law:
+        </p>
+
+        <div class="formula">
+          rate<sub>SN2</sub> = <span class="acc">k</span> [substrate] [nucleophile]
+        </div>
+
+        <p>
+          SN1 goes through a carbocation. The slow step is the substrate losing
+          its leaving group <em>by itself</em>; the nucleophile arrives
+          afterward, off the clock. So only the substrate shows up:
+        </p>
+
+        <div class="formula">
+          rate<sub>SN1</sub> = <span class="acc">k</span> [substrate]
+        </div>
+
+        <p>
+          That single difference — second order vs. first order — is why your
+          slides call SN2 <em>bimolecular</em> and SN1 <em>unimolecular</em>
+          <span class="cite">lecture 06, slide 14</span>. Everything else today
+          is a consequence of it.
+        </p>
+
+        <h3><span class="tick"></span>the backside attack</h3>
+        <p>
+          In SN2 the nucleophile attacks the carbon <strong>directly opposite</strong>
+          the leaving group. The three other groups flip through — like an
+          umbrella in the wind — and the product has <strong>inverted</strong>
+          configuration. This is why it's stereospecific, and why a crowded
+          carbon kills it: there's no room at the back door.
+        </p>
+
+        <div class="schematic">
+          <svg viewBox="0 0 520 150" role="img" aria-label="SN2 backside attack with inversion of configuration">
+            <!-- nucleophile approaching -->
+            <text x="20" y="80" font-family="JetBrains Mono, monospace" font-size="20" fill="#9a4628">Nu⁻</text>
+            <line x1="58" y1="75" x2="172" y2="75" stroke="#c96442" stroke-width="2" stroke-dasharray="5 5"/>
+            <polygon points="172,75 162,70 162,80" fill="#c96442"/>
+            <!-- central carbon -->
+            <circle cx="200" cy="75" r="20" fill="#fbf9f4" stroke="#221f1b" stroke-width="2"/>
+            <text x="200" y="81" text-anchor="middle" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="#221f1b">C</text>
+            <!-- three substituents (umbrella, pre-flip) -->
+            <line x1="200" y1="75" x2="200" y2="28" stroke="#6d655a" stroke-width="2"/>
+            <line x1="200" y1="75" x2="166" y2="118" stroke="#6d655a" stroke-width="2"/>
+            <line x1="200" y1="75" x2="234" y2="118" stroke="#6d655a" stroke-width="2"/>
+            <circle cx="200" cy="24" r="6" fill="#d9d3c4"/>
+            <circle cx="162" cy="122" r="6" fill="#d9d3c4"/>
+            <circle cx="238" cy="122" r="6" fill="#d9d3c4"/>
+            <!-- leaving group departing -->
+            <line x1="228" y1="75" x2="342" y2="75" stroke="#221f1b" stroke-width="2" stroke-dasharray="5 5"/>
+            <polygon points="342,75 332,70 332,80" fill="#221f1b"/>
+            <text x="356" y="80" font-family="JetBrains Mono, monospace" font-size="18" fill="#6d655a">:LG⁻</text>
+            <!-- transition-state bracket -->
+            <text x="200" y="146" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#a59c8c">‡ transition state</text>
+            <!-- result note -->
+            <text x="448" y="42" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9a4628">inversion</text>
+            <path d="M 430 52 q 18 14 36 0" fill="none" stroke="#c96442" stroke-width="1.6"/>
+            <polygon points="466,52 458,49 460,57" fill="#c96442"/>
+          </svg>
+          <div class="cap">SN2 — Nu⁻ enters opposite the leaving group; the substrate inverts.</div>
+        </div>
+
+        <h3><span class="tick"></span>the four tells</h3>
+        <p>
+          You almost never compute a rate on an exam. You read four features off
+          the structure and let them vote.
+        </p>
+
+        <table class="compare">
+          <thead>
+            <tr><th>factor</th><th class="sn2">favors SN2</th><th>favors SN1</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>substrate</th>
+              <td class="sn2"><b>methyl / 1°</b> — open back side</td>
+              <td><b>3°</b> — stable carbocation</td></tr>
+            <tr><th>nucleophile</th>
+              <td class="sn2"><b>strong</b> (OH⁻, CN⁻, RO⁻)</td>
+              <td><b>weak</b> (H₂O, ROH)</td></tr>
+            <tr><th>solvent</th>
+              <td class="sn2"><b>polar aprotic</b> (DMSO, acetone)</td>
+              <td><b>polar protic</b> (water, alcohols)</td></tr>
+            <tr><th>leaving group</th>
+              <td colspan="2"><b>good in both</b> — I⁻ &gt; Br⁻ &gt; Cl⁻ &gt; F⁻</td></tr>
+          </tbody>
+        </table>
+        <p>
+          The substrate vote is the loudest. <strong>2°</strong> substrates are
+          the genuine toss-ups — that's when the nucleophile and solvent break
+          the tie <span class="cite">your notes · pg. 7</span>.
+        </p>
+
+        <div class="mnem">
+          <span class="key">SN2 = 2 things</span>
+          <div>
+            <p>Two molecules in the slow step. Two-faced result.</p>
+            <p>Bimolecular rate law, backside attack, <em>inverted</em> product —
+              all "two." SN1 stands alone: one molecule, one carbocation, a
+              racemic <em>mix</em>.</p>
+          </div>
+        </div>
+
+        <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
+        <p>
+          Don't scroll past these. Commit to an answer out loud first — that's
+          the part that sticks.
+        </p>
+
+        <details class="qc">
+          <summary>
+            <span class="q-n">Q1</span>
+            <span>Which is most likely to react by SN1: 2-bromobutane,
+              <em>tert</em>-butyl bromide, or bromomethane?</span>
+            <span class="reveal-tag">answer</span>
+          </summary>
+          <div class="answer">
+            <span class="verdict"><em>tert</em>-Butyl bromide.</span> It's a 3°
+            substrate, so losing Br⁻ gives a stabilized 3° carbocation — the SN1
+            slow step. Bromomethane is the SN2 extreme (wide-open back side);
+            2-bromobutane is the 2° toss-up that depends on conditions.
+          </div>
+        </details>
+
+        <details class="qc">
+          <summary>
+            <span class="q-n">Q2</span>
+            <span>You run a 2° substrate with NaCN in DMSO. Which mechanism
+              wins, and what happens to the stereocenter?</span>
+            <span class="reveal-tag">answer</span>
+          </summary>
+          <div class="answer">
+            <span class="verdict">SN2.</span> CN⁻ is a strong nucleophile and
+            DMSO is polar aprotic — both push SN2, overruling the ambiguous 2°
+            substrate. The stereocenter <strong>inverts</strong> via backside
+            attack.
+          </div>
+        </details>
+
+        <details class="qc">
+          <summary>
+            <span class="q-n">Q3</span>
+            <span>Why does an SN1 reaction on a single enantiomer give a
+              racemic mixture?</span>
+            <span class="reveal-tag">answer</span>
+          </summary>
+          <div class="answer">
+            <span class="verdict">The carbocation is flat.</span> The sp²
+            intermediate is planar, so the nucleophile attacks either face with
+            roughly equal probability — you get both enantiomers, ≈50/50.
+          </div>
+        </details>
+
+        <p style="margin-top:22px; font-family:var(--font-mono); font-size:12.5px; color:var(--ink-faint);">
+          end of day 03 — tomorrow: stereochemistry, where today's inversion
+          becomes a tool you reach for.
+        </p>
+      </main>
+
+    </div>
+  </div>
+</section>
+
+<section class="rest">
+  <span class="eyebrow">✦ and that's one day of seven</span>
+  <h2>every packet ships with all of this.</h2>
+  <p class="lede">
+    The lesson above is a single day. Your full packet is the whole plan —
+    built end to end from the materials you upload.
+  </p>
+  <div class="grid">
+    <div class="card">
+      <div class="ic">7</div>
+      <h3>A 7-day master plan</h3>
+      <p>Your syllabus, sequenced into days that build on each other — not a pile of flashcards.</p>
+    </div>
+    <div class="card">
+      <div class="ic">✎</div>
+      <h3>Daily lessons</h3>
+      <p>Dense, readable, and citing your actual notes — like the day you just read.</p>
+    </div>
+    <div class="card">
+      <div class="ic">◇</div>
+      <h3>Schematics &amp; mnemonics</h3>
+      <p>The hard ideas drawn out, plus memory hooks that survive exam-day nerves.</p>
+    </div>
+    <div class="card">
+      <div class="ic">★</div>
+      <h3>A full practice exam</h3>
+      <p>Written to your course's level, with a worked answer key — not generic filler.</p>
+    </div>
+    <div class="card">
+      <div class="ic">⏱</div>
+      <h3>A 60-minute review guide</h3>
+      <p>The one-hour-before-the-exam sheet: every must-know, nothing else.</p>
+    </div>
+    <div class="card">
+      <div class="ic">↻</div>
+      <h3>Saved &amp; shareable</h3>
+      <p>Every packet you make is kept in your account and shareable with a study group.</p>
+    </div>
+  </div>
+</section>
+
+<section class="close">
+  <div class="close-card">
+    <div class="k">✦ ready when you are</div>
+    <h2>now do it with your course.</h2>
+    <p>
+      Drop in your slides and past exams. Bart writes a packet like this one,
+      built from your material, in about ten minutes. <span class="price">$10/mo</span>,
+      cancel anytime.
+    </p>
+    <a class="cta" href="/login?mode=signup">
+      build my packet
+      <svg class="arrow" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+  </div>
+</section>
+
+<footer class="foot">
+  <div>this sample packet was written by bart as a demonstration of format and depth.</div>
+  <div class="links">
+    <a href="/">home</a>
+    <a href="/#how">how it works</a>
+    <a href="/pricing">pricing</a>
+    <a href="/creators">creator program</a>
+    <a href="/login?mode=signup">sign up</a>
+  </div>
+  <div style="color: var(--ink-faint);">© 2026 bart. all your notes belong to you.</div>
+</footer>
+
+</body>
+</html>

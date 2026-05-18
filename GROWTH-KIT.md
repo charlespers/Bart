@@ -45,6 +45,11 @@ program as your main engine — the rest is support.
 
 ### 3a. Show HN (Hacker News) — post Tue–Thu, ~9am ET
 
+> ✓ **Prerequisite met.** A public sample packet now lives at
+> `studywithbart.com/sample` — no login, no paywall. Link it in both the post
+> and your first comment so HN users can actually see the product. Show HN is
+> good to go once the site is redeployed.
+
 **Title:**
 `Show HN: Bart – upload your course notes, get a 7-day study packet`
 
@@ -209,33 +214,44 @@ referrals (≈25). That's your 100 — all real humans.
 
 ## 6. Conversion fixes (so traffic doesn't leak)
 
-You're asking visitors to pay $10 **without seeing a single packet.** That is the
-#1 thing capping your signups. Highest-impact fixes, in order:
+Visitors were being asked to pay $10 **without seeing a single packet** — the
+#1 thing capping signups. Status of the fixes:
 
-1. **Public sample packet page.** You already have a real run in `output/
-   run_2026-05-04_234907`. Publish it at `/sample` and link "see a real packet"
-   from the splash hero. Lets people decide before paying.
-2. **Add a 1–2 line testimonial** once you have Discord/creator feedback.
+1. ✓ **Public sample packet page — done.** Lives at `/sample` (`sample.html`),
+   no login. A self-authored organic-chemistry packet day, so there's no
+   copyright risk. Linked from the splash hero ("see a real packet") and under
+   the preview. Goes live on the next redeploy.
+2. **Add a 1–2 line testimonial** once you have Discord/creator feedback —
+   drop it on `splash.html` and `pricing.html`.
 3. **First-packet guarantee** — "not useful? email us, full refund." Removes the
-   risk objection for cold traffic.
+   risk objection for cold traffic. Worth adding to `pricing.html`.
 
-I can build the `/sample` page and wire it into `splash.html` and `server.py` —
-say the word and I'll do it.
+Items 2 and 3 are quick — say the word and I'll add them.
 
 ---
 
-## 7. Tracking — know what's working
+## 7. Tracking — know what's working (now built in)
 
-Tag every link so you can tell which channel delivers. Format:
-```
-https://studywithbart.com/?utm_source=CHANNEL&utm_medium=post
-```
-Examples: `utm_source=hn`, `utm_source=reddit_sideproject`,
-`utm_source=producthunt`, `utm_source=x`, `utm_source=discord_premed`.
-Creator links already track via their referral codes — lean on that data.
+Source attribution is live in the app. When a visitor lands on
+`studywithbart.com/?utm_source=CHANNEL`, Bart drops a 90-day first-touch cookie
+and stamps that channel onto their user row when they sign up (email **or**
+Google). You see the breakdown in `GET /api/admin/stats` →
+`signups_by_source`, e.g. `[{"source":"hn","signups":12,"subscribed":3}, ...]`.
 
-Check weekly: which source drove signups, not just clicks. Double down on the
-top two, drop the rest.
+**To use it:** tag every link you post with a root-domain URL:
+```
+https://studywithbart.com/?utm_source=CHANNEL
+```
+Use a distinct tag per channel — `hn`, `reddit_sideproject`, `producthunt`,
+`x`, `discord_premed`, `indiehackers`. Tags are lowercased and stripped to
+`[a-z0-9_-]`, so keep them simple. The tag must be on the **root** URL (`/`) —
+that's the page that captures it.
+
+Creators are tracked separately via their `/r/CODE` referral links — that data
+already feeds the creator dashboard.
+
+Check `signups_by_source` weekly: look at `subscribed`, not just `signups`.
+Double down on the top two channels, drop the rest.
 
 ---
 
@@ -247,3 +263,36 @@ top two, drop the rest.
 - Give value first. If a post is 100% pitch, it's spam.
 - Space posts out. Ten promo posts in a day across Reddit = shadowban.
 - Reply to every comment and DM — fast replies convert lurkers.
+
+---
+
+## 9. Verified community targets (checked May 2026)
+
+### Promo-welcome — post your 1–2 directly here
+- **r/SideProject** — built for makers sharing shipped products. Needs a
+  *working, tryable* product + a demo link or GIF; "[Launch] Name — one-liner"
+  title; best on Sat/Sun 9am–12pm ET. Revenue/metrics transparency performs.
+- **Hacker News — Show HN** — only after the §6 sample page exists (see §3a
+  warning). Personal username, factual language, zero booster comments.
+- **IndieHackers** — "Show IH" + Milestones; promotion is expected.
+- **Product Hunt** — one-day launch event (§3c).
+
+### Value-first only — never post a pitch here
+r/college, r/students, r/StudyTips, r/GetStudying, r/productivity,
+r/notetaking. All have self-promo rules; help genuinely and mention Bart only
+in-context (§3f).
+
+### Discord — lurk first, then post in resource/self-promo channels only
+- **Study Together** (~700k members) — largest study server; has resource
+  channels; etiquette-strict, so read rules first.
+- **Blair's Brainiacs**, **Tuition Train**, **Lofi Girl** — student-heavy
+  communities with help/resource channels.
+- **DISBOARD** "college" / "study" tags — find smaller servers that are more
+  permissive about a student sharing their own tool.
+
+**Sources:**
+- [Show HN Guidelines](https://news.ycombinator.com/showhn.html)
+- [How to Market on r/SideProject](https://www.mediafa.st/marketing-on-rsideproject)
+- [Reddit self-promotion rules 2026](https://redship.io/blog/reddit-self-promotion-rules-2026)
+- [7 Best Student Discord Servers 2026](https://thehiveindex.com/topics/students/platform/discord/)
+- [Best Study Discord Servers](https://gridfiti.com/best-study-discord-servers/)

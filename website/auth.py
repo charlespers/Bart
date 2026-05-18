@@ -212,6 +212,15 @@ def init_db() -> None:
                 "ON users(referred_by) WHERE referred_by IS NOT NULL"
             )
             billing_added = True
+        # Acquisition source — the channel tag (utm_source) the visitor first
+        # arrived through. Set once at signup; powers the admin "where are
+        # users coming from" breakdown. Existing rows stay NULL ("direct").
+        if "signup_source" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN signup_source TEXT")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_signup_source "
+                "ON users(signup_source) WHERE signup_source IS NOT NULL"
+            )
         if billing_added:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_users_subscription_id "
@@ -258,14 +267,16 @@ def verify_password(pw: str, hashed: str | None) -> bool:
 # ─── users ───────────────────────────────────────────────────────────────────
 
 def create_user(email: str, password: str, name: str = "",
-                 referred_by: str | None = None) -> int:
+                 referred_by: str | None = None,
+                 signup_source: str | None = None) -> int:
     email = email.strip().lower()
     ref = (referred_by or "").strip() or None
+    src = (signup_source or "").strip() or None
     with _connect() as db:
         cur = db.execute(
-            "INSERT INTO users (email, name, password_hash, referred_by) "
-            "VALUES (?, ?, ?, ?)",
-            (email, name.strip() or None, hash_password(password), ref),
+            "INSERT INTO users (email, name, password_hash, referred_by, signup_source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (email, name.strip() or None, hash_password(password), ref, src),
         )
         return cur.lastrowid
 
@@ -434,7 +445,8 @@ def consume_claude_run(user_id: int) -> None:
 
 
 def find_or_create_google_user(google_id: str, email: str, name: str = "",
-                               referred_by: str | None = None) -> sqlite3.Row:
+                               referred_by: str | None = None,
+                               signup_source: str | None = None) -> sqlite3.Row:
     """Look up a Google-authenticated user, or create one. Matching rules:
       1. exact match on google_id → return that row
       2. exact match on email → link by stamping google_id onto the existing row
@@ -456,10 +468,11 @@ def find_or_create_google_user(google_id: str, email: str, name: str = "",
         # migration. verify_password() rejects empty/falsy hashes so this is
         # equivalent to "no password" from a login perspective.
         cur = db.execute(
-            "INSERT INTO users (email, name, password_hash, google_id, referred_by) "
-            "VALUES (?, ?, '', ?, ?)",
+            "INSERT INTO users (email, name, password_hash, google_id, referred_by, signup_source) "
+            "VALUES (?, ?, '', ?, ?, ?)",
             (email, name.strip() or None, google_id,
-             (referred_by or "").strip() or None),
+             (referred_by or "").strip() or None,
+             (signup_source or "").strip() or None),
         )
         return db.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
 
@@ -606,6 +619,28 @@ def runs_per_user_top(limit: int = 20) -> list[dict]:
             (limit,),
         ).fetchall()
     return [{"user_id": r["id"], "email": r["email"], "runs": r["runs"]} for r in rows]
+
+
+def signups_by_source(limit: int = 30) -> list[dict]:
+    """Sign-up counts grouped by acquisition source — powers the admin
+    "where are users coming from" breakdown. Users with no recorded source
+    (existing accounts, untagged visits) are bucketed as "direct"."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT COALESCE(signup_source, 'direct') AS source, "
+            "       COUNT(*) AS signups, "
+            "       SUM(CASE WHEN subscription_status = 'active' THEN 1 ELSE 0 END) "
+            "         AS subscribed "
+            "FROM users "
+            "GROUP BY COALESCE(signup_source, 'direct') "
+            "ORDER BY signups DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        {"source": r["source"], "signups": r["signups"],
+         "subscribed": r["subscribed"] or 0}
+        for r in rows
+    ]
 
 
 def delete_run_row(run_id: str, user_id: int) -> bool:

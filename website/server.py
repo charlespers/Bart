@@ -321,6 +321,27 @@ def _referral_from_request(request: Request) -> Optional[str]:
     return None
 
 
+# Cookie that carries the acquisition source (the ?utm_source= tag on a
+# landing link) from the splash page through to signup — mirrors the referral
+# cookie. 90-day life so a visitor who arrives from a post and signs up days
+# later is still attributed to the channel that found them.
+SOURCE_COOKIE = "bart_src"
+_SOURCE_COOKIE_MAX_AGE = 90 * 24 * 3600
+_SOURCE_STRIP_RE = re.compile(r"[^a-z0-9_\-]")
+
+
+def _clean_source(raw: str) -> str:
+    """Normalise a utm_source value to a short, safe channel tag (lowercase
+    alphanumerics, dash and underscore only). Bounds it so a hostile query
+    string can't bloat the cookie or a user row."""
+    return _SOURCE_STRIP_RE.sub("", (raw or "").strip().lower())[:64]
+
+
+def _source_from_request(request: Request) -> Optional[str]:
+    """The acquisition source carried by this request's cookie, if any."""
+    return _clean_source(request.cookies.get(SOURCE_COOKIE) or "") or None
+
+
 @app.post("/api/auth/signup")
 @_limiter.limit("3/hour")
 async def signup(req: SignupRequest, request: Request, response: Response):
@@ -333,6 +354,7 @@ async def signup(req: SignupRequest, request: Request, response: Response):
     user_id = auth.create_user(
         req.email, req.password, req.name,
         referred_by=_referral_from_request(request),
+        signup_source=_source_from_request(request),
     )
     sid = auth.create_session(user_id)
     auth.set_session_cookie(response, sid, secure=request.url.scheme == "https")
@@ -395,7 +417,9 @@ async def auth_google(req: GoogleAuthRequest, request: Request, response: Respon
         raise HTTPException(401, "google token missing required fields.")
 
     user = auth.find_or_create_google_user(
-        google_sub, email, name, referred_by=_referral_from_request(request),
+        google_sub, email, name,
+        referred_by=_referral_from_request(request),
+        signup_source=_source_from_request(request),
     )
     sid = auth.create_session(user["id"])
     auth.set_session_cookie(response, sid, secure=request.url.scheme == "https")
@@ -1654,6 +1678,11 @@ async def admin_stats(user=Depends(auth.current_user)):
         top_users = auth.runs_per_user_top(20)
     except Exception as e:
         top_users = [{"error": str(e)}]
+    # Where users are coming from — the acquisition-channel breakdown.
+    try:
+        by_source = auth.signups_by_source(30)
+    except Exception as e:
+        by_source = [{"error": str(e)}]
     return {
         "concurrency": {
             "max": _MAX_CONCURRENT_RUNS,
@@ -1677,14 +1706,26 @@ async def admin_stats(user=Depends(auth.current_user)):
             "keep_per_user": KEEP_RUNS_PER_USER,
         },
         "top_users_by_runs": top_users,
+        "signups_by_source": by_source,
     }
 
 
 # ─── page routing ────────────────────────────────────────────────────────────
 
 @app.get("/")
-async def root_index():
-    return FileResponse(HERE / "splash.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+async def root_index(request: Request):
+    resp = FileResponse(HERE / "splash.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    # First-touch acquisition tracking: if the visitor arrived through a
+    # tagged link (studywithbart.com/?utm_source=hn), remember that channel
+    # so it can be stamped on their user row at signup. First tag wins — a
+    # later untagged or differently-tagged visit doesn't overwrite it.
+    src = _clean_source(request.query_params.get("utm_source", ""))
+    if src and not request.cookies.get(SOURCE_COOKIE):
+        resp.set_cookie(
+            SOURCE_COOKIE, src,
+            max_age=_SOURCE_COOKIE_MAX_AGE, httponly=True, samesite="lax",
+        )
+    return resp
 
 
 @app.get("/r/{code}")
