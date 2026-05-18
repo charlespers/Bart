@@ -95,3 +95,4 @@ def test_creator_earnings_breakdown(tmp_path):
     assert e["active_subscribers"] == 1
     assert e["monthly_run_rate_cents"] == 200    # 1 active sub * $2
     assert e["conversion_pct"] == 50.0
+    assert e["this_month_cents"] == 600   # all three commissions are this month
