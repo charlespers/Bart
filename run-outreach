@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# bart — Instagram outreach pipeline launcher.
+# Reuses bart's .venv, ensures the outreach deps are installed, then
+# delegates to `python -m outreach`.
+#
+#   ./run-outreach doctor
+#   ./run-outreach generate
+#   ./run-outreach review
+#   ./run-outreach approve --date YYYY-MM-DD
+#   ./run-outreach publish --date YYYY-MM-DD
+
+set -euo pipefail
+cd "$(dirname "$0")"
+
+VENV=".venv"
+REQS="outreach/requirements.txt"
+HASH_FILE="$VENV/.outreach_reqs_hash"
+REQS_HASH=$(shasum -a 256 "$REQS" 2>/dev/null | cut -d' ' -f1 || echo "missing")
+
+GREEN='\033[38;5;108m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+if [ ! -d "$VENV" ]; then
+    printf "${DIM}creating python environment…${RESET}\n"
+    python3 -m venv "$VENV"
+    "$VENV/bin/pip" install --quiet --upgrade pip wheel
+fi
+
+if [ ! -f "$HASH_FILE" ] || [ "$(cat "$HASH_FILE" 2>/dev/null)" != "$REQS_HASH" ]; then
+    printf "${DIM}installing outreach dependencies…${RESET}\n"
+    "$VENV/bin/pip" install --quiet --progress-bar off -r "$REQS"
+    echo "$REQS_HASH" > "$HASH_FILE"
+    printf "  ${GREEN}✓${RESET} ready.\n\n"
+fi
+
+exec "$VENV/bin/python" -m outreach "$@"
