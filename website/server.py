@@ -773,7 +773,7 @@ async def admin_approve_creator(app_id: int, user=Depends(auth.current_user)):
             "Your application to the bart creator program was approved.\n\n"
             f"Your referral link:\n  {referral_url}\n\n"
             "Share it anywhere. When someone subscribes through it, you earn "
-            f"${auth.CREATOR_COMMISSION_CENTS / 100:.0f} every month they stay "
+            f"${auth.CREATOR_COMMISSION_CENTS / 100:.2f} every month they stay "
             "subscribed — credited automatically once each payment clears.\n\n"
             "Sign in and open the creator page to see your referrals and "
             "earnings any time.\n\n— the bart team\n"

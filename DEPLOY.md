@@ -86,7 +86,7 @@ Set these with `flyctl secrets set KEY=value` (the app restarts on change).
 - `SMTP_USER` — sending account, e.g. `bartcompanyai@gmail.com`.
 - `SMTP_PASS` — an app password for that account.
 - `SMTP_HOST` / `SMTP_PORT` — default `smtp.gmail.com` / `587` (STARTTLS).
-- `BART_CREATOR_COMMISSION_RATE` — creator's share of each verified payment (default `0.30`).
+- `BART_CREATOR_COMMISSION_CENTS` — flat commission in cents paid to the referring creator per verified payment (default `200`, i.e. $2.00).
 
 Approve or reject applications at `/admin-creators` (admin account only).
 

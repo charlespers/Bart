@@ -277,7 +277,7 @@
     document.getElementById('s-signups').textContent = d.signups || 0;
     document.getElementById('s-subs').textContent    = d.subscribed || 0;
     document.getElementById('s-earn').textContent    = '$' + (d.earnings_usd || 0);
-    var dollars = (d.commission_cents || 200) / 100;
+    var dollars = (d.commission_cents || 200) / 100; // 200 mirrors server BART_CREATOR_COMMISSION_CENTS default
     document.getElementById('dash-foot').textContent =
       'You earn $' + dollars.toFixed(2) + ' every month each subscriber stays subscribed ' +
       'through your link. Payments shown update once Stripe confirms them.';

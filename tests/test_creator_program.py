@@ -142,7 +142,7 @@ def test_commission_credits_creator(tmp_path):
     )
     assert inserted is True
     summary = auth.creator_summary(auth.get_creator_by_code(creator["referral_code"]))
-    assert summary["earnings_cents"] == 200
+    assert summary["earnings_cents"] == auth.CREATOR_COMMISSION_CENTS
     assert summary["payments"] == 1
     assert summary["subscribed"] == 1
 
@@ -151,7 +151,6 @@ def test_commission_cents_is_env_overridable_and_positive(tmp_path, monkeypatch)
     monkeypatch.setenv("BART_CREATOR_COMMISSION_CENTS", "350")
     auth = _load_auth(tmp_path)
     assert isinstance(auth.CREATOR_COMMISSION_CENTS, int)
-    assert auth.CREATOR_COMMISSION_CENTS >= 0
     assert auth.CREATOR_COMMISSION_CENTS == 350
 
 
