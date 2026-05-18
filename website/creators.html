@@ -522,6 +522,12 @@
     return '$' + ((n || 0) / 100).toFixed(2);
   }
 
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   function renderDashboard(d) {
     hide(applyPanel); hide(pendingBan); show(dashPanel);
 
@@ -597,8 +603,8 @@
         tr.innerHTML =
           '<td>' + date + '</td>' +
           '<td>' + cents(p.amount_cents) + '</td>' +
-          '<td>' + (p.method || '—') + '</td>' +
-          '<td><span class="status-pill ' + statusClass + '">' + (p.status || '') + '</span></td>';
+          '<td>' + esc(p.method || '—') + '</td>' +
+          '<td><span class="status-pill ' + statusClass + '">' + esc(p.status || '') + '</span></td>';
         tbody.appendChild(tr);
       });
     }
@@ -613,7 +619,7 @@
   // Fetch creator data, with optional connect refresh first.
   function loadCreatorData() {
     return fetch('/api/creator/me', { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (r) { if (!r.ok) { console.warn('creator data load failed', r.status); return null; } return r.json(); })
       .then(function (d) {
         if (!d) return;
         if (d.is_creator) { renderDashboard(d); return; }
