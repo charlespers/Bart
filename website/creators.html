@@ -277,10 +277,10 @@
     document.getElementById('s-signups').textContent = d.signups || 0;
     document.getElementById('s-subs').textContent    = d.subscribed || 0;
     document.getElementById('s-earn').textContent    = '$' + (d.earnings_usd || 0);
-    var pct = Math.round((d.commission_rate || 0.3) * 100);
+    var dollars = (d.commission_cents || 200) / 100;
     document.getElementById('dash-foot').textContent =
-      'You earn ' + pct + '% of every verified payment from a subscriber who ' +
-      'signed up through your link. Payments shown update once Stripe confirms them.';
+      'You earn $' + dollars.toFixed(2) + ' every month each subscriber stays subscribed ' +
+      'through your link. Payments shown update once Stripe confirms them.';
   }
 
   // Decide which state to show.

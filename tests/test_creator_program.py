@@ -147,10 +147,12 @@ def test_commission_credits_creator(tmp_path):
     assert summary["subscribed"] == 1
 
 
-def test_commission_cents_is_env_overridable_and_positive(tmp_path):
+def test_commission_cents_is_env_overridable_and_positive(tmp_path, monkeypatch):
+    monkeypatch.setenv("BART_CREATOR_COMMISSION_CENTS", "350")
     auth = _load_auth(tmp_path)
     assert isinstance(auth.CREATOR_COMMISSION_CENTS, int)
     assert auth.CREATOR_COMMISSION_CENTS >= 0
+    assert auth.CREATOR_COMMISSION_CENTS == 350
 
 
 def test_commission_is_idempotent_on_stripe_ref(tmp_path):
