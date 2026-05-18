@@ -1130,6 +1130,21 @@ def approve_creator_application(app_id: int) -> Optional[dict]:
     return dict(row)
 
 
+def list_creators() -> list[dict]:
+    """Every creator with their earnings breakdown — powers the admin
+    creator overview. Newest creator first."""
+    with _connect() as db:
+        rows = db.execute(
+            "SELECT * FROM creators ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        rec = dict(r)
+        rec["earnings"] = creator_earnings(r)
+        out.append(rec)
+    return out
+
+
 def reject_creator_application(app_id: int) -> bool:
     with _connect() as db:
         cur = db.execute(

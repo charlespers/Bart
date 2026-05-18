@@ -221,3 +221,37 @@ def test_creator_earnings_distinguishes_awaiting_from_paid(tmp_path):
     e = auth.creator_earnings(creator)
     assert e["awaiting_payout_cents"] == 0
     assert e["paid_out_cents"] == 3000
+
+
+def test_list_creators_includes_earnings(tmp_path):
+    auth = _load_auth(tmp_path)
+
+    # Creator 1 — via the _apply helper
+    app1_id = _apply(auth, email="creator1@example.com", name="Alice Creator")
+    c1 = auth.approve_creator_application(app1_id)
+
+    # Creator 2 — via create_creator_application directly
+    app2_id = auth.create_creator_application(
+        name="Bob Creator", email="creator2@example.com",
+        audience="newsletter 5k", links="substack.com/@bob", pitch="I write study guides",
+    )
+    auth.approve_creator_application(app2_id)
+
+    creators = auth.list_creators()
+    assert len(creators) == 2
+
+    for c in creators:
+        assert "referral_code" in c, "every entry must have a referral_code"
+        assert "earnings" in c, "every entry must have an earnings sub-dict"
+        e = c["earnings"]
+        assert "pending_balance_cents" in e
+        assert "total_referred" in e
+
+    # Seed one commission for creator 1 and verify the earnings reflect it.
+    auth.record_commission(c1["id"], None, 200, "usd", "cs-test-lc-1")
+
+    creators = auth.list_creators()
+    # list_creators returns newest first; c1 was approved first so it's second.
+    # Find c1 by referral_code rather than position to be order-independent.
+    c1_in_list = next(c for c in creators if c["referral_code"] == c1["referral_code"])
+    assert c1_in_list["earnings"]["lifetime_earnings_cents"] == 200

@@ -93,6 +93,13 @@
   </div>
   <div id="list"><div class="empty">loading…</div></div>
 
+  <div class="card" id="creators-panel">
+    <h2>creators</h2>
+    <p class="hint">all approved creators with referral stats and earnings. pending balance = unpaid commissions; lifetime = all commissions ever.</p>
+    <div class="totals" id="creators-totals"></div>
+    <div id="creators-list"><div class="empty">loading…</div></div>
+  </div>
+
   <div class="card" id="payouts-panel">
     <h2>payouts</h2>
     <p class="hint">monthly creator commissions. "run monthly payouts" creates pending payouts for all approved creators with unpaid earnings; "mark paid" settles them after you've transferred funds.</p>
@@ -194,6 +201,75 @@
   });
 
   load();
+})();
+
+/* ── creators panel ── */
+(function () {
+  var totalsEl   = document.getElementById('creators-totals');
+  var listEl     = document.getElementById('creators-list');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function fmt(cents) {
+    return '$' + (cents / 100).toFixed(2);
+  }
+
+  function loadCreators() {
+    listEl.innerHTML = '<div class="empty">loading…</div>';
+    fetch('/api/admin/creators', { credentials: 'same-origin' })
+      .then(function (r) {
+        if (r.status === 404) throw new Error('admin only — sign in as an admin account.');
+        if (!r.ok) throw new Error('could not load creators (' + r.status + ').');
+        return r.json();
+      })
+      .then(function (d) { renderCreators(d.creators || []); })
+      .catch(function (e) {
+        listEl.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+        totalsEl.innerHTML = '';
+      });
+  }
+
+  function renderCreators(creators) {
+    var totalPending  = creators.reduce(function (s, c) { return s + (c.earnings && c.earnings.pending_balance_cents || 0); }, 0);
+    var totalLifetime = creators.reduce(function (s, c) { return s + (c.earnings && c.earnings.lifetime_earnings_cents || 0); }, 0);
+    totalsEl.innerHTML =
+      '<b>' + creators.length + '</b> creator' + (creators.length === 1 ? '' : 's')
+      + ' &nbsp;·&nbsp; <b>' + fmt(totalPending) + '</b> total pending'
+      + ' &nbsp;·&nbsp; <b>' + fmt(totalLifetime) + '</b> total lifetime';
+
+    if (!creators.length) {
+      listEl.innerHTML = '<div class="empty">no creators yet.</div>';
+      return;
+    }
+
+    var rows = creators.map(function (c) {
+      var e = c.earnings || {};
+      var method = c.payout_method ? esc(c.payout_method) : '<span class="muted">—</span>';
+      var statusClass = c.status === 'active' ? 'approved' : 'rejected';
+      return '<tr>'
+        + '<td>' + esc(c.name || '—') + '</td>'
+        + '<td><code>' + esc(c.referral_code) + '</code></td>'
+        + '<td><span class="pill ' + statusClass + '">' + esc(c.status) + '</span></td>'
+        + '<td>' + esc(e.total_referred || 0) + '</td>'
+        + '<td>' + esc(e.active_subscribers || 0) + '</td>'
+        + '<td>' + esc(fmt(e.pending_balance_cents || 0)) + '</td>'
+        + '<td>' + esc(fmt(e.lifetime_earnings_cents || 0)) + '</td>'
+        + '<td>' + method + '</td>'
+        + '</tr>';
+    }).join('');
+
+    listEl.innerHTML =
+      '<table><thead><tr>'
+      + '<th>name</th><th>code</th><th>status</th><th>referred</th>'
+      + '<th>active subs</th><th>pending balance</th><th>lifetime</th><th>payout method</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  loadCreators();
 })();
 
 /* ── payouts panel ── */

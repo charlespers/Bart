@@ -949,6 +949,13 @@ async def admin_mark_payout_paid(payout_id: int, req: MarkPaidRequest,
     return {"ok": True}
 
 
+@app.get("/api/admin/creators")
+async def admin_list_creators(user=Depends(auth.current_user)):
+    """Every creator with referral counts + earnings — admin only."""
+    _require_admin(user)
+    return {"creators": auth.list_creators()}
+
+
 # ─── trial codes (single-use free-packet coupons) ────────────────────────────
 
 class RedeemCodeRequest(BaseModel):
