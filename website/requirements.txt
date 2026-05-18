@@ -3,4 +3,4 @@ uvicorn[standard]>=0.27
 python-multipart>=0.0.9
 bcrypt>=4.1
 slowapi>=0.1.9
-google-auth>=2.30
+google-auth[requests]>=2.30
