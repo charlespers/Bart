@@ -379,7 +379,7 @@ def test_creator_analytics_funnel_and_series(tmp_path):
     auth.record_referral_click(code)
     auth.record_referral_click(code)        # 4 clicks today
     u1 = auth.create_user("a1@example.com", "pw123456", referred_by=code)
-    u2 = auth.create_user("a2@example.com", "pw123456", referred_by=code)
+    auth.create_user("a2@example.com", "pw123456", referred_by=code)
     auth.update_subscription(u1, "s1", "active", None)
     a = auth.creator_analytics(auth.get_creator_by_code(code))
     assert a["total_clicks"] == 4
@@ -393,3 +393,14 @@ def test_creator_analytics_funnel_and_series(tmp_path):
     assert today["clicks"] == 4
     assert today["signups"] == 2
     assert all(set(d.keys()) == {"day", "clicks", "signups"} for d in a["series"])
+
+
+def test_creator_analytics_zero_data(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    a = auth.creator_analytics(auth.get_creator_by_code(creator["referral_code"]))
+    assert a["total_clicks"] == 0
+    assert a["funnel"]["click_to_signup_pct"] == 0.0
+    assert a["funnel"]["signup_to_subscriber_pct"] == 0.0
+    assert len(a["series"]) == 30
+    assert all(d["clicks"] == 0 and d["signups"] == 0 for d in a["series"])

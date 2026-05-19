@@ -1362,6 +1362,8 @@ def creator_analytics(creator) -> dict:
     """Referral funnel + a 30-day clicks/signups series for the dashboard."""
     code = creator["referral_code"]
     cid = creator["id"]
+    today = datetime.now(timezone.utc).date()
+    cutoff = (today - timedelta(days=29)).strftime("%Y-%m-%d")
     with _connect() as db:
         total_clicks = db.execute(
             "SELECT COALESCE(SUM(clicks), 0) AS n FROM referral_clicks "
@@ -1375,14 +1377,14 @@ def creator_analytics(creator) -> dict:
             "WHERE referred_by = ? AND subscription_status = 'active'", (code,)
         ).fetchone()["n"]
         clicks_by_day = {r["day"]: r["clicks"] for r in db.execute(
-            "SELECT day, clicks FROM referral_clicks WHERE creator_id = ?",
-            (cid,)
+            "SELECT day, clicks FROM referral_clicks "
+            "WHERE creator_id = ? AND day >= ?", (cid, cutoff)
         ).fetchall()}
         signups_by_day = {r["day"]: r["n"] for r in db.execute(
-            "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n "
-            "FROM users WHERE referred_by = ? GROUP BY day", (code,)
+            "SELECT date(created_at) AS day, COUNT(*) AS n FROM users "
+            "WHERE referred_by = ? AND date(created_at) >= ? GROUP BY day",
+            (code, cutoff)
         ).fetchall()}
-    today = datetime.now(timezone.utc).date()
     series = []
     for i in range(29, -1, -1):
         d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
@@ -1392,7 +1394,7 @@ def creator_analytics(creator) -> dict:
             "signups": signups_by_day.get(d, 0),
         })
     return {
-        "total_clicks": total_clicks,
+        "total_clicks": total_clicks,  # convenience alias of funnel.clicks
         "funnel": {
             "clicks": total_clicks,
             "signups": signups,
