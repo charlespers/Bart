@@ -641,8 +641,10 @@ def _run_monthly_payouts(period: str, trigger: str) -> dict:
             emailer.notify_creator_payout(
                 r.get("creator_email") or "", r.get("creator_name") or "",
                 r["amount_cents"], r["method"])
-    # Monthly summary to every creator.
+    # Monthly summary to every active creator.
     for c in auth.list_creators():
+        if (c.get("status") or "") != "active":
+            continue
         e = c.get("earnings") or {}
         emailer.notify_creator_monthly_summary(
             c.get("email") or "", c.get("name") or "", {
@@ -657,10 +659,10 @@ def _run_monthly_payouts(period: str, trigger: str) -> dict:
 async def _payout_scheduler() -> None:
     """Background loop: once a day past PAYOUT_DAY, run the monthly payout
     batch if it hasn't run yet this month. Failures only log."""
-    from datetime import datetime
+    from datetime import datetime, timezone
     while True:
         try:
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             period = now.strftime("%Y-%m")
             if now.day >= PAYOUT_DAY and not auth.payout_run_exists(period):
                 print(f"[payout-cron] running batch for {period}",
@@ -861,7 +863,6 @@ async def creator_me(user=Depends(auth.current_user)):
             "name": creator["name"],
             "referral_code": creator["referral_code"],
             "referral_url": f"{APP_PUBLIC_URL}/r/{creator['referral_code']}",
-            "commission_cents": auth.CREATOR_COMMISSION_CENTS,
             "payout_minimum_cents": PAYOUT_MINIMUM_CENTS,
             "connect_mode": STRIPE_CONNECT_ENABLED,
             "payout_method": creator["payout_method"],
