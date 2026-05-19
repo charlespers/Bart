@@ -1129,10 +1129,16 @@ def referral_code_is_valid(code: str) -> bool:
 def record_referral_click(code: str) -> bool:
     """Count one click on a creator's referral link. No-op for an unknown or
     inactive code. Returns True iff a click was counted."""
-    creator = get_creator_by_code(code)   # active creators only
-    if creator is None:
+    if not code:
         return False
     with _connect() as db:
+        creator = db.execute(
+            "SELECT id FROM creators "
+            "WHERE referral_code = ? AND status = 'active'",
+            (code.strip().upper(),),
+        ).fetchone()
+        if creator is None:
+            return False
         db.execute(
             "INSERT INTO referral_clicks (creator_id, day, clicks) "
             "VALUES (?, ?, 1) "

@@ -349,3 +349,22 @@ def test_record_referral_click_unknown_code_is_noop(tmp_path):
     auth = _load_auth(tmp_path)
     assert auth.record_referral_click("NOTACODE") is False
     assert auth.record_referral_click("") is False
+    with auth._connect() as db:
+        n = db.execute("SELECT COUNT(*) AS n FROM referral_clicks").fetchone()["n"]
+    assert n == 0
+
+
+def test_record_referral_click_new_day_creates_new_row(tmp_path, monkeypatch):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    monkeypatch.setattr(auth, "_current_day", lambda: "2026-01-01")
+    auth.record_referral_click(code)
+    monkeypatch.setattr(auth, "_current_day", lambda: "2026-01-02")
+    auth.record_referral_click(code)
+    with auth._connect() as db:
+        rows = db.execute(
+            "SELECT clicks FROM referral_clicks WHERE creator_id = ? ORDER BY day",
+            (creator["id"],)).fetchall()
+    assert len(rows) == 2
+    assert all(r["clicks"] == 1 for r in rows)
