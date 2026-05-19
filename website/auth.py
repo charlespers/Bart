@@ -173,6 +173,15 @@ CREATE TABLE IF NOT EXISTS payout_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_payout_runs_period ON payout_runs(period);
 
+-- referral_clicks: one row per creator per day, counting hits on /r/<code>.
+CREATE TABLE IF NOT EXISTS referral_clicks (
+  creator_id INTEGER NOT NULL,
+  day        TEXT NOT NULL,                  -- 'YYYY-MM-DD'
+  clicks     INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (creator_id, day),
+  FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+);
+
 -- trial codes: single-use coupons that grant one free premium (Claude)
 -- packet generation. Codes are minted only by an admin. A code is consumed
 -- globally on first redemption — `redeemed_by` stamps which account spent
@@ -432,6 +441,11 @@ CLAUDE_RUNS_PER_MONTH = max(1, int(os.environ.get("BART_CLAUDE_RUNS_PER_MONTH", 
 def _current_period() -> str:
     """The billing period the usage counter belongs to — "YYYY-MM" (UTC)."""
     return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _current_day() -> str:
+    """Today's date — "YYYY-MM-DD" (UTC)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _row_get(row, key, default=None):
@@ -1110,6 +1124,22 @@ def referral_code_is_valid(code: str) -> bool:
     """True iff `code` maps to an active creator — guards what we'll store on
     a user's `referred_by` and credit later."""
     return get_creator_by_code(code) is not None
+
+
+def record_referral_click(code: str) -> bool:
+    """Count one click on a creator's referral link. No-op for an unknown or
+    inactive code. Returns True iff a click was counted."""
+    creator = get_creator_by_code(code)   # active creators only
+    if creator is None:
+        return False
+    with _connect() as db:
+        db.execute(
+            "INSERT INTO referral_clicks (creator_id, day, clicks) "
+            "VALUES (?, ?, 1) "
+            "ON CONFLICT(creator_id, day) DO UPDATE SET clicks = clicks + 1",
+            (creator["id"], _current_day()),
+        )
+    return True
 
 
 def get_creator_by_email(email: str) -> Optional[sqlite3.Row]:

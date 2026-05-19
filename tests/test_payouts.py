@@ -324,3 +324,28 @@ def test_payout_runs_table_in_schema(tmp_path):
     auth = _load_auth(tmp_path)
     assert _columns(auth, "payout_runs") == {
         "id", "period", "trigger", "ran_at", "n_payouts", "total_cents"}
+
+
+def test_referral_clicks_table_in_schema(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert _columns(auth, "referral_clicks") == {"creator_id", "day", "clicks"}
+
+
+def test_record_referral_click_counts_and_upserts(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    assert auth.record_referral_click(code) is True
+    assert auth.record_referral_click(code) is True
+    with auth._connect() as db:
+        rows = db.execute(
+            "SELECT day, clicks FROM referral_clicks WHERE creator_id = ?",
+            (creator["id"],)).fetchall()
+    assert len(rows) == 1            # both hits same day -> one row
+    assert rows[0]["clicks"] == 2
+
+
+def test_record_referral_click_unknown_code_is_noop(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert auth.record_referral_click("NOTACODE") is False
+    assert auth.record_referral_click("") is False
