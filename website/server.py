@@ -584,9 +584,10 @@ def _credit_referral_commission(user_id: int, amount_cents: int,
         creator = auth.get_creator_by_code(code)
         if creator is None:
             return
-        # Flat $2 per verified payment, capped at the amount actually
-        # collected so a discounted/zero payment never overpays.
-        commission = min(auth.CREATOR_COMMISSION_CENTS, amount_cents)
+        # Tiered commission — the creator's current rate (rises with their
+        # active-subscriber count), capped at the amount actually collected so
+        # a discounted/zero payment never overpays.
+        commission = min(auth.creator_commission_cents(creator), amount_cents)
         if commission <= 0:
             return
         if auth.record_commission(
@@ -597,6 +598,11 @@ def _credit_referral_commission(user_id: int, amount_cents: int,
             print(f"[creator] credited code {creator['referral_code']} "
                   f"{commission}¢ for invoice {stripe_ref} (user {user_id})",
                   file=sys.stderr, flush=True)
+            # First commission ever from this referred user → tell the
+            # creator. Renewals don't re-notify (count would be > 1).
+            if auth.commission_count_for_referred(creator["id"], user_id) == 1:
+                emailer.notify_creator_new_subscriber(
+                    creator["email"], creator["name"], commission)
     except Exception as e:  # noqa: BLE001 — commission bookkeeping is best-effort
         print(f"[creator] commission credit failed: {e}",
               file=sys.stderr, flush=True)
@@ -1970,6 +1976,13 @@ async def referral_link(code: str):
             REFERRAL_COOKIE, safe,
             max_age=_REFERRAL_COOKIE_MAX_AGE, httponly=True, samesite="lax",
         )
+        # Count the click for the creator's analytics — best-effort, never
+        # let a bookkeeping failure break the redirect.
+        try:
+            auth.record_referral_click(safe)
+        except Exception as e:  # noqa: BLE001
+            print(f"[referral] click count failed: {e}",
+                  file=sys.stderr, flush=True)
     return resp
 
 
