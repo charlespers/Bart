@@ -1183,7 +1183,7 @@ def get_creator_for_user(user) -> Optional[sqlite3.Row]:
         return row
 
 
-def get_creator(creator_id: int):
+def get_creator(creator_id: int) -> Optional[sqlite3.Row]:
     """A creator row by id, or None."""
     with _connect() as db:
         return db.execute(
@@ -1281,7 +1281,7 @@ def record_commission(
 
 
 def commission_count_for_referred(creator_id: int,
-                                  referred_user_id: int) -> int:
+                                  referred_user_id: Optional[int]) -> int:
     """How many commissions a creator has earned from one referred user.
     A return of 1 means the just-recorded commission was that user's first."""
     with _connect() as db:
