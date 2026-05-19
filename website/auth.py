@@ -973,6 +973,8 @@ CREATOR_COMMISSION_CENTS = max(0, int(
 # retroactive — crossing a breakpoint lifts the rate on every subscriber.
 # CREATOR_TIERS[0] is the base rate (== CREATOR_COMMISSION_CENTS).
 CREATOR_TIERS = [(0, CREATOR_COMMISSION_CENTS), (50, 225)]
+assert CREATOR_TIERS == sorted(CREATOR_TIERS), \
+    "CREATOR_TIERS must be ascending by subscriber threshold"
 
 
 def commission_cents_for(active_subscribers: int) -> int:
@@ -987,7 +989,7 @@ def commission_cents_for(active_subscribers: int) -> int:
     return rate
 
 
-def next_tier_for(active_subscribers: int):
+def next_tier_for(active_subscribers: int) -> Optional[dict]:
     """The next tier up as {'at': subs, 'cents': rate}, or None if the
     creator is already in the top tier."""
     for threshold, cents in CREATOR_TIERS:
@@ -1257,7 +1259,7 @@ def creator_earnings(creator) -> dict:
 
     `pending_balance_cents` is the sum of commissions not yet attached to a
     payout — that is what a payout run pays out. `monthly_run_rate_cents`
-    projects next month's income at $2 per currently-active subscriber."""
+    projects next month's income at the creator's current tier rate per active subscriber."""
     code = creator["referral_code"]
     cid = creator["id"]
     period = _current_period()
