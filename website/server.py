@@ -71,6 +71,11 @@ WEB_PRIMARY_MODEL = os.environ.get("BART_WEB_PRIMARY_MODEL", "claude-sonnet-4-6"
 PAYOUT_MINIMUM_CENTS = max(0, int(
     os.environ.get("BART_PAYOUT_MINIMUM_CENTS", "2500")))
 STRIPE_CONNECT_ENABLED = os.environ.get("BART_STRIPE_CONNECT", "0") == "1"
+# Automated payouts. The in-process scheduler runs the monthly batch on/after
+# PAYOUT_DAY if it hasn't run that month. Set BART_PAYOUT_CRON=0 to disable
+# (e.g. when running multiple web instances and only one should schedule).
+PAYOUT_DAY = max(1, min(28, int(os.environ.get("BART_PAYOUT_DAY", "1"))))
+PAYOUT_CRON_ENABLED = os.environ.get("BART_PAYOUT_CRON", "1") == "1"
 
 
 HERE = Path(__file__).resolve().parent
@@ -620,6 +625,60 @@ def _stripe_transfer(creator_row, amount_cents: int) -> str:
     return tr["id"]
 
 
+def _run_monthly_payouts(period: str, trigger: str) -> dict:
+    """Run the payout batch for `period`, record the run, and email creators
+    (payout notices + a monthly summary to every creator). Shared by the cron
+    and the admin endpoint. `trigger` is 'cron' or 'admin'."""
+    transfer = _stripe_transfer if STRIPE_CONNECT_ENABLED else None
+    results = auth.run_payouts(PAYOUT_MINIMUM_CENTS, period=period,
+                               transfer_fn=transfer)
+    total = sum(r["amount_cents"] for r in results)
+    auth.record_payout_run(period, trigger, len(results), total)
+    # Payout-sent notices for transfers that actually completed.
+    for r in results:
+        if r["status"] == "paid":
+            emailer.notify_creator_payout(
+                r.get("creator_email") or "", r.get("creator_name") or "",
+                r["amount_cents"], r["method"])
+    # Monthly summary to every creator.
+    for c in auth.list_creators():
+        e = c.get("earnings") or {}
+        emailer.notify_creator_monthly_summary(
+            c.get("email") or "", c.get("name") or "", {
+                "this_month_cents": e.get("this_month_cents", 0),
+                "active_subscribers": e.get("active_subscribers", 0),
+                "commission_cents": e.get("commission_cents", 0),
+                "pending_balance_cents": e.get("pending_balance_cents", 0),
+            })
+    return {"results": results, "total_cents": total}
+
+
+async def _payout_scheduler() -> None:
+    """Background loop: once a day past PAYOUT_DAY, run the monthly payout
+    batch if it hasn't run yet this month. Failures only log."""
+    from datetime import datetime
+    while True:
+        try:
+            now = datetime.now()
+            period = now.strftime("%Y-%m")
+            if now.day >= PAYOUT_DAY and not auth.payout_run_exists(period):
+                print(f"[payout-cron] running batch for {period}",
+                      file=sys.stderr, flush=True)
+                out = _run_monthly_payouts(period, "cron")
+                print(f"[payout-cron] {len(out['results'])} payouts, "
+                      f"{out['total_cents']}¢", file=sys.stderr, flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[payout-cron] error: {e}", file=sys.stderr, flush=True)
+        await asyncio.sleep(6 * 3600)
+
+
+@app.on_event("startup")
+async def _start_payout_scheduler() -> None:
+    if PAYOUT_CRON_ENABLED:
+        asyncio.create_task(_payout_scheduler())
+        print("[payout-cron] scheduler started", file=sys.stderr, flush=True)
+
+
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
     """Stripe hits this on every subscription event. We verify the signature,
@@ -935,14 +994,14 @@ async def admin_list_payouts(status: str = "all", user=Depends(auth.current_user
 async def admin_run_payouts(user=Depends(auth.current_user)):
     """Run the monthly payout batch — pays every creator at or above the
     minimum balance. Stripe Connect creators are transferred automatically;
-    everyone else gets a pending payout for the manual queue."""
+    everyone else gets a pending payout for the manual queue. Records the run
+    so the automated scheduler skips this month."""
     _require_admin(user)
     if STRIPE_CONNECT_ENABLED and not STRIPE_SECRET_KEY:
         raise HTTPException(409, "stripe connect is enabled but "
                                  "STRIPE_SECRET_KEY is not configured.")
-    transfer = _stripe_transfer if STRIPE_CONNECT_ENABLED else None
-    results = auth.run_payouts(PAYOUT_MINIMUM_CENTS, transfer_fn=transfer)
-    return {"ok": True, "payouts": results}
+    out = _run_monthly_payouts(auth._current_period(), "admin")
+    return {"ok": True, "payouts": out["results"]}
 
 
 @app.post("/api/admin/payouts/{payout_id}/mark-paid")
@@ -952,6 +1011,18 @@ async def admin_mark_payout_paid(payout_id: int, req: MarkPaidRequest,
     _require_admin(user)
     if not auth.mark_payout_paid(payout_id, note=req.note):
         raise HTTPException(404, "no such pending payout.")
+    # Notify the creator their payout was sent — best-effort.
+    try:
+        p = next((x for x in auth.list_payouts() if x["id"] == payout_id), None)
+        if p is not None:
+            creator = auth.get_creator(p["creator_id"])
+            if creator is not None:
+                emailer.notify_creator_payout(
+                    creator["email"], creator["name"],
+                    p["amount_cents"], p["method"])
+    except Exception as e:  # noqa: BLE001
+        print(f"[payout] mark-paid email failed: {e}",
+              file=sys.stderr, flush=True)
     return {"ok": True}
 
 
