@@ -1358,6 +1358,54 @@ def creator_earnings(creator) -> dict:
     }
 
 
+def creator_analytics(creator) -> dict:
+    """Referral funnel + a 30-day clicks/signups series for the dashboard."""
+    code = creator["referral_code"]
+    cid = creator["id"]
+    with _connect() as db:
+        total_clicks = db.execute(
+            "SELECT COALESCE(SUM(clicks), 0) AS n FROM referral_clicks "
+            "WHERE creator_id = ?", (cid,)
+        ).fetchone()["n"]
+        signups = db.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE referred_by = ?", (code,)
+        ).fetchone()["n"]
+        subscribers = db.execute(
+            "SELECT COUNT(*) AS n FROM users "
+            "WHERE referred_by = ? AND subscription_status = 'active'", (code,)
+        ).fetchone()["n"]
+        clicks_by_day = {r["day"]: r["clicks"] for r in db.execute(
+            "SELECT day, clicks FROM referral_clicks WHERE creator_id = ?",
+            (cid,)
+        ).fetchall()}
+        signups_by_day = {r["day"]: r["n"] for r in db.execute(
+            "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n "
+            "FROM users WHERE referred_by = ? GROUP BY day", (code,)
+        ).fetchall()}
+    today = datetime.now(timezone.utc).date()
+    series = []
+    for i in range(29, -1, -1):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        series.append({
+            "day": d,
+            "clicks": clicks_by_day.get(d, 0),
+            "signups": signups_by_day.get(d, 0),
+        })
+    return {
+        "total_clicks": total_clicks,
+        "funnel": {
+            "clicks": total_clicks,
+            "signups": signups,
+            "subscribers": subscribers,
+            "click_to_signup_pct": round(100.0 * signups / total_clicks, 1)
+                                   if total_clicks else 0.0,
+            "signup_to_subscriber_pct": round(100.0 * subscribers / signups, 1)
+                                        if signups else 0.0,
+        },
+        "series": series,
+    }
+
+
 # ─── creator payout-setting helpers ──────────────────────────────────────────
 
 def set_creator_stripe_account(creator_id: int, account_id: str) -> None:

@@ -368,3 +368,28 @@ def test_record_referral_click_new_day_creates_new_row(tmp_path, monkeypatch):
             (creator["id"],)).fetchall()
     assert len(rows) == 2
     assert all(r["clicks"] == 1 for r in rows)
+
+
+def test_creator_analytics_funnel_and_series(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    auth.record_referral_click(code)
+    auth.record_referral_click(code)
+    auth.record_referral_click(code)
+    auth.record_referral_click(code)        # 4 clicks today
+    u1 = auth.create_user("a1@example.com", "pw123456", referred_by=code)
+    u2 = auth.create_user("a2@example.com", "pw123456", referred_by=code)
+    auth.update_subscription(u1, "s1", "active", None)
+    a = auth.creator_analytics(auth.get_creator_by_code(code))
+    assert a["total_clicks"] == 4
+    assert a["funnel"]["clicks"] == 4
+    assert a["funnel"]["signups"] == 2
+    assert a["funnel"]["subscribers"] == 1
+    assert a["funnel"]["click_to_signup_pct"] == 50.0
+    assert a["funnel"]["signup_to_subscriber_pct"] == 50.0
+    assert len(a["series"]) == 30
+    today = a["series"][-1]
+    assert today["clicks"] == 4
+    assert today["signups"] == 2
+    assert all(set(d.keys()) == {"day", "clicks", "signups"} for d in a["series"])
