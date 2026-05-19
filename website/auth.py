@@ -1183,6 +1183,14 @@ def get_creator_for_user(user) -> Optional[sqlite3.Row]:
         return row
 
 
+def get_creator(creator_id: int):
+    """A creator row by id, or None."""
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM creators WHERE id = ?", (creator_id,)
+        ).fetchone()
+
+
 def approve_creator_application(app_id: int) -> Optional[dict]:
     """Approve an application: mark it approved and create the creator record
     (idempotent — re-approving returns the existing creator). Returns a dict
@@ -1270,6 +1278,18 @@ def record_commission(
              (currency or "usd").lower(), stripe_ref),
         )
     return True
+
+
+def commission_count_for_referred(creator_id: int,
+                                  referred_user_id: int) -> int:
+    """How many commissions a creator has earned from one referred user.
+    A return of 1 means the just-recorded commission was that user's first."""
+    with _connect() as db:
+        return db.execute(
+            "SELECT COUNT(*) AS n FROM commissions "
+            "WHERE creator_id = ? AND referred_user_id = ?",
+            (creator_id, referred_user_id),
+        ).fetchone()["n"]
 
 
 def creator_summary(creator) -> dict:
@@ -1536,6 +1556,8 @@ def run_payouts(minimum_cents: int, period: Optional[str] = None,
             "id": payout_id, "creator_id": creator["id"],
             "amount_cents": total, "method": method, "status": status,
             "stripe_transfer_id": transfer_id,
+            "creator_email": creator["email"],
+            "creator_name": creator["name"],
         })
     return results
 

@@ -404,3 +404,31 @@ def test_creator_analytics_zero_data(tmp_path):
     assert a["funnel"]["signup_to_subscriber_pct"] == 0.0
     assert len(a["series"]) == 30
     assert all(d["clicks"] == 0 and d["signups"] == 0 for d in a["series"])
+
+
+def test_commission_count_for_referred(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    uid = auth.create_user("cc@example.com", "pw123456")
+    assert auth.commission_count_for_referred(creator["id"], uid) == 0
+    auth.record_commission(creator["id"], uid, 200, "usd", "inv_1")
+    assert auth.commission_count_for_referred(creator["id"], uid) == 1
+    auth.record_commission(creator["id"], uid, 200, "usd", "inv_2")
+    assert auth.commission_count_for_referred(creator["id"], uid) == 2
+
+
+def test_get_creator_by_id(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    got = auth.get_creator(creator["id"])
+    assert got is not None and got["referral_code"] == creator["referral_code"]
+    assert auth.get_creator(999999) is None
+
+
+def test_run_payouts_results_carry_creator_contact(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = _seed_creator_with_balance(auth, 3000, "rc@example.com")
+    results = auth.run_payouts(2500, "2026-05")
+    assert len(results) == 1
+    assert results[0]["creator_email"] == "rc@example.com"
+    assert "creator_name" in results[0]
