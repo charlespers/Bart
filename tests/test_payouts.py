@@ -432,3 +432,12 @@ def test_run_payouts_results_carry_creator_contact(tmp_path):
     assert len(results) == 1
     assert results[0]["creator_email"] == "rc@example.com"
     assert "creator_name" in results[0]
+
+
+def test_get_payout(tmp_path):
+    auth = _load_auth(tmp_path)
+    _seed_creator_with_balance(auth, 3000, "gp@example.com")
+    payout = auth.run_payouts(2500, "2026-05")[0]
+    got = auth.get_payout(payout["id"])
+    assert got is not None and got["amount_cents"] == 3000
+    assert auth.get_payout(999999) is None

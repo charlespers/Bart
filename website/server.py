@@ -143,6 +143,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _streams: dict[str, asyncio.Queue] = {}
 _procs: dict[str, asyncio.subprocess.Process] = {}
+_payout_task: asyncio.Task | None = None
 # Per-user locks — one concurrent run per user (prevents accidental double-fire
 # from clobbering the user's own output dir). Per-user, NOT global, so users
 # don't queue behind each other.
@@ -664,7 +665,9 @@ async def _payout_scheduler() -> None:
             if now.day >= PAYOUT_DAY and not auth.payout_run_exists(period):
                 print(f"[payout-cron] running batch for {period}",
                       file=sys.stderr, flush=True)
-                out = _run_monthly_payouts(period, "cron")
+                loop = asyncio.get_running_loop()
+                out = await loop.run_in_executor(
+                    None, _run_monthly_payouts, period, "cron")
                 print(f"[payout-cron] {len(out['results'])} payouts, "
                       f"{out['total_cents']}¢", file=sys.stderr, flush=True)
         except Exception as e:  # noqa: BLE001
@@ -674,8 +677,10 @@ async def _payout_scheduler() -> None:
 
 @app.on_event("startup")
 async def _start_payout_scheduler() -> None:
+    # TODO: migrate to a FastAPI lifespan handler if/when one is added.
+    global _payout_task
     if PAYOUT_CRON_ENABLED:
-        asyncio.create_task(_payout_scheduler())
+        _payout_task = asyncio.create_task(_payout_scheduler())
         print("[payout-cron] scheduler started", file=sys.stderr, flush=True)
 
 
@@ -1000,7 +1005,9 @@ async def admin_run_payouts(user=Depends(auth.current_user)):
     if STRIPE_CONNECT_ENABLED and not STRIPE_SECRET_KEY:
         raise HTTPException(409, "stripe connect is enabled but "
                                  "STRIPE_SECRET_KEY is not configured.")
-    out = _run_monthly_payouts(auth._current_period(), "admin")
+    loop = asyncio.get_running_loop()
+    out = await loop.run_in_executor(
+        None, _run_monthly_payouts, auth._current_period(), "admin")
     return {"ok": True, "payouts": out["results"]}
 
 
@@ -1013,7 +1020,7 @@ async def admin_mark_payout_paid(payout_id: int, req: MarkPaidRequest,
         raise HTTPException(404, "no such pending payout.")
     # Notify the creator their payout was sent — best-effort.
     try:
-        p = next((x for x in auth.list_payouts() if x["id"] == payout_id), None)
+        p = auth.get_payout(payout_id)
         if p is not None:
             creator = auth.get_creator(p["creator_id"])
             if creator is not None:

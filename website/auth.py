@@ -1575,6 +1575,15 @@ def mark_payout_paid(payout_id: int, note: str = "") -> bool:
         return cur.rowcount > 0
 
 
+def get_payout(payout_id: int) -> Optional[dict]:
+    """A payout row by id as a dict, or None."""
+    with _connect() as db:
+        row = db.execute(
+            "SELECT * FROM payouts WHERE id = ?", (payout_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def list_payouts(creator_id: Optional[int] = None,
                  status: Optional[str] = None) -> list[dict]:
     """Payouts newest-first, optionally filtered by creator and/or status."""
