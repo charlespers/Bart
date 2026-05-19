@@ -161,6 +161,18 @@ CREATE TABLE IF NOT EXISTS payouts (
 CREATE INDEX IF NOT EXISTS idx_payouts_creator
   ON payouts(creator_id, created_at DESC);
 
+-- payout_runs: one row per executed monthly payout batch. Audit log, and the
+-- de-dup signal for the automated scheduler (it skips a period already run).
+CREATE TABLE IF NOT EXISTS payout_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  period      TEXT NOT NULL,                 -- 'YYYY-MM'
+  trigger     TEXT NOT NULL CHECK (trigger IN ('cron','admin')),
+  ran_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  n_payouts   INTEGER NOT NULL DEFAULT 0,
+  total_cents INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_payout_runs_period ON payout_runs(period);
+
 -- trial codes: single-use coupons that grant one free premium (Claude)
 -- packet generation. Codes are minted only by an admin. A code is consumed
 -- globally on first redemption — `redeemed_by` stamps which account spent
@@ -1470,6 +1482,35 @@ def list_payouts(creator_id: Optional[int] = None,
         return [dict(r) for r in db.execute(
             f"SELECT * FROM payouts{where} ORDER BY created_at DESC, id DESC",
             tuple(args),
+        ).fetchall()]
+
+
+def record_payout_run(period: str, trigger: str,
+                      n_payouts: int, total_cents: int) -> int:
+    """Log an executed payout batch. `trigger` is 'cron' or 'admin'."""
+    with _connect() as db:
+        cur = db.execute(
+            "INSERT INTO payout_runs (period, trigger, n_payouts, total_cents) "
+            "VALUES (?, ?, ?, ?)",
+            (period, trigger, int(n_payouts), int(total_cents)),
+        )
+        return cur.lastrowid
+
+
+def payout_run_exists(period: str) -> bool:
+    """True if any payout batch (cron or admin) has run for `period`."""
+    with _connect() as db:
+        return db.execute(
+            "SELECT 1 FROM payout_runs WHERE period = ? LIMIT 1", (period,)
+        ).fetchone() is not None
+
+
+def list_payout_runs(limit: int = 12) -> list[dict]:
+    """Recent payout batches, newest first."""
+    with _connect() as db:
+        return [dict(r) for r in db.execute(
+            "SELECT * FROM payout_runs ORDER BY ran_at DESC, id DESC LIMIT ?",
+            (int(limit),),
         ).fetchall()]
 
 

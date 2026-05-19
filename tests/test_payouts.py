@@ -297,3 +297,30 @@ def test_creator_earnings_exposes_tier(tmp_path):
     assert e["commission_cents"] == 200
     assert e["next_tier"] == {"at": 50, "cents": 225}
     assert e["monthly_run_rate_cents"] == 3 * 200
+
+
+def test_payout_runs_record_and_exists(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert auth.payout_run_exists("2026-05") is False
+    rid = auth.record_payout_run("2026-05", "cron", 3, 7500)
+    assert rid > 0
+    assert auth.payout_run_exists("2026-05") is True
+    assert auth.payout_run_exists("2026-04") is False
+
+
+def test_list_payout_runs_newest_first(tmp_path):
+    auth = _load_auth(tmp_path)
+    auth.record_payout_run("2026-03", "cron", 1, 100)
+    auth.record_payout_run("2026-04", "admin", 2, 200)
+    runs = auth.list_payout_runs()
+    assert len(runs) == 2
+    assert runs[0]["period"] == "2026-04"
+    assert runs[0]["trigger"] == "admin"
+    assert runs[0]["n_payouts"] == 2
+    assert runs[0]["total_cents"] == 200
+
+
+def test_payout_runs_table_in_schema(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert _columns(auth, "payout_runs") == {
+        "id", "period", "trigger", "ran_at", "n_payouts", "total_cents"}
