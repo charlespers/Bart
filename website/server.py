@@ -939,6 +939,16 @@ async def creator_connect_refresh(user=Depends(auth.current_user)):
     return {"payouts_enabled": enabled}
 
 
+@app.get("/api/creator/analytics")
+async def creator_analytics(user=Depends(auth.current_user)):
+    """Referral funnel + 30-day clicks/signups series for the signed-in
+    creator's dashboard."""
+    creator = auth.get_creator_for_user(user)
+    if creator is None:
+        raise HTTPException(403, "you're not a bart creator.")
+    return auth.creator_analytics(creator)
+
+
 @app.get("/api/admin/creator-applications")
 async def admin_creator_applications(status: str = "pending",
                                      user=Depends(auth.current_user)):
@@ -1031,6 +1041,13 @@ async def admin_mark_payout_paid(payout_id: int, req: MarkPaidRequest,
         print(f"[payout] mark-paid email failed: {e}",
               file=sys.stderr, flush=True)
     return {"ok": True}
+
+
+@app.get("/api/admin/payout-runs")
+async def admin_payout_runs(user=Depends(auth.current_user)):
+    """Recent automated/manual payout batches — admin only."""
+    _require_admin(user)
+    return {"runs": auth.list_payout_runs()}
 
 
 @app.get("/api/admin/creators")
