@@ -90,6 +90,8 @@ Set these with `flyctl secrets set KEY=value` (the app restarts on change).
 - `BART_PAYOUT_MINIMUM_CENTS` — minimum creator balance (in cents) before a payout run pays them; default `2500` ($25).
 - `BART_STRIPE_CONNECT` — set to `1` to enable Stripe Connect Express payouts (automated transfers + the "connect your bank" onboarding UI); default `0` = manual payouts (admin records each payout by hand). Note that Connect must also be enabled on the Stripe account.
 - `BART_WEB_PRIMARY_MODEL` — the Claude model used to author premium web packets; default `claude-sonnet-4-6`.
+- `BART_PAYOUT_DAY` — day of the month (1–28) on or after which the automated payout batch runs each month; default `1`.
+- `BART_PAYOUT_CRON` — set to `0` to disable the in-process automated payout scheduler (e.g. when running multiple web instances so only one schedules payouts); default `1` = enabled.
 
 Approve or reject applications at `/admin-creators` (admin account only).
 

@@ -161,6 +161,27 @@ CREATE TABLE IF NOT EXISTS payouts (
 CREATE INDEX IF NOT EXISTS idx_payouts_creator
   ON payouts(creator_id, created_at DESC);
 
+-- payout_runs: one row per executed monthly payout batch. Audit log, and the
+-- de-dup signal for the automated scheduler (it skips a period already run).
+CREATE TABLE IF NOT EXISTS payout_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  period      TEXT NOT NULL,                 -- 'YYYY-MM'
+  trigger     TEXT NOT NULL CHECK (trigger IN ('cron','admin')),
+  ran_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  n_payouts   INTEGER NOT NULL DEFAULT 0,
+  total_cents INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_payout_runs_period ON payout_runs(period);
+
+-- referral_clicks: one row per creator per day, counting hits on /r/<code>.
+CREATE TABLE IF NOT EXISTS referral_clicks (
+  creator_id INTEGER NOT NULL,
+  day        TEXT NOT NULL,                  -- 'YYYY-MM-DD'
+  clicks     INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (creator_id, day),
+  FOREIGN KEY (creator_id) REFERENCES creators(id) ON DELETE CASCADE
+);
+
 -- trial codes: single-use coupons that grant one free premium (Claude)
 -- packet generation. Codes are minted only by an admin. A code is consumed
 -- globally on first redemption — `redeemed_by` stamps which account spent
@@ -420,6 +441,11 @@ CLAUDE_RUNS_PER_MONTH = max(1, int(os.environ.get("BART_CLAUDE_RUNS_PER_MONTH", 
 def _current_period() -> str:
     """The billing period the usage counter belongs to — "YYYY-MM" (UTC)."""
     return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _current_day() -> str:
+    """Today's date — "YYYY-MM-DD" (UTC)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _row_get(row, key, default=None):
@@ -968,6 +994,48 @@ def leaderboard_for(user_id: int) -> list[dict]:
 CREATOR_COMMISSION_CENTS = max(0, int(
     os.environ.get("BART_CREATOR_COMMISSION_CENTS", "200")))
 
+# Commission tiers: (min_active_subscribers, cents), ascending. A creator's
+# current active-subscriber count selects the tier, and the rate is
+# retroactive — crossing a breakpoint lifts the rate on every subscriber.
+# CREATOR_TIERS[0] is the base rate (== CREATOR_COMMISSION_CENTS).
+CREATOR_TIERS = [(0, CREATOR_COMMISSION_CENTS), (50, 225)]
+assert CREATOR_TIERS == sorted(CREATOR_TIERS), \
+    "CREATOR_TIERS must be ascending by subscriber threshold"
+
+
+def commission_cents_for(active_subscribers: int) -> int:
+    """The per-payment commission for a creator with this many active
+    subscribers — the cents of the highest tier whose threshold is met."""
+    rate = CREATOR_TIERS[0][1]
+    for threshold, cents in CREATOR_TIERS:
+        if active_subscribers >= threshold:
+            rate = cents
+        else:
+            break
+    return rate
+
+
+def next_tier_for(active_subscribers: int) -> Optional[dict]:
+    """The next tier up as {'at': subs, 'cents': rate}, or None if the
+    creator is already in the top tier."""
+    for threshold, cents in CREATOR_TIERS:
+        if threshold > active_subscribers:
+            return {"at": threshold, "cents": cents}
+    return None
+
+
+def creator_commission_cents(creator) -> int:
+    """The commission rate (cents per payment) the creator currently earns,
+    based on their live count of active referred subscribers."""
+    with _connect() as db:
+        active = db.execute(
+            "SELECT COUNT(*) AS n FROM users "
+            "WHERE referred_by = ? AND subscription_status = 'active'",
+            (creator["referral_code"],),
+        ).fetchone()["n"]
+    return commission_cents_for(active)
+
+
 # Referral codes: unambiguous uppercase alphabet (no 0/O, 1/I) — easy to read,
 # type, and say aloud.
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -1058,6 +1126,28 @@ def referral_code_is_valid(code: str) -> bool:
     return get_creator_by_code(code) is not None
 
 
+def record_referral_click(code: str) -> bool:
+    """Count one click on a creator's referral link. No-op for an unknown or
+    inactive code. Returns True iff a click was counted."""
+    if not code:
+        return False
+    with _connect() as db:
+        creator = db.execute(
+            "SELECT id FROM creators "
+            "WHERE referral_code = ? AND status = 'active'",
+            (code.strip().upper(),),
+        ).fetchone()
+        if creator is None:
+            return False
+        db.execute(
+            "INSERT INTO referral_clicks (creator_id, day, clicks) "
+            "VALUES (?, ?, 1) "
+            "ON CONFLICT(creator_id, day) DO UPDATE SET clicks = clicks + 1",
+            (creator["id"], _current_day()),
+        )
+    return True
+
+
 def get_creator_by_email(email: str) -> Optional[sqlite3.Row]:
     if not email:
         return None
@@ -1091,6 +1181,14 @@ def get_creator_for_user(user) -> Optional[sqlite3.Row]:
                     "UPDATE creators SET user_id = ? WHERE id = ?", (uid, row["id"])
                 )
         return row
+
+
+def get_creator(creator_id: int) -> Optional[sqlite3.Row]:
+    """A creator row by id, or None."""
+    with _connect() as db:
+        return db.execute(
+            "SELECT * FROM creators WHERE id = ?", (creator_id,)
+        ).fetchone()
 
 
 def approve_creator_application(app_id: int) -> Optional[dict]:
@@ -1182,6 +1280,18 @@ def record_commission(
     return True
 
 
+def commission_count_for_referred(creator_id: int,
+                                  referred_user_id: Optional[int]) -> int:
+    """How many commissions a creator has earned from one referred user.
+    A return of 1 means the just-recorded commission was that user's first."""
+    with _connect() as db:
+        return db.execute(
+            "SELECT COUNT(*) AS n FROM commissions "
+            "WHERE creator_id = ? AND referred_user_id = ?",
+            (creator_id, referred_user_id),
+        ).fetchone()["n"]
+
+
 def creator_summary(creator) -> dict:
     """Public-facing stats for a creator's dashboard: referral link inputs,
     how many people they've referred, how many subscribed, and lifetime
@@ -1217,7 +1327,7 @@ def creator_earnings(creator) -> dict:
 
     `pending_balance_cents` is the sum of commissions not yet attached to a
     payout — that is what a payout run pays out. `monthly_run_rate_cents`
-    projects next month's income at $2 per currently-active subscriber."""
+    projects next month's income at the creator's current tier rate per active subscriber."""
     code = creator["referral_code"]
     cid = creator["id"]
     period = _current_period()
@@ -1260,9 +1370,61 @@ def creator_earnings(creator) -> dict:
         "this_month_cents": this_month,
         "total_referred": total_referred,
         "active_subscribers": active,
-        "monthly_run_rate_cents": active * CREATOR_COMMISSION_CENTS,
+        "monthly_run_rate_cents": active * commission_cents_for(active),
         "conversion_pct": round(100.0 * active / total_referred, 1)
                           if total_referred else 0.0,
+        "commission_cents": commission_cents_for(active),
+        "next_tier": next_tier_for(active),
+    }
+
+
+def creator_analytics(creator) -> dict:
+    """Referral funnel + a 30-day clicks/signups series for the dashboard."""
+    code = creator["referral_code"]
+    cid = creator["id"]
+    today = datetime.now(timezone.utc).date()
+    cutoff = (today - timedelta(days=29)).strftime("%Y-%m-%d")
+    with _connect() as db:
+        total_clicks = db.execute(
+            "SELECT COALESCE(SUM(clicks), 0) AS n FROM referral_clicks "
+            "WHERE creator_id = ?", (cid,)
+        ).fetchone()["n"]
+        signups = db.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE referred_by = ?", (code,)
+        ).fetchone()["n"]
+        subscribers = db.execute(
+            "SELECT COUNT(*) AS n FROM users "
+            "WHERE referred_by = ? AND subscription_status = 'active'", (code,)
+        ).fetchone()["n"]
+        clicks_by_day = {r["day"]: r["clicks"] for r in db.execute(
+            "SELECT day, clicks FROM referral_clicks "
+            "WHERE creator_id = ? AND day >= ?", (cid, cutoff)
+        ).fetchall()}
+        signups_by_day = {r["day"]: r["n"] for r in db.execute(
+            "SELECT date(created_at) AS day, COUNT(*) AS n FROM users "
+            "WHERE referred_by = ? AND date(created_at) >= ? GROUP BY day",
+            (code, cutoff)
+        ).fetchall()}
+    series = []
+    for i in range(29, -1, -1):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        series.append({
+            "day": d,
+            "clicks": clicks_by_day.get(d, 0),
+            "signups": signups_by_day.get(d, 0),
+        })
+    return {
+        "total_clicks": total_clicks,  # convenience alias of funnel.clicks
+        "funnel": {
+            "clicks": total_clicks,
+            "signups": signups,
+            "subscribers": subscribers,
+            "click_to_signup_pct": round(100.0 * signups / total_clicks, 1)
+                                   if total_clicks else 0.0,
+            "signup_to_subscriber_pct": round(100.0 * subscribers / signups, 1)
+                                        if signups else 0.0,
+        },
+        "series": series,
     }
 
 
@@ -1394,6 +1556,8 @@ def run_payouts(minimum_cents: int, period: Optional[str] = None,
             "id": payout_id, "creator_id": creator["id"],
             "amount_cents": total, "method": method, "status": status,
             "stripe_transfer_id": transfer_id,
+            "creator_email": creator["email"],
+            "creator_name": creator["name"],
         })
     return results
 
@@ -1411,6 +1575,15 @@ def mark_payout_paid(payout_id: int, note: str = "") -> bool:
         return cur.rowcount > 0
 
 
+def get_payout(payout_id: int) -> Optional[dict]:
+    """A payout row by id as a dict, or None."""
+    with _connect() as db:
+        row = db.execute(
+            "SELECT * FROM payouts WHERE id = ?", (payout_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def list_payouts(creator_id: Optional[int] = None,
                  status: Optional[str] = None) -> list[dict]:
     """Payouts newest-first, optionally filtered by creator and/or status."""
@@ -1426,6 +1599,35 @@ def list_payouts(creator_id: Optional[int] = None,
         return [dict(r) for r in db.execute(
             f"SELECT * FROM payouts{where} ORDER BY created_at DESC, id DESC",
             tuple(args),
+        ).fetchall()]
+
+
+def record_payout_run(period: str, trigger: str,
+                      n_payouts: int, total_cents: int) -> int:
+    """Log an executed payout batch. `trigger` is 'cron' or 'admin'."""
+    with _connect() as db:
+        cur = db.execute(
+            "INSERT INTO payout_runs (period, trigger, n_payouts, total_cents) "
+            "VALUES (?, ?, ?, ?)",
+            (period, trigger, int(n_payouts), int(total_cents)),
+        )
+        return cur.lastrowid
+
+
+def payout_run_exists(period: str) -> bool:
+    """True if any payout batch (cron or admin) has run for `period`."""
+    with _connect() as db:
+        return db.execute(
+            "SELECT 1 FROM payout_runs WHERE period = ? LIMIT 1", (period,)
+        ).fetchone() is not None
+
+
+def list_payout_runs(limit: int = 12) -> list[dict]:
+    """Recent payout batches, newest first."""
+    with _connect() as db:
+        return [dict(r) for r in db.execute(
+            "SELECT * FROM payout_runs ORDER BY ran_at DESC, id DESC LIMIT ?",
+            (int(limit),),
         ).fetchall()]
 
 

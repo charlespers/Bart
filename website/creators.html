@@ -267,6 +267,74 @@
     border-radius: 14px; padding: 18px 20px;
     font-size: 14px; color: var(--ink-mute); line-height: 1.6;
   }
+
+  /* tier display */
+  .tier-card {
+    background: var(--cream); border: 1px solid var(--cream-edge);
+    border-radius: 14px; padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .tier-rate {
+    font-size: 26px; font-weight: 800; color: var(--ink);
+    letter-spacing: -0.03em; line-height: 1;
+  }
+  .tier-rate-label {
+    font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+    text-transform: uppercase; letter-spacing: 0.07em;
+  }
+  .tier-next {
+    font-size: 13px; color: var(--ink-mute); margin-top: 4px;
+  }
+  .tier-next strong { color: var(--ink-soft, var(--ink)); }
+
+  /* analytics funnel */
+  .funnel-grid {
+    display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 10px;
+    align-items: center; margin-bottom: 20px;
+  }
+  @media (max-width: 600px) { .funnel-grid { grid-template-columns: 1fr 1fr 1fr; } }
+  .funnel-arrow {
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink-mute);
+    text-align: center; white-space: nowrap;
+  }
+  @media (max-width: 600px) { .funnel-arrow { display: none; } }
+
+  /* bar chart */
+  .chart-wrap { margin-top: 4px; }
+  .chart-legend {
+    display: flex; gap: 16px; margin-bottom: 10px;
+  }
+  .legend-dot {
+    width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0;
+    display: inline-block; margin-right: 4px;
+  }
+  .legend-item {
+    display: flex; align-items: center;
+    font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+    letter-spacing: 0.05em;
+  }
+  .chart-bars-outer {
+    display: flex; align-items: flex-end; gap: 3px;
+    height: 90px; width: 100%;
+    border-bottom: 1px solid var(--cream-edge);
+    padding-bottom: 0;
+  }
+  .chart-day {
+    flex: 1; display: flex; align-items: flex-end; gap: 1px; min-width: 0;
+  }
+  .bar-clicks {
+    flex: 1; background: var(--accent, #c96442); border-radius: 2px 2px 0 0;
+    opacity: 0.75; min-height: 1px; transition: height .2s;
+  }
+  .bar-signups {
+    flex: 1; background: var(--ok, #2d7d46); border-radius: 2px 2px 0 0;
+    opacity: 0.75; min-height: 1px; transition: height .2s;
+  }
+  .chart-xlabels {
+    display: flex; justify-content: space-between;
+    margin-top: 5px;
+    font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute);
+  }
 </style>
 </head>
 <body>
@@ -308,7 +376,7 @@
     <div class="step">
       <div class="n">04</div>
       <h3>Earn</h3>
-      <p>$2 per subscriber, every month they stay subscribed.</p>
+      <p>$2.00 per subscriber / month — rising to $2.25 once you have 50 active subscribers.</p>
     </div>
   </div>
 
@@ -451,6 +519,47 @@
       </div>
     </div>
 
+    <!-- 4b. Your tier -->
+    <div class="dash-section">
+      <p class="dash-section-title">Your tier</p>
+      <div class="tier-card">
+        <div class="tier-rate" id="tier-rate">$0.00</div>
+        <div class="tier-rate-label">per subscriber / month</div>
+        <div class="tier-next" id="tier-next"></div>
+      </div>
+    </div>
+
+    <!-- 4c. Referral analytics -->
+    <div class="dash-section">
+      <p class="dash-section-title">Referral analytics</p>
+      <!-- funnel -->
+      <div class="funnel-grid">
+        <div class="stat">
+          <div class="v" id="an-clicks">0</div>
+          <div class="l">Clicks</div>
+        </div>
+        <div class="funnel-arrow" id="an-c2s-pct">→ 0%</div>
+        <div class="stat">
+          <div class="v" id="an-signups">0</div>
+          <div class="l">Signups</div>
+        </div>
+        <div class="funnel-arrow" id="an-s2sub-pct">→ 0%</div>
+        <div class="stat">
+          <div class="v" id="an-subscribers">0</div>
+          <div class="l">Subscribers</div>
+        </div>
+      </div>
+      <!-- 30-day bar chart -->
+      <div class="chart-wrap" id="an-chart-wrap">
+        <div class="chart-legend">
+          <span class="legend-item"><span class="legend-dot" style="background:var(--accent,#c96442);opacity:.75"></span>Clicks</span>
+          <span class="legend-item"><span class="legend-dot" style="background:var(--ok,#2d7d46);opacity:.75"></span>Signups</span>
+        </div>
+        <div class="chart-bars-outer" id="an-bars"></div>
+        <div class="chart-xlabels" id="an-xlabels"></div>
+      </div>
+    </div>
+
     <!-- 5. Payout setup -->
     <div class="dash-section" id="payout-setup-section">
       <p class="dash-section-title">Payout setup</p>
@@ -566,6 +675,20 @@
     document.getElementById('p-conv').textContent =
       (typeof convPct === 'number' ? convPct.toFixed(1) : convPct) + '%';
 
+    // 4b. Tier
+    document.getElementById('tier-rate').textContent = cents(e.commission_cents);
+    var tierNextEl = document.getElementById('tier-next');
+    if (e.next_tier && e.next_tier.at != null) {
+      var moreNeeded = e.next_tier.at - (e.active_subscribers || 0);
+      if (moreNeeded < 0) moreNeeded = 0;
+      tierNextEl.innerHTML =
+        '<strong>' + moreNeeded + '</strong> more active subscriber' +
+        (moreNeeded === 1 ? '' : 's') + ' to ' +
+        '<strong>' + esc(cents(e.next_tier.cents)) + '</strong>/sub';
+    } else {
+      tierNextEl.textContent = "You're on the top tier.";
+    }
+
     // 5. Payout setup
     var minDollars = ((d.payout_minimum_cents || 2500) / 100).toFixed(0);
     if (d.connect_mode) {
@@ -609,11 +732,80 @@
       });
     }
 
+    // 4c. Referral analytics (async — fire and forget, render when ready)
+    fetch('/api/creator/analytics', { credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) return null; return r.json(); })
+      .then(function (a) { if (a) renderAnalytics(a); })
+      .catch(function () {});
+
     // 7. How it works
-    var commDollars = ((d.commission_cents || 200) / 100).toFixed(2);
-    document.getElementById('how-it-works-text').textContent =
-      'You earn $' + commDollars + ' per active subscriber, every month they stay subscribed. ' +
-      'Payouts go out monthly once your balance reaches $' + minDollars + '.';
+    var commDollars = ((e.commission_cents || 200) / 100).toFixed(2);
+    var howText = 'You earn $' + commDollars + ' per active subscriber, every month they stay subscribed — ' +
+      'and your rate rises as you bring in more subscribers.';
+    if (e.next_tier && e.next_tier.at != null) {
+      howText += ' Reach ' + e.next_tier.at + ' active subscribers and you\'ll earn ' +
+        cents(e.next_tier.cents) + '/sub.';
+    }
+    howText += ' Payouts go out monthly once your balance reaches $' + minDollars + '.';
+    document.getElementById('how-it-works-text').textContent = howText;
+  }
+
+  function renderAnalytics(a) {
+    var f = a.funnel || {};
+    document.getElementById('an-clicks').textContent      = f.clicks || 0;
+    document.getElementById('an-signups').textContent     = f.signups || 0;
+    document.getElementById('an-subscribers').textContent = f.subscribers || 0;
+    var c2s = typeof f.click_to_signup_pct === 'number'
+      ? f.click_to_signup_pct.toFixed(1) : (f.click_to_signup_pct || 0);
+    var s2sub = typeof f.signup_to_subscriber_pct === 'number'
+      ? f.signup_to_subscriber_pct.toFixed(1) : (f.signup_to_subscriber_pct || 0);
+    document.getElementById('an-c2s-pct').textContent   = '→ ' + c2s + '%';
+    document.getElementById('an-s2sub-pct').textContent = '→ ' + s2sub + '%';
+
+    // 30-day bar chart
+    var series = a.series || [];
+    var maxVal = 0;
+    for (var i = 0; i < series.length; i++) {
+      var pt = series[i];
+      if ((pt.clicks || 0) > maxVal) maxVal = pt.clicks;
+      if ((pt.signups || 0) > maxVal) maxVal = pt.signups;
+    }
+
+    var barsEl    = document.getElementById('an-bars');
+    var xlabelsEl = document.getElementById('an-xlabels');
+    barsEl.innerHTML = '';
+    xlabelsEl.innerHTML = '';
+
+    var chartH = 88; // px — matches .chart-bars-outer height minus border
+    series.forEach(function (pt) {
+      var dayEl = document.createElement('div');
+      dayEl.className = 'chart-day';
+      var clickH  = maxVal > 0 ? Math.max(1, Math.round((pt.clicks  || 0) / maxVal * chartH)) : 1;
+      var signupH = maxVal > 0 ? Math.max(1, Math.round((pt.signups || 0) / maxVal * chartH)) : 1;
+      var bClick  = document.createElement('div');
+      bClick.className  = 'bar-clicks';
+      bClick.style.height = clickH + 'px';
+      bClick.title = esc((pt.day || '')) + ' · clicks: ' + (pt.clicks || 0);
+      var bSignup = document.createElement('div');
+      bSignup.className  = 'bar-signups';
+      bSignup.style.height = signupH + 'px';
+      bSignup.title = esc((pt.day || '')) + ' · signups: ' + (pt.signups || 0);
+      dayEl.appendChild(bClick);
+      dayEl.appendChild(bSignup);
+      barsEl.appendChild(dayEl);
+    });
+
+    // x-axis labels: first, middle, last
+    if (series.length > 0) {
+      var idxFirst  = 0;
+      var idxMid    = Math.floor((series.length - 1) / 2);
+      var idxLast   = series.length - 1;
+      [idxFirst, idxMid, idxLast].forEach(function (idx) {
+        var lbl = document.createElement('span');
+        lbl.textContent = (series[idx].day || '').slice(5); // MM-DD
+        xlabelsEl.appendChild(lbl);
+      });
+    }
   }
 
   // Fetch creator data, with optional connect refresh first.

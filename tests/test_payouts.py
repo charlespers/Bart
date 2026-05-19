@@ -255,3 +255,189 @@ def test_list_creators_includes_earnings(tmp_path):
     # Find c1 by referral_code rather than position to be order-independent.
     c1_in_list = next(c for c in creators if c["referral_code"] == c1["referral_code"])
     assert c1_in_list["earnings"]["lifetime_earnings_cents"] == 200
+
+
+def test_commission_cents_for_tier_boundaries(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert auth.commission_cents_for(0) == 200
+    assert auth.commission_cents_for(49) == 200
+    assert auth.commission_cents_for(50) == 225
+    assert auth.commission_cents_for(51) == 225
+    assert auth.commission_cents_for(10000) == 225
+    assert auth.CREATOR_TIERS[0] == (0, auth.CREATOR_COMMISSION_CENTS)
+
+
+def test_next_tier_for(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert auth.next_tier_for(0) == {"at": 50, "cents": 225}
+    assert auth.next_tier_for(49) == {"at": 50, "cents": 225}
+    assert auth.next_tier_for(50) is None
+    assert auth.next_tier_for(999) is None
+
+
+def test_creator_commission_cents_uses_live_active_count(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    assert auth.creator_commission_cents(creator) == 200
+    for i in range(50):
+        uid = auth.create_user(f"sub{i}@example.com", "pw123456", referred_by=code)
+        auth.update_subscription(uid, f"sub_{i}", "active", None)
+    assert auth.creator_commission_cents(auth.get_creator_by_code(code)) == 225
+
+
+def test_creator_earnings_exposes_tier(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    for i in range(3):
+        uid = auth.create_user(f"e{i}@example.com", "pw123456", referred_by=code)
+        auth.update_subscription(uid, f"s_{i}", "active", None)
+    e = auth.creator_earnings(auth.get_creator_by_code(code))
+    assert e["commission_cents"] == 200
+    assert e["next_tier"] == {"at": 50, "cents": 225}
+    assert e["monthly_run_rate_cents"] == 3 * 200
+
+
+def test_payout_runs_record_and_exists(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert auth.payout_run_exists("2026-05") is False
+    rid = auth.record_payout_run("2026-05", "cron", 3, 7500)
+    assert rid > 0
+    assert auth.payout_run_exists("2026-05") is True
+    assert auth.payout_run_exists("2026-04") is False
+
+
+def test_list_payout_runs_newest_first(tmp_path):
+    auth = _load_auth(tmp_path)
+    auth.record_payout_run("2026-03", "cron", 1, 100)
+    auth.record_payout_run("2026-04", "admin", 2, 200)
+    runs = auth.list_payout_runs()
+    assert len(runs) == 2
+    assert runs[0]["period"] == "2026-04"
+    assert runs[0]["trigger"] == "admin"
+    assert runs[0]["n_payouts"] == 2
+    assert runs[0]["total_cents"] == 200
+
+
+def test_payout_runs_table_in_schema(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert _columns(auth, "payout_runs") == {
+        "id", "period", "trigger", "ran_at", "n_payouts", "total_cents"}
+
+
+def test_referral_clicks_table_in_schema(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert _columns(auth, "referral_clicks") == {"creator_id", "day", "clicks"}
+
+
+def test_record_referral_click_counts_and_upserts(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    assert auth.record_referral_click(code) is True
+    assert auth.record_referral_click(code) is True
+    with auth._connect() as db:
+        rows = db.execute(
+            "SELECT day, clicks FROM referral_clicks WHERE creator_id = ?",
+            (creator["id"],)).fetchall()
+    assert len(rows) == 1            # both hits same day -> one row
+    assert rows[0]["clicks"] == 2
+
+
+def test_record_referral_click_unknown_code_is_noop(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert auth.record_referral_click("NOTACODE") is False
+    assert auth.record_referral_click("") is False
+    with auth._connect() as db:
+        n = db.execute("SELECT COUNT(*) AS n FROM referral_clicks").fetchone()["n"]
+    assert n == 0
+
+
+def test_record_referral_click_new_day_creates_new_row(tmp_path, monkeypatch):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    monkeypatch.setattr(auth, "_current_day", lambda: "2026-01-01")
+    auth.record_referral_click(code)
+    monkeypatch.setattr(auth, "_current_day", lambda: "2026-01-02")
+    auth.record_referral_click(code)
+    with auth._connect() as db:
+        rows = db.execute(
+            "SELECT clicks FROM referral_clicks WHERE creator_id = ? ORDER BY day",
+            (creator["id"],)).fetchall()
+    assert len(rows) == 2
+    assert all(r["clicks"] == 1 for r in rows)
+
+
+def test_creator_analytics_funnel_and_series(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    auth.record_referral_click(code)
+    auth.record_referral_click(code)
+    auth.record_referral_click(code)
+    auth.record_referral_click(code)        # 4 clicks today
+    u1 = auth.create_user("a1@example.com", "pw123456", referred_by=code)
+    auth.create_user("a2@example.com", "pw123456", referred_by=code)
+    auth.update_subscription(u1, "s1", "active", None)
+    a = auth.creator_analytics(auth.get_creator_by_code(code))
+    assert a["total_clicks"] == 4
+    assert a["funnel"]["clicks"] == 4
+    assert a["funnel"]["signups"] == 2
+    assert a["funnel"]["subscribers"] == 1
+    assert a["funnel"]["click_to_signup_pct"] == 50.0
+    assert a["funnel"]["signup_to_subscriber_pct"] == 50.0
+    assert len(a["series"]) == 30
+    today = a["series"][-1]
+    assert today["clicks"] == 4
+    assert today["signups"] == 2
+    assert all(set(d.keys()) == {"day", "clicks", "signups"} for d in a["series"])
+
+
+def test_creator_analytics_zero_data(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    a = auth.creator_analytics(auth.get_creator_by_code(creator["referral_code"]))
+    assert a["total_clicks"] == 0
+    assert a["funnel"]["click_to_signup_pct"] == 0.0
+    assert a["funnel"]["signup_to_subscriber_pct"] == 0.0
+    assert len(a["series"]) == 30
+    assert all(d["clicks"] == 0 and d["signups"] == 0 for d in a["series"])
+
+
+def test_commission_count_for_referred(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    uid = auth.create_user("cc@example.com", "pw123456")
+    assert auth.commission_count_for_referred(creator["id"], uid) == 0
+    auth.record_commission(creator["id"], uid, 200, "usd", "inv_1")
+    assert auth.commission_count_for_referred(creator["id"], uid) == 1
+    auth.record_commission(creator["id"], uid, 200, "usd", "inv_2")
+    assert auth.commission_count_for_referred(creator["id"], uid) == 2
+
+
+def test_get_creator_by_id(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    got = auth.get_creator(creator["id"])
+    assert got is not None and got["referral_code"] == creator["referral_code"]
+    assert auth.get_creator(999999) is None
+
+
+def test_run_payouts_results_carry_creator_contact(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = _seed_creator_with_balance(auth, 3000, "rc@example.com")
+    results = auth.run_payouts(2500, "2026-05")
+    assert len(results) == 1
+    assert results[0]["creator_email"] == "rc@example.com"
+    assert "creator_name" in results[0]
+
+
+def test_get_payout(tmp_path):
+    auth = _load_auth(tmp_path)
+    _seed_creator_with_balance(auth, 3000, "gp@example.com")
+    payout = auth.run_payouts(2500, "2026-05")[0]
+    got = auth.get_payout(payout["id"])
+    assert got is not None and got["amount_cents"] == 3000
+    assert auth.get_payout(999999) is None

@@ -95,3 +95,63 @@ def notify_creator_application(app: dict) -> bool:
         "to them automatically.\n"
     )
     return send_email(TEAM_EMAIL, subject, body, reply_to=email)
+
+
+def notify_creator_new_subscriber(creator_email: str, creator_name: str,
+                                  amount_cents: int) -> bool:
+    """Tell a creator a referred user just subscribed (their first payment)."""
+    if not creator_email:
+        return False
+    dollars = (amount_cents or 0) / 100
+    subject = "someone just subscribed through your bart link"
+    body = (
+        f"Hi {creator_name or 'there'},\n\n"
+        "Good news — someone subscribed to bart through your referral link.\n\n"
+        f"You earned ${dollars:.2f}, and you'll keep earning every month they "
+        "stay subscribed. See your earnings on your creator dashboard:\n"
+        "  https://studywithbart.com/creators\n\n"
+        "— the bart team\n"
+    )
+    return send_email(creator_email, subject, body)
+
+
+def notify_creator_payout(creator_email: str, creator_name: str,
+                          amount_cents: int, method: str) -> bool:
+    """Tell a creator a payout has been sent."""
+    if not creator_email:
+        return False
+    dollars = (amount_cents or 0) / 100
+    how = ("to your connected bank account" if method == "stripe"
+           else "— the bart team will send it to your payout handle")
+    subject = f"your bart creator payout — ${dollars:.2f}"
+    body = (
+        f"Hi {creator_name or 'there'},\n\n"
+        f"We've sent your bart creator payout of ${dollars:.2f} {how}.\n\n"
+        "Thanks for helping students find bart.\n\n"
+        "— the bart team\n"
+    )
+    return send_email(creator_email, subject, body)
+
+
+def notify_creator_monthly_summary(creator_email: str, creator_name: str,
+                                   summary: dict) -> bool:
+    """Send a creator their monthly earnings digest. `summary` keys:
+    this_month_cents, active_subscribers, commission_cents, pending_balance_cents."""
+    if not creator_email:
+        return False
+    earned = (summary.get("this_month_cents", 0) or 0) / 100
+    rate = (summary.get("commission_cents", 0) or 0) / 100
+    balance = (summary.get("pending_balance_cents", 0) or 0) / 100
+    subject = "your bart creator month in review"
+    body = (
+        f"Hi {creator_name or 'there'},\n\n"
+        "Here's your bart creator month:\n\n"
+        f"  Earned this month:   ${earned:.2f}\n"
+        f"  Active subscribers:  {summary.get('active_subscribers', 0)}\n"
+        f"  Your rate:           ${rate:.2f} per subscriber / month\n"
+        f"  Pending balance:     ${balance:.2f}\n\n"
+        "Full detail on your dashboard:\n"
+        "  https://studywithbart.com/creators\n\n"
+        "— the bart team\n"
+    )
+    return send_email(creator_email, subject, body)

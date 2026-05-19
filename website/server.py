@@ -71,6 +71,11 @@ WEB_PRIMARY_MODEL = os.environ.get("BART_WEB_PRIMARY_MODEL", "claude-sonnet-4-6"
 PAYOUT_MINIMUM_CENTS = max(0, int(
     os.environ.get("BART_PAYOUT_MINIMUM_CENTS", "2500")))
 STRIPE_CONNECT_ENABLED = os.environ.get("BART_STRIPE_CONNECT", "0") == "1"
+# Automated payouts. The in-process scheduler runs the monthly batch on/after
+# PAYOUT_DAY if it hasn't run that month. Set BART_PAYOUT_CRON=0 to disable
+# (e.g. when running multiple web instances and only one should schedule).
+PAYOUT_DAY = max(1, min(28, int(os.environ.get("BART_PAYOUT_DAY", "1"))))
+PAYOUT_CRON_ENABLED = os.environ.get("BART_PAYOUT_CRON", "1") == "1"
 
 
 HERE = Path(__file__).resolve().parent
@@ -138,6 +143,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _streams: dict[str, asyncio.Queue] = {}
 _procs: dict[str, asyncio.subprocess.Process] = {}
+_payout_task: asyncio.Task | None = None
 # Per-user locks — one concurrent run per user (prevents accidental double-fire
 # from clobbering the user's own output dir). Per-user, NOT global, so users
 # don't queue behind each other.
@@ -584,9 +590,10 @@ def _credit_referral_commission(user_id: int, amount_cents: int,
         creator = auth.get_creator_by_code(code)
         if creator is None:
             return
-        # Flat $2 per verified payment, capped at the amount actually
-        # collected so a discounted/zero payment never overpays.
-        commission = min(auth.CREATOR_COMMISSION_CENTS, amount_cents)
+        # Tiered commission — the creator's current rate (rises with their
+        # active-subscriber count), capped at the amount actually collected so
+        # a discounted/zero payment never overpays.
+        commission = min(auth.creator_commission_cents(creator), amount_cents)
         if commission <= 0:
             return
         if auth.record_commission(
@@ -597,6 +604,11 @@ def _credit_referral_commission(user_id: int, amount_cents: int,
             print(f"[creator] credited code {creator['referral_code']} "
                   f"{commission}¢ for invoice {stripe_ref} (user {user_id})",
                   file=sys.stderr, flush=True)
+            # First commission ever from this referred user → tell the
+            # creator. Renewals don't re-notify (count would be > 1).
+            if auth.commission_count_for_referred(creator["id"], user_id) == 1:
+                emailer.notify_creator_new_subscriber(
+                    creator["email"], creator["name"], commission)
     except Exception as e:  # noqa: BLE001 — commission bookkeeping is best-effort
         print(f"[creator] commission credit failed: {e}",
               file=sys.stderr, flush=True)
@@ -612,6 +624,66 @@ def _stripe_transfer(creator_row, amount_cents: int) -> str:
         description=f"bart creator payout — {creator_row['referral_code']}",
     )
     return tr["id"]
+
+
+def _run_monthly_payouts(period: str, trigger: str) -> dict:
+    """Run the payout batch for `period`, record the run, and email creators
+    (payout notices + a monthly summary to every creator). Shared by the cron
+    and the admin endpoint. `trigger` is 'cron' or 'admin'."""
+    transfer = _stripe_transfer if STRIPE_CONNECT_ENABLED else None
+    results = auth.run_payouts(PAYOUT_MINIMUM_CENTS, period=period,
+                               transfer_fn=transfer)
+    total = sum(r["amount_cents"] for r in results)
+    auth.record_payout_run(period, trigger, len(results), total)
+    # Payout-sent notices for transfers that actually completed.
+    for r in results:
+        if r["status"] == "paid":
+            emailer.notify_creator_payout(
+                r.get("creator_email") or "", r.get("creator_name") or "",
+                r["amount_cents"], r["method"])
+    # Monthly summary to every active creator.
+    for c in auth.list_creators():
+        if (c.get("status") or "") != "active":
+            continue
+        e = c.get("earnings") or {}
+        emailer.notify_creator_monthly_summary(
+            c.get("email") or "", c.get("name") or "", {
+                "this_month_cents": e.get("this_month_cents", 0),
+                "active_subscribers": e.get("active_subscribers", 0),
+                "commission_cents": e.get("commission_cents", 0),
+                "pending_balance_cents": e.get("pending_balance_cents", 0),
+            })
+    return {"results": results, "total_cents": total}
+
+
+async def _payout_scheduler() -> None:
+    """Background loop: once a day past PAYOUT_DAY, run the monthly payout
+    batch if it hasn't run yet this month. Failures only log."""
+    from datetime import datetime, timezone
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            period = now.strftime("%Y-%m")
+            if now.day >= PAYOUT_DAY and not auth.payout_run_exists(period):
+                print(f"[payout-cron] running batch for {period}",
+                      file=sys.stderr, flush=True)
+                loop = asyncio.get_running_loop()
+                out = await loop.run_in_executor(
+                    None, _run_monthly_payouts, period, "cron")
+                print(f"[payout-cron] {len(out['results'])} payouts, "
+                      f"{out['total_cents']}¢", file=sys.stderr, flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[payout-cron] error: {e}", file=sys.stderr, flush=True)
+        await asyncio.sleep(6 * 3600)
+
+
+@app.on_event("startup")
+async def _start_payout_scheduler() -> None:
+    # TODO: migrate to a FastAPI lifespan handler if/when one is added.
+    global _payout_task
+    if PAYOUT_CRON_ENABLED:
+        _payout_task = asyncio.create_task(_payout_scheduler())
+        print("[payout-cron] scheduler started", file=sys.stderr, flush=True)
 
 
 @app.post("/api/stripe/webhook")
@@ -791,7 +863,6 @@ async def creator_me(user=Depends(auth.current_user)):
             "name": creator["name"],
             "referral_code": creator["referral_code"],
             "referral_url": f"{APP_PUBLIC_URL}/r/{creator['referral_code']}",
-            "commission_cents": auth.CREATOR_COMMISSION_CENTS,
             "payout_minimum_cents": PAYOUT_MINIMUM_CENTS,
             "connect_mode": STRIPE_CONNECT_ENABLED,
             "payout_method": creator["payout_method"],
@@ -869,6 +940,16 @@ async def creator_connect_refresh(user=Depends(auth.current_user)):
     return {"payouts_enabled": enabled}
 
 
+@app.get("/api/creator/analytics")
+async def creator_analytics(user=Depends(auth.current_user)):
+    """Referral funnel + 30-day clicks/signups series for the signed-in
+    creator's dashboard."""
+    creator = auth.get_creator_for_user(user)
+    if creator is None:
+        raise HTTPException(403, "you're not a bart creator.")
+    return auth.creator_analytics(creator)
+
+
 @app.get("/api/admin/creator-applications")
 async def admin_creator_applications(status: str = "pending",
                                      user=Depends(auth.current_user)):
@@ -929,14 +1010,16 @@ async def admin_list_payouts(status: str = "all", user=Depends(auth.current_user
 async def admin_run_payouts(user=Depends(auth.current_user)):
     """Run the monthly payout batch — pays every creator at or above the
     minimum balance. Stripe Connect creators are transferred automatically;
-    everyone else gets a pending payout for the manual queue."""
+    everyone else gets a pending payout for the manual queue. Records the run
+    so the automated scheduler skips this month."""
     _require_admin(user)
     if STRIPE_CONNECT_ENABLED and not STRIPE_SECRET_KEY:
         raise HTTPException(409, "stripe connect is enabled but "
                                  "STRIPE_SECRET_KEY is not configured.")
-    transfer = _stripe_transfer if STRIPE_CONNECT_ENABLED else None
-    results = auth.run_payouts(PAYOUT_MINIMUM_CENTS, transfer_fn=transfer)
-    return {"ok": True, "payouts": results}
+    loop = asyncio.get_running_loop()
+    out = await loop.run_in_executor(
+        None, _run_monthly_payouts, auth._current_period(), "admin")
+    return {"ok": True, "payouts": out["results"]}
 
 
 @app.post("/api/admin/payouts/{payout_id}/mark-paid")
@@ -946,7 +1029,26 @@ async def admin_mark_payout_paid(payout_id: int, req: MarkPaidRequest,
     _require_admin(user)
     if not auth.mark_payout_paid(payout_id, note=req.note):
         raise HTTPException(404, "no such pending payout.")
+    # Notify the creator their payout was sent — best-effort.
+    try:
+        p = auth.get_payout(payout_id)
+        if p is not None:
+            creator = auth.get_creator(p["creator_id"])
+            if creator is not None:
+                emailer.notify_creator_payout(
+                    creator["email"], creator["name"],
+                    p["amount_cents"], p["method"])
+    except Exception as e:  # noqa: BLE001
+        print(f"[payout] mark-paid email failed: {e}",
+              file=sys.stderr, flush=True)
     return {"ok": True}
+
+
+@app.get("/api/admin/payout-runs")
+async def admin_payout_runs(user=Depends(auth.current_user)):
+    """Recent automated/manual payout batches — admin only."""
+    _require_admin(user)
+    return {"runs": auth.list_payout_runs()}
 
 
 @app.get("/api/admin/creators")
@@ -1970,6 +2072,13 @@ async def referral_link(code: str):
             REFERRAL_COOKIE, safe,
             max_age=_REFERRAL_COOKIE_MAX_AGE, httponly=True, samesite="lax",
         )
+        # Count the click for the creator's analytics — best-effort, never
+        # let a bookkeeping failure break the redirect.
+        try:
+            auth.record_referral_click(safe)
+        except Exception as e:  # noqa: BLE001
+            print(f"[referral] click count failed: {e}",
+                  file=sys.stderr, flush=True)
     return resp
 
 

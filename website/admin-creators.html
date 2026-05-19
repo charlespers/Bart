@@ -103,10 +103,11 @@
   <div class="card" id="payouts-panel">
     <h2>payouts</h2>
     <p class="hint">monthly creator commissions. "run monthly payouts" creates pending payouts for all approved creators with unpaid earnings; "mark paid" settles them after you've transferred funds.</p>
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px;">
       <button class="btn run" id="run-payouts-btn">run monthly payouts</button>
       <span class="note" id="run-note"></span>
     </div>
+    <div id="last-run-line" style="font-size:12.5px;color:var(--ink-mute);margin-bottom:16px;font-family:var(--font-mono);"></div>
     <div class="totals" id="payouts-totals"></div>
     <div id="payouts-list"><div class="empty">loading…</div></div>
   </div>
@@ -377,6 +378,32 @@
     });
   }
 
+  function loadLastRun() {
+    var el = document.getElementById('last-run-line');
+    if (!el) return;
+    fetch('/api/admin/payout-runs', { credentials: 'same-origin' })
+      .then(function (r) {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d) return;
+        var runs = d.runs || [];
+        if (!runs.length) {
+          el.textContent = 'No automated runs yet.';
+          return;
+        }
+        var run = runs[0];
+        el.textContent = 'Last run: '
+          + (run.period || '') + ' · '
+          + (run.trigger || '') + ' · '
+          + (run.n_payouts || 0) + ' payout' + (run.n_payouts === 1 ? '' : 's') + ' · '
+          + fmt(run.total_cents || 0) + ' · '
+          + (run.ran_at || '').slice(0, 10);
+      })
+      .catch(function () { /* leave blank on error */ });
+  }
+
   runBtn.addEventListener('click', function () {
     runBtn.disabled = true;
     runNote.className = 'note';
@@ -395,6 +422,7 @@
         runNote.textContent = ps.length + ' payout' + (ps.length === 1 ? '' : 's')
           + ' created, ' + fmt(total) + ' total.';
         loadPayouts();
+        loadLastRun();
       } else {
         runNote.className = 'note err';
         runNote.textContent = (res.j && res.j.detail) || 'failed.';
@@ -407,6 +435,7 @@
   });
 
   loadPayouts();
+  loadLastRun();
 })();
 </script>
 </body>
