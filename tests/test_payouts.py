@@ -255,3 +255,45 @@ def test_list_creators_includes_earnings(tmp_path):
     # Find c1 by referral_code rather than position to be order-independent.
     c1_in_list = next(c for c in creators if c["referral_code"] == c1["referral_code"])
     assert c1_in_list["earnings"]["lifetime_earnings_cents"] == 200
+
+
+def test_commission_cents_for_tier_boundaries(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert auth.commission_cents_for(0) == 200
+    assert auth.commission_cents_for(49) == 200
+    assert auth.commission_cents_for(50) == 225
+    assert auth.commission_cents_for(51) == 225
+    assert auth.commission_cents_for(10000) == 225
+    assert auth.CREATOR_TIERS[0] == (0, auth.CREATOR_COMMISSION_CENTS)
+
+
+def test_next_tier_for(tmp_path):
+    auth = _load_auth(tmp_path)
+    assert auth.next_tier_for(0) == {"at": 50, "cents": 225}
+    assert auth.next_tier_for(49) == {"at": 50, "cents": 225}
+    assert auth.next_tier_for(50) is None
+    assert auth.next_tier_for(999) is None
+
+
+def test_creator_commission_cents_uses_live_active_count(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    assert auth.creator_commission_cents(creator) == 200
+    for i in range(50):
+        uid = auth.create_user(f"sub{i}@example.com", "pw123456", referred_by=code)
+        auth.update_subscription(uid, f"sub_{i}", "active", None)
+    assert auth.creator_commission_cents(auth.get_creator_by_code(code)) == 225
+
+
+def test_creator_earnings_exposes_tier(tmp_path):
+    auth = _load_auth(tmp_path)
+    creator = auth.approve_creator_application(_apply(auth))
+    code = creator["referral_code"]
+    for i in range(3):
+        uid = auth.create_user(f"e{i}@example.com", "pw123456", referred_by=code)
+        auth.update_subscription(uid, f"s_{i}", "active", None)
+    e = auth.creator_earnings(auth.get_creator_by_code(code))
+    assert e["commission_cents"] == 200
+    assert e["next_tier"] == {"at": 50, "cents": 225}
+    assert e["monthly_run_rate_cents"] == 3 * 200

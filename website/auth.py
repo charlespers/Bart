@@ -968,6 +968,46 @@ def leaderboard_for(user_id: int) -> list[dict]:
 CREATOR_COMMISSION_CENTS = max(0, int(
     os.environ.get("BART_CREATOR_COMMISSION_CENTS", "200")))
 
+# Commission tiers: (min_active_subscribers, cents), ascending. A creator's
+# current active-subscriber count selects the tier, and the rate is
+# retroactive — crossing a breakpoint lifts the rate on every subscriber.
+# CREATOR_TIERS[0] is the base rate (== CREATOR_COMMISSION_CENTS).
+CREATOR_TIERS = [(0, CREATOR_COMMISSION_CENTS), (50, 225)]
+
+
+def commission_cents_for(active_subscribers: int) -> int:
+    """The per-payment commission for a creator with this many active
+    subscribers — the cents of the highest tier whose threshold is met."""
+    rate = CREATOR_TIERS[0][1]
+    for threshold, cents in CREATOR_TIERS:
+        if active_subscribers >= threshold:
+            rate = cents
+        else:
+            break
+    return rate
+
+
+def next_tier_for(active_subscribers: int):
+    """The next tier up as {'at': subs, 'cents': rate}, or None if the
+    creator is already in the top tier."""
+    for threshold, cents in CREATOR_TIERS:
+        if threshold > active_subscribers:
+            return {"at": threshold, "cents": cents}
+    return None
+
+
+def creator_commission_cents(creator) -> int:
+    """The commission rate (cents per payment) the creator currently earns,
+    based on their live count of active referred subscribers."""
+    with _connect() as db:
+        active = db.execute(
+            "SELECT COUNT(*) AS n FROM users "
+            "WHERE referred_by = ? AND subscription_status = 'active'",
+            (creator["referral_code"],),
+        ).fetchone()["n"]
+    return commission_cents_for(active)
+
+
 # Referral codes: unambiguous uppercase alphabet (no 0/O, 1/I) — easy to read,
 # type, and say aloud.
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -1260,9 +1300,11 @@ def creator_earnings(creator) -> dict:
         "this_month_cents": this_month,
         "total_referred": total_referred,
         "active_subscribers": active,
-        "monthly_run_rate_cents": active * CREATOR_COMMISSION_CENTS,
+        "monthly_run_rate_cents": active * commission_cents_for(active),
         "conversion_pct": round(100.0 * active / total_referred, 1)
                           if total_referred else 0.0,
+        "commission_cents": commission_cents_for(active),
+        "next_tier": next_tier_for(active),
     }
 
 
