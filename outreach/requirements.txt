@@ -6,3 +6,5 @@ beautifulsoup4>=4.12   # parse the site into grounding facts
 pydantic>=2.0.0        # config + ReelScript validation
 rich>=13.0.0           # CLI output
 Pillow>=10.0.0         # PNG frame composition for the Reel renderer
+kokoro-onnx>=0.4.0     # local neural TTS — human-sounding voiceover
+soundfile>=0.12.0      # write the Kokoro WAV output before ffmpeg encodes

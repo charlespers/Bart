@@ -183,6 +183,30 @@ def _draw_chrome(img: Image.Image) -> None:
               fill=ACCENT)
 
 
+def _highlight_word(text: str, kind: str) -> tuple[str, str | None]:
+    """Split `text` into (prefix, accent_tail).
+
+    For scenes, the trailing 1-2 word punch (stripped of trailing
+    punctuation) is colored in the brand accent. Hook stays solid INK —
+    the whole hook is the headline.
+    """
+    if kind == "hook":
+        return text, None
+    stripped = text.rstrip(" .!?,;:")
+    trailing_punct = text[len(stripped):]
+    words = stripped.split()
+    if len(words) < 3:
+        return text, None
+    # Default: just the last word. If the last two words form a tight
+    # phrase (e.g. "study packet"), pick both — heuristic on length.
+    tail_n = 1
+    if len(words) >= 5 and len(words[-2]) <= 6 and len(words[-1]) <= 8:
+        tail_n = 2
+    head = " ".join(words[:-tail_n])
+    tail = " ".join(words[-tail_n:]) + trailing_punct
+    return head + " ", tail
+
+
 def _render_beat(beat: Beat, out_path: Path) -> None:
     """Render a single PNG for a beat (hook or scene)."""
     img = _base_canvas()
@@ -208,12 +232,23 @@ def _render_beat(beat: Beat, out_path: Path) -> None:
             max_width=max_width, max_height=max_height,
         )
 
+    _, accent_tail = _highlight_word(beat.text, beat.kind)
+
     total_h = line_h * len(lines)
     y = box_top + (max_height - total_h) // 2
-    for line in lines:
+    for idx, line in enumerate(lines):
         w = draw.textlength(line, font=font)
         x = box_left + (max_width - w) // 2
-        draw.text((x, y), line, font=font, fill=INK)
+        is_last_line = idx == len(lines) - 1
+        if accent_tail and is_last_line and line.endswith(accent_tail.rstrip()):
+            # Draw the line with the accent_tail in brand-accent color.
+            head = line[: -len(accent_tail.rstrip())]
+            head_w = draw.textlength(head, font=font)
+            draw.text((x, y), head, font=font, fill=INK)
+            draw.text((x + head_w, y), accent_tail.rstrip(),
+                      font=font, fill=ACCENT)
+        else:
+            draw.text((x, y), line, font=font, fill=INK)
         y += line_h
 
     img.save(out_path, "PNG")
@@ -249,16 +284,62 @@ def _require(tool: str) -> str:
     return path
 
 
-def _build_concat_list(frames: List[tuple[Path, float]], out: Path) -> None:
-    """ffmpeg concat demuxer file — one PNG per beat with explicit duration."""
-    lines: List[str] = []
-    for path, dur in frames:
-        lines.append(f"file '{path.as_posix()}'")
-        lines.append(f"duration {dur:.3f}")
-    # The concat demuxer ignores the final `duration` so the last frame must
-    # be repeated for it to be honored.
-    lines.append(f"file '{frames[-1][0].as_posix()}'")
-    out.write_text("\n".join(lines) + "\n")
+# Each pair of adjacent beats crossfades over this much time — long enough
+# to feel deliberate, short enough not to compete with the on-screen text.
+CROSSFADE_SECONDS = 0.40
+
+
+def _planned_beat_durations(beats: List[Beat]) -> List[float]:
+    """Pad each beat so xfade overlaps don't shrink the total video length.
+
+    A chain of N clips joined by N-1 crossfades of duration T loses
+    (N-1)*T seconds of total playback. We add that back proportionally
+    so the rendered MP4 still spans the full audio track.
+    """
+    if len(beats) < 2:
+        return [max(b.seconds, 0.4) for b in beats]
+    extra = (len(beats) - 1) * CROSSFADE_SECONDS / len(beats)
+    return [max(b.seconds + extra, CROSSFADE_SECONDS + 0.2) for b in beats]
+
+
+def _build_filtergraph(beats: List[Beat], durations: List[float]) -> tuple[str, str]:
+    """Build the filtergraph: per-beat fps normalization + an xfade chain.
+
+    Source PNGs are already WIDTH×HEIGHT and looped at the input level, so
+    each clip just needs an `fps` filter to lock its timebase. xfade
+    (below) smooths the transitions; we deliberately skip zoompan because
+    its `d` knob is "output frames per input frame", which combined with a
+    looped image source multiplies the duration unexpectedly.
+    """
+    parts: List[str] = []
+    for i, _ in enumerate(durations):
+        parts.append(
+            f"[{i}:v]"
+            f"fps={FPS},"
+            f"setpts=PTS-STARTPTS,format=yuv420p"
+            f"[v{i}]"
+        )
+
+    if len(beats) == 1:
+        return ";".join(parts), "[v0]"
+
+    # xfade chain: each step crossfades the running output with the next
+    # clip. `offset` is when, within the running output's timeline, the
+    # transition starts. The combined length of [running][vk] after the
+    # xfade is `cumulative + duration[k] - CROSSFADE_SECONDS`.
+    running = "[v0]"
+    cumulative = durations[0]
+    for k in range(1, len(beats)):
+        offset = cumulative - CROSSFADE_SECONDS
+        out_label = f"[xf{k}]"
+        parts.append(
+            f"{running}[v{k}]xfade=transition=fade:"
+            f"duration={CROSSFADE_SECONDS}:offset={offset:.3f}{out_label}"
+        )
+        running = out_label
+        cumulative += durations[k] - CROSSFADE_SECONDS
+
+    return ";".join(parts), running
 
 
 def render_reel(
@@ -281,34 +362,36 @@ def render_reel(
 
     with tempfile.TemporaryDirectory(prefix="reel-frames-") as tmpdir:
         tmp = Path(tmpdir)
-        frames: List[tuple[Path, float]] = []
+        beat_pngs: List[Path] = []
         for i, beat in enumerate(beats):
             png = tmp / f"beat_{i:02d}.png"
             _render_beat(beat, png)
-            frames.append((png, beat.seconds))
+            beat_pngs.append(png)
 
         if thumbnail_path is not None:
-            # Save the hook PNG (with a `.jpg` extension as requested) — IG
-            # accepts JPEG/PNG covers; we'll re-encode with ffmpeg for size.
+            # Save the hook PNG as the Reels cover image preview. IG
+            # accepts JPEG/PNG covers; we re-encode with ffmpeg for size.
             thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
             subprocess.run(
                 ["ffmpeg", "-y", "-loglevel", "error",
-                 "-i", str(frames[0][0]),
+                 "-i", str(beat_pngs[0]),
                  "-q:v", "3", str(thumbnail_path)],
                 check=True, capture_output=True, text=True,
             )
 
-        concat_list = tmp / "concat.txt"
-        _build_concat_list(frames, concat_list)
+        durations = _planned_beat_durations(beats)
+        filtergraph, vlabel = _build_filtergraph(beats, durations)
 
-        # Compose: concat PNGs at FPS (with explicit per-frame duration via
-        # the concat demuxer), overlay the audio track, re-encode to H.264 +
-        # AAC at Instagram-friendly settings.
-        cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", str(concat_list),
-            "-i", str(audio_path),
-            "-vf", f"fps={FPS},format=yuv420p,scale={WIDTH}:{HEIGHT}:flags=lanczos",
+        # Each PNG becomes a looped image input timed to its (padded) beat
+        # duration; the filtergraph adds ken-burns + xfade transitions, and
+        # the audio is muxed on top from the prerendered track.
+        cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+        for png, dur in zip(beat_pngs, durations):
+            cmd += ["-loop", "1", "-t", f"{dur:.3f}", "-i", str(png)]
+        cmd += ["-i", str(audio_path)]
+        cmd += [
+            "-filter_complex", filtergraph,
+            "-map", vlabel, "-map", f"{len(beat_pngs)}:a",
             "-c:v", "libx264", "-preset", "medium", "-crf", "20",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",

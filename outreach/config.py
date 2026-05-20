@@ -17,10 +17,15 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .paths import CONFIG_PATH, REPO_ROOT
 
-# TTS providers the pipeline knows how to drive. `say` is macOS's built-in
-# offline voice — zero cost, no key — so the whole pipeline runs end to end
-# before the user signs up for anything.
-TTS_PROVIDERS = ("say", "elevenlabs", "openai")
+# TTS providers the pipeline knows how to drive.
+#   kokoro     — local open-source neural TTS (Kokoro-82M ONNX). Free,
+#                offline once the ~350 MB model is cached. **Default** —
+#                much more human than macOS `say`.
+#   say        — macOS's built-in offline voice. Robotic, but a useful
+#                fallback if Kokoro model files are unavailable.
+#   elevenlabs — https://elevenlabs.io  (needs an API key)
+#   openai     — https://platform.openai.com  (needs an API key)
+TTS_PROVIDERS = ("kokoro", "say", "elevenlabs", "openai")
 
 
 class OutreachConfig(BaseModel):
@@ -48,9 +53,13 @@ class OutreachConfig(BaseModel):
     prefer_api_key: bool = False
 
     # ─── Audio ───
-    tts_provider: str = "say"
+    # Kokoro is the default — its synthesized voice is dramatically more
+    # human than macOS `say`, and once the ~350 MB ONNX is cached it runs
+    # locally with no API key.
+    tts_provider: str = "kokoro"
     tts_api_key: str = ""           # required for elevenlabs / openai
     tts_voice: str = ""             # provider-specific; "" = provider default
+    tts_speed: float = Field(default=1.0, ge=0.5, le=1.8)
     music_volume: float = Field(default=0.14, ge=0.0, le=1.0)
 
     @field_validator("tts_provider")

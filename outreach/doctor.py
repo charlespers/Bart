@@ -66,6 +66,19 @@ def _check_anthropic(cfg: OutreachConfig) -> Check:
 
 
 def _check_tts(cfg: OutreachConfig) -> Check:
+    if cfg.tts_provider == "kokoro":
+        if importlib.util.find_spec("kokoro_onnx") is None:
+            return Check("tts", FAIL,
+                         "provider=kokoro but kokoro_onnx not installed — "
+                         "run `pip install -r outreach/requirements.txt`")
+        from .audio import _KOKORO_CACHE, _KOKORO_FILES
+        missing = [n for n in _KOKORO_FILES if not (_KOKORO_CACHE / n).exists()]
+        if missing:
+            return Check("tts", WARN,
+                         f"provider=kokoro — model files will download on "
+                         f"first `generate` (~350 MB): {', '.join(missing)}")
+        return Check("tts", OK,
+                     f"provider=kokoro (local neural, cached in {_KOKORO_CACHE})")
     if cfg.tts_provider == "say":
         if shutil.which("say"):
             return Check("tts", OK, "provider=say (macOS built-in, no key needed)")
