@@ -23,6 +23,11 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from .script import ReelScript
 
+# The bart-loaf mascot SVG lives at <repo>/assets/bart-loaf.svg. Rasterized
+# once per process, cached at module level.
+_LOAF_SVG = Path(__file__).resolve().parent.parent / "assets" / "bart-loaf.svg"
+_LOAF_CACHE: dict[int, Image.Image] = {}
+
 WIDTH, HEIGHT = 1080, 1920          # 9:16 vertical
 FPS = 30
 HOOK_MAX_SECONDS = 2.4
@@ -140,9 +145,69 @@ def _fit_text(
     return font, lines, line_h
 
 
+def _load_loaf(target_height: int) -> Optional[Image.Image]:
+    """Rasterize the bart-loaf SVG to RGBA at `target_height` (cached)."""
+    if target_height in _LOAF_CACHE:
+        return _LOAF_CACHE[target_height]
+    if not _LOAF_SVG.exists():
+        return None
+    rsvg = shutil.which("rsvg-convert")
+    if rsvg is None:
+        # Pillow alone can't parse arbitrary SVGs — without rsvg we silently
+        # render text-only (the chrome still draws the `bart.` wordmark, so
+        # the brand is preserved). Doctor warns about this so the user can
+        # `brew install librsvg` for the full visual.
+        return None
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        png = Path(tmp.name)
+    try:
+        subprocess.run(
+            [rsvg, "-h", str(target_height), "-a", str(_LOAF_SVG),
+             "-o", str(png)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        img = Image.open(png).convert("RGBA").copy()
+    finally:
+        png.unlink(missing_ok=True)
+    _LOAF_CACHE[target_height] = img
+    return img
+
+
+def _paste_loaf(canvas: Image.Image, beat_index: int, kind: str) -> None:
+    """Composite the bart-loaf onto `canvas` with per-beat variation.
+
+    Position alternates left ↔ right between scenes; the hook sits dead
+    centered and slightly larger. Subtle per-beat rotation gives the
+    mascot a "bob" between beats — xfade interpolates the position, so
+    the character appears to walk/turn between scenes.
+    """
+    if kind == "hook":
+        height = 460
+        rotate = -4
+        x_anchor = "center"
+    else:
+        height = 360
+        # Alternate sides: scene 1 → left, scene 2 → right, scene 3 → left.
+        rotate = 6 if beat_index % 2 == 0 else -6
+        x_anchor = "left" if beat_index % 2 == 1 else "right"
+    loaf = _load_loaf(height)
+    if loaf is None:
+        return
+    rotated = loaf.rotate(rotate, resample=Image.BICUBIC, expand=True)
+    rw, rh = rotated.size
+    y = 240
+    if x_anchor == "center":
+        x = (WIDTH - rw) // 2
+    elif x_anchor == "left":
+        x = 80
+    else:
+        x = WIDTH - 80 - rw
+    canvas.alpha_composite(rotated, (x, y))
+
+
 def _base_canvas() -> Image.Image:
     """Cream background with a radial terracotta wash at the top."""
-    img = Image.new("RGB", (WIDTH, HEIGHT), CREAM)
+    img = Image.new("RGBA", (WIDTH, HEIGHT), CREAM + (255,))
     # Soft accent wash from the top — use a separate layer with a big blur.
     wash = Image.new("RGB", (WIDTH, HEIGHT), CREAM)
     wd = ImageDraw.Draw(wash)
@@ -158,7 +223,7 @@ def _base_canvas() -> Image.Image:
         wd.ellipse([cx - r, cy - r, cx + r, cy + r], fill=tint)
     wash = wash.filter(ImageFilter.GaussianBlur(80))
     img.paste(wash, (0, 0))
-    return img
+    return img  # RGBA so alpha_composite from the mascot blends correctly
 
 
 def _draw_chrome(img: Image.Image) -> None:
@@ -186,9 +251,13 @@ def _draw_chrome(img: Image.Image) -> None:
 def _highlight_word(text: str, kind: str) -> tuple[str, str | None]:
     """Split `text` into (prefix, accent_tail).
 
-    For scenes, the trailing 1-2 word punch (stripped of trailing
-    punctuation) is colored in the brand accent. Hook stays solid INK —
-    the whole hook is the headline.
+    For scenes, the trailing word (with its punctuation) is colored in
+    the brand accent — the renderer paints it terracotta on the line it
+    ends up on. Hook stays solid INK; the whole hook is the headline.
+
+    We deliberately use the single last word: anything longer would risk
+    getting split across a wrap boundary, where the highlight would be
+    silently dropped because the suffix no longer matches a single line.
     """
     if kind == "hook":
         return text, None
@@ -197,24 +266,20 @@ def _highlight_word(text: str, kind: str) -> tuple[str, str | None]:
     words = stripped.split()
     if len(words) < 3:
         return text, None
-    # Default: just the last word. If the last two words form a tight
-    # phrase (e.g. "study packet"), pick both — heuristic on length.
-    tail_n = 1
-    if len(words) >= 5 and len(words[-2]) <= 6 and len(words[-1]) <= 8:
-        tail_n = 2
-    head = " ".join(words[:-tail_n])
-    tail = " ".join(words[-tail_n:]) + trailing_punct
-    return head + " ", tail
+    tail = words[-1] + trailing_punct
+    return " ".join(words[:-1]) + " ", tail
 
 
-def _render_beat(beat: Beat, out_path: Path) -> None:
+def _render_beat(beat: Beat, beat_index: int, out_path: Path) -> None:
     """Render a single PNG for a beat (hook or scene)."""
     img = _base_canvas()
     _draw_chrome(img)
+    _paste_loaf(img, beat_index, beat.kind)
     draw = ImageDraw.Draw(img)
 
-    # Stage box: between chrome top (~y=280) and chrome bottom (~y=HEIGHT-250).
-    box_top, box_bottom = 380, HEIGHT - 320
+    # Text box sits BELOW the mascot zone (which lives between y≈240 and
+    # y≈720). Footer at y≈HEIGHT-250.
+    box_top, box_bottom = 820, HEIGHT - 320
     box_left, box_right = 90, WIDTH - 90
     max_width = box_right - box_left
     max_height = box_bottom - box_top
@@ -222,13 +287,13 @@ def _render_beat(beat: Beat, out_path: Path) -> None:
     if beat.kind == "hook":
         font, lines, line_h = _fit_text(
             draw, beat.text, _SERIF_CANDIDATES,
-            max_size=130, min_size=64,
+            max_size=120, min_size=58,
             max_width=max_width, max_height=max_height,
         )
     else:
         font, lines, line_h = _fit_text(
             draw, beat.text, _SANS_CANDIDATES,
-            max_size=98, min_size=54,
+            max_size=92, min_size=48,
             max_width=max_width, max_height=max_height,
         )
 
@@ -251,7 +316,7 @@ def _render_beat(beat: Beat, out_path: Path) -> None:
             draw.text((x, y), line, font=font, fill=INK)
         y += line_h
 
-    img.save(out_path, "PNG")
+    img.convert("RGB").save(out_path, "PNG")
 
 
 # ── Scene → beat planning ────────────────────────────────────────────
@@ -365,7 +430,7 @@ def render_reel(
         beat_pngs: List[Path] = []
         for i, beat in enumerate(beats):
             png = tmp / f"beat_{i:02d}.png"
-            _render_beat(beat, png)
+            _render_beat(beat, i, png)
             beat_pngs.append(png)
 
         if thumbnail_path is not None:

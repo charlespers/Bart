@@ -248,7 +248,7 @@ def test_render_beat_emits_legible_png(tmp_path):
 
     out = tmp_path / "beat.png"
     _render_beat(Beat(text="Your notes are a mess. Bart isn't.",
-                      seconds=2.0, kind="hook"), out)
+                      seconds=2.0, kind="hook"), 0, out)
     assert out.exists()
     # PNG magic header — confirms Pillow actually wrote an image.
     assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

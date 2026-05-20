@@ -41,6 +41,14 @@ def _check_ffmpeg() -> Check:
     return Check("ffmpeg", OK, "ffmpeg + ffprobe present")
 
 
+def _check_mascot() -> Check:
+    if not shutil.which("rsvg-convert"):
+        return Check("mascot", WARN,
+                     "rsvg-convert not found — Reels render text-only "
+                     "(no bart-loaf). Install with `brew install librsvg`.")
+    return Check("mascot", OK, "rsvg-convert present (bart-loaf renders)")
+
+
 def _check_music() -> Check:
     exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".aiff"}
     tracks = [p for p in MUSIC.glob("*") if p.suffix.lower() in exts] if MUSIC.exists() else []
@@ -112,6 +120,7 @@ def run_doctor(cfg: OutreachConfig, *, check_token: bool = False) -> List[Check]
     checks = [
         _check_python_deps(),
         _check_ffmpeg(),
+        _check_mascot(),
         _check_music(),
         _check_anthropic(cfg),
         _check_tts(cfg),
