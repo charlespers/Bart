@@ -82,10 +82,19 @@ Set these with `flyctl secrets set KEY=value` (the app restarts on change).
 - `STRIPE_PRICE_MONTHLY` — the price id of the $10/month plan.
 - `APP_PUBLIC_URL` — public site URL (default `https://studywithbart.com`); used in Stripe redirect URLs and creator referral links.
 
-**Creator program email.** Applications are emailed to `bartcompanyai@gmail.com`. Configure an SMTP account so the mail actually sends — without it, applications are still saved and shown in the admin panel, just not emailed.
+**Creator program email.** Applications, approval emails, and admin-sent trial codes all use the same outbound mailer. Pick **one** of these two backends — without one, mail isn't sent (applications are still saved and visible in the admin panel either way).
+
+Easiest: **Resend** (free tier covers up to 3,000 emails/month, no SMTP setup).
+- `RESEND_API_KEY` — grab one at <https://resend.com/api-keys>.
+- `RESEND_FROM` — optional. Defaults to `bart <onboarding@resend.dev>` (Resend's shared sandbox sender — works immediately without verifying a domain). For production, verify your own domain in Resend and set this to e.g. `bart <hello@studywithbart.com>`.
+
+Or SMTP (e.g. Gmail with an app password):
 - `SMTP_USER` — sending account, e.g. `bartcompanyai@gmail.com`.
 - `SMTP_PASS` — an app password for that account.
 - `SMTP_HOST` / `SMTP_PORT` — default `smtp.gmail.com` / `587` (STARTTLS).
+- `SMTP_FROM` — optional explicit `From:` (defaults to `SMTP_USER`).
+
+If both are set, Resend wins.
 - `BART_CREATOR_COMMISSION_CENTS` — flat commission in cents paid to the referring creator per verified payment (default `200`, i.e. $2.00).
 - `BART_PAYOUT_MINIMUM_CENTS` — minimum creator balance (in cents) before a payout run pays them; default `2500` ($25).
 - `BART_STRIPE_CONNECT` — set to `1` to enable Stripe Connect Express payouts (automated transfers + the "connect your bank" onboarding UI); default `0` = manual payouts (admin records each payout by hand). Note that Connect must also be enabled on the Stripe account.
@@ -95,7 +104,12 @@ Set these with `flyctl secrets set KEY=value` (the app restarts on change).
 
 Approve or reject applications at `/admin-creators` (admin account only).
 
-**Trial codes.** Mint single-use codes at `/admin-codes` (admin account only). Each code grants one free premium (Claude) packet generation and can be redeemed exactly once, ever, on any account — hand them to creators so they can try bart before subscribing. Recipients redeem at `/creators` ("have a trial code?"); the credit then lets them run one Claude packet without a subscription. No env vars needed — minting is gated to admin accounts.
+**Trial codes.** Mint single-use codes at `/admin-codes` (admin account only). Each code grants one free premium (Claude) packet generation and can be redeemed exactly once, ever, on any account. Two flows:
+
+- **email a code** (default) — enter a recipient email, optional name + note, and bart mints a fresh code and emails it directly. Requires an email backend (see above).
+- **just mint** — get a batch of raw codes you can copy/paste anywhere.
+
+Recipients redeem at `/creators` ("have a trial code?"); the credit then lets them run one Claude packet without a subscription. No env vars needed — minting is gated to admin accounts.
 
 **Other.**
 - `GOOGLE_CLIENT_ID` — enables Google sign-in (optional).

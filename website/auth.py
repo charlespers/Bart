@@ -436,6 +436,14 @@ def update_subscription(
 # — the quality of any single packet is never reduced, only the premium engine
 # is metered. Tunable per-deployment without a code change.
 CLAUDE_RUNS_PER_MONTH = max(1, int(os.environ.get("BART_CLAUDE_RUNS_PER_MONTH", "12")))
+# Whether to actually enforce the monthly meter. Off by default because today
+# every Claude run goes through the user's own claude.ai subscription via the
+# Claude Code CLI — Bart pays nothing per token. Flip this on (set the env
+# var to "1" / "true") only once we add the Anthropic API-key path where we
+# *do* pay per token; then the 12-runs-per-month cap kicks in.
+METER_CLAUDE_RUNS = os.environ.get("BART_METER_CLAUDE_RUNS", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 
 def _current_period() -> str:
@@ -470,6 +478,12 @@ def claude_run_usage(user) -> dict:
     if user is None:
         return {"unlimited": False, "used": 0, "limit": CLAUDE_RUNS_PER_MONTH,
                 "remaining": 0, "period": period}
+
+    # No meter today — Claude Code subscription runs are free for Bart. The
+    # UI hides the "X of Y left" strip when unlimited=True.
+    if not METER_CLAUDE_RUNS:
+        return {"unlimited": True, "used": 0, "limit": CLAUDE_RUNS_PER_MONTH,
+                "remaining": CLAUDE_RUNS_PER_MONTH, "period": period}
 
     if _row_get(user, "is_grandfathered", 0):
         return {"unlimited": True, "used": 0, "limit": CLAUDE_RUNS_PER_MONTH,
@@ -509,6 +523,11 @@ def consume_claude_run(user_id: int) -> None:
     run that straddles a month boundary is always counted against the right
     month. No-op semantics for grandfathered users are handled by callers
     (they skip the quota path entirely)."""
+    # Skip bookkeeping entirely when the meter is off (today's default) —
+    # we don't want stale counter rows accumulating against the day we flip
+    # the meter on. See METER_CLAUDE_RUNS for context.
+    if not METER_CLAUDE_RUNS:
+        return
     period = _current_period()
     with _connect() as db:
         row = db.execute(

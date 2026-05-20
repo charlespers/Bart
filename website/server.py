@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -44,6 +45,8 @@ from fastapi import (
     Request,
     Response,
     UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
@@ -150,10 +153,26 @@ _payout_task: asyncio.Task | None = None
 _user_locks: dict[int, asyncio.Lock] = {}
 # Global concurrency cap — how many bart subprocesses can run at once across
 # the whole server. Sized to the box; tune via BART_MAX_CONCURRENT_RUNS.
-_MAX_CONCURRENT_RUNS = int(os.environ.get("BART_MAX_CONCURRENT_RUNS", "6"))
+# Default 4 keeps RAM under control on a 2 GB Fly machine (each `claude` CLI
+# subprocess is a few hundred MB). Bump to 6+ once the box has 4+ GB.
+_MAX_CONCURRENT_RUNS = int(os.environ.get("BART_MAX_CONCURRENT_RUNS", "4"))
 _run_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_RUNS)
 # token -> {user_id, subject, focus, preset, days, materials_dir, output_dir}
 _run_meta: dict[str, dict] = {}
+
+# ─── browser-LLM proxy state ───────────────────────────────────────────────
+# When a user runs bart with the "gemma in browser" engine, their tab opens
+# a WebSocket and runs Gemma via WebLLM locally. The orchestrator subprocess
+# can't talk to the browser directly, so it POSTs each completion request to
+# /api/llm/proxy/{user_id}; this server then forwards it through the socket
+# and awaits the browser's reply.
+#
+# _browser_sockets[user_id] = WebSocket  — the connected browser session
+# _browser_meta[user_id]    = { model, context_window, ready_at }
+# _pending_completions[request_id] = asyncio.Future[dict]  — open proxy calls
+_browser_sockets: dict[int, WebSocket] = {}
+_browser_meta: dict[int, dict] = {}
+_pending_completions: dict[str, asyncio.Future] = {}
 
 
 def _user_lock(user_id: int) -> asyncio.Lock:
@@ -790,6 +809,10 @@ async def me(user=Depends(auth.current_user)):
         "user": _user_payload(user),
         "usage": auth.claude_run_usage(user),
         "trial_credits": auth.trial_credits(user),
+        # Surfaced so the UI can gate the gemma-download button (and any
+        # other run-only affordance) without a second round-trip to
+        # /api/billing/status.
+        "has_run_access": auth.has_run_access(user),
     }
 
 
@@ -1101,6 +1124,46 @@ async def admin_list_trial_codes(user=Depends(auth.current_user)):
     return {"codes": auth.list_trial_codes()}
 
 
+class SendCodeRequest(BaseModel):
+    email: str = ""
+    name: str = ""
+    note: str = ""
+
+
+@app.post("/api/admin/trial-codes/send")
+async def admin_send_trial_code(req: SendCodeRequest,
+                                user=Depends(auth.current_user)):
+    """Mint one trial code and email it to a recipient in a single step —
+    admin only. The note is recorded on the code but is NOT included in the
+    email; it's just so the admin can later see who they sent it to."""
+    _require_admin(user)
+    recipient = (req.email or "").strip().lower()
+    if not _EMAIL_RE.match(recipient):
+        raise HTTPException(400, "enter a valid recipient email.")
+    if not emailer.email_configured():
+        raise HTTPException(
+            503,
+            "no email backend is configured — set RESEND_API_KEY (or SMTP_USER + "
+            "SMTP_PASS) so the code can actually be delivered.",
+        )
+    note = (req.note or "").strip()
+    if recipient and not note:
+        note = f"emailed to {recipient}"
+    code = auth.create_trial_code(note)
+    delivered = emailer.send_trial_code(
+        recipient, code, recipient_name=(req.name or "").strip(), note=note,
+    )
+    if not delivered:
+        # Code is still safe in the DB and visible in the admin queue — surface
+        # the failure so the admin knows to retry or copy it out manually.
+        raise HTTPException(
+            502,
+            f"code {code} was minted but the email could not be sent — copy "
+            "it from the table below and deliver it manually.",
+        )
+    return {"ok": True, "code": code, "sent_to": recipient}
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
@@ -1192,6 +1255,23 @@ async def upload(files: list[UploadFile] = File(...), user=Depends(auth.current_
     return {"saved": saved}
 
 
+@app.delete("/api/materials/{name}")
+async def delete_material(name: str, user=Depends(auth.current_user)):
+    # Path(name).name strips any directory traversal — keeps the request scoped
+    # to the user's own materials dir even if a client sends "../something".
+    safe = Path(name).name
+    if not safe:
+        raise HTTPException(400, "missing filename")
+    target = _user_materials(user["id"]) / safe
+    if not target.is_file():
+        raise HTTPException(404, "no such file")
+    try:
+        target.unlink()
+    except OSError as e:
+        raise HTTPException(500, f"could not delete: {e}")
+    return {"deleted": safe}
+
+
 # ─── run (auth + global lock) ────────────────────────────────────────────────
 
 class RunRequest(BaseModel):
@@ -1200,15 +1280,17 @@ class RunRequest(BaseModel):
     focus: str = ""
     preset: str = "default"   # default | fast | turbo
     # Which engine bart should run on:
-    #   "claude" — Claude via the user's claude.ai subscription (default)
-    #   "gemma"  — local Gemma 4 open weights (free, no API key; bart
-    #              detects the host's hardware and auto-picks + downloads
-    #              the best-fitting Gemma 4 variant on first run)
+    #   "claude"          — Claude via the user's claude.ai subscription (default)
+    #   "gemma"           — local Gemma 4 open weights on the server (only
+    #                       works on hosts with enough RAM; not the hosted site)
+    #   "gemma-browser"   — Gemma in the user's browser tab via WebLLM/WebGPU.
+    #                       No server inference at all; orchestrator proxies
+    #                       each completion through /api/llm/proxy.
     model: str = "claude"
 
 
 @app.post("/api/run")
-async def start_run(req: RunRequest, user=Depends(auth.current_user)):
+async def start_run(req: RunRequest, request: Request, user=Depends(auth.current_user)):
     # Per-user single-run gate — prevents accidental double-fire from this same
     # user clobbering their own output dir. Other users are unaffected.
     if _user_lock(user["id"]).locked():
@@ -1216,22 +1298,39 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
             409, "you already have a run in progress — wait for it to finish."
         )
 
-    # Gemma 4 runs entirely on local open weights — no `claude` CLI and no
-    # connected claude.ai account required. The Claude path keeps both
-    # preconditions.
-    use_gemma = (req.model or "claude").strip().lower() in (
-        "gemma", "gemma4", "gemma-4", "local",
-    )
+    raw_model = (req.model or "claude").strip().lower()
+    # Server-side Gemma (only viable on big-RAM hosts).
+    use_gemma = raw_model in ("gemma", "gemma4", "gemma-4", "local")
+    # Browser-side Gemma — inference runs in the user's tab via WebLLM.
+    use_browser = raw_model in ("gemma-browser", "browser", "webllm")
 
-    # Paywall — bypass if grandfathered, else require an active subscription.
-    # A single-use trial code grants one free premium (Claude) packet, so an
-    # unsubscribed account holding a trial credit may run once on Claude. The
-    # credit is spent only after the run actually launches (see below).
-    # 402 Payment Required is the canonical status; the UI listens for it and
-    # routes to the subscribe modal / pricing page.
+    # In-browser llama is admin-gated until the orchestrator has a tiny-model
+    # prompt path that works on a 1B model — at the moment, regular users
+    # just get broken packets. The frontend hides the option for non-admins,
+    # but a hand-crafted POST would otherwise still slip through.
+    BROWSER_ADMIN_EMAIL = "loctran0323@gmail.com"
+    if use_browser and (user["email"] or "").strip().lower() != BROWSER_ADMIN_EMAIL:
+        raise HTTPException(
+            403, "in-browser llama is in limited preview — use claude for now."
+        )
+
+    # Browser-Gemma needs an active WebSocket from the user's tab before we
+    # can even launch the orchestrator. Fail fast with a clear message.
+    if use_browser and user["id"] not in _browser_sockets:
+        raise HTTPException(
+            424,
+            "your browser hasn't loaded gemma yet — wait for the download to finish, "
+            "then try again. (if you closed the tab, reopen this page.)",
+        )
+
+    # Paywall — every run, every model, requires an active subscription.
+    # Bart is purely a subscription-based product; gemma-in-browser is free
+    # for us per run (the user's laptop does the work) but still gated so
+    # it isn't a back door around the subscription. A single-use trial code
+    # unlocks one packet on any model.
     use_trial = False
     if not auth.has_run_access(user):
-        if not use_gemma and auth.trial_credits(user) > 0:
+        if auth.trial_credits(user) > 0:
             use_trial = True
         else:
             raise HTTPException(
@@ -1245,7 +1344,7 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
             400, "drop some files first, then click let bart cook."
         )
 
-    if not use_gemma:
+    if not use_gemma and not use_browser:
         # Monthly Claude-run allowance. Local Gemma runs are unlimited, so a
         # subscriber who's used their premium runs can always switch the
         # model toggle to "gemma 4" and keep generating full packets — the
@@ -1278,8 +1377,15 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
     from datetime import date, timedelta
     exam = (date.today() + timedelta(days=days)).isoformat()
 
+    if use_browser:
+        auth_mode = "browser"
+    elif use_gemma:
+        auth_mode = "local"
+    else:
+        auth_mode = "claude-code"
+
     config = {
-        "auth_mode": "local" if use_gemma else "claude-code",
+        "auth_mode": auth_mode,
         "api_key": "",
         "exam_date": exam,
         "subject": (req.subject or "your course").strip()[:200],
@@ -1305,9 +1411,9 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
 
     output_dir = _user_output(user["id"])
 
-    # The local Gemma 4 inference server is single-slot — fan-out would just
-    # queue behind one slot, so request 1. Claude keeps the ×4 fan-out.
-    max_parallel = "1" if use_gemma else "4"
+    # Both server-side Gemma and browser-side Gemma are single-slot — fan-out
+    # would just queue behind one slot, so request 1. Claude keeps the ×4 fan-out.
+    max_parallel = "1" if (use_gemma or use_browser) else "4"
     if VENV_PY.exists():
         cmd = [str(VENV_PY), "-m", "bart", "run",
                "--max-parallel", max_parallel, "--days", str(days)]
@@ -1352,6 +1458,25 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
         shared_cache = ROOT / ".model-cache"
         shared_cache.mkdir(parents=True, exist_ok=True)
         env["BART_CACHE_DIR"] = str(shared_cache)
+    if use_browser:
+        # Mint a fresh per-run secret and hand it to the orchestrator via env.
+        # The orchestrator's BrowserBackend uses it to POST completions back
+        # through /api/llm/proxy/{user_id}/{secret}. A leaked secret can only
+        # talk to this user's tab, and it rotates on every run.
+        import secrets as _secrets
+        proxy_secret = _secrets.token_urlsafe(24)
+        _BROWSER_PROXY_SECRETS[user["id"]] = proxy_secret
+        # Derive the proxy port from the incoming request so dev (3000, 5173,
+        # etc.) and prod (8080 behind Fly's proxy) both work. We always use
+        # 127.0.0.1 for the host — the orchestrator is on the same machine
+        # as this FastAPI process. Behind a reverse proxy `request.url.port`
+        # is the public port (80/443); in that case fall back to env or 8080.
+        req_port = request.url.port
+        if req_port is None or req_port in (80, 443):
+            req_port = int(os.environ.get("BART_INTERNAL_PORT", "8080"))
+        env["BART_LLM_PROXY_URL"] = (
+            f"http://127.0.0.1:{req_port}/api/llm/proxy/{user['id']}/{proxy_secret}"
+        )
     # Per-user claude credentials. HOME override means the spawned `claude`
     # CLI reads <workspace>/.claude/, not the host's ~/.claude/, so each user
     # runs against their own claude.ai session.
@@ -1445,12 +1570,28 @@ async def start_run(req: RunRequest, user=Depends(auth.current_user)):
             # Bart may exit non-zero on partial failures (one artifact failed,
             # rate limit on the last step, etc.) but the artifacts on disk are
             # still useful — without a DB row they're invisible to /output/.
+            #
+            # Materials cleanup: archive into the latest run dir whether the
+            # run succeeded or failed — otherwise a failed run leaves uploads
+            # in the user's materials dir and they silently get re-included
+            # in every subsequent attempt. If bart crashed *before* making a
+            # run dir (nothing to archive into), wipe the materials anyway so
+            # they don't leak forward.
             run_id = None
             if user_id is not None:
-                if rc == 0:
-                    archived = _archive_materials_into_latest_run(user_id)
-                    if archived:
-                        run_id = archived[1]
+                archived = _archive_materials_into_latest_run(user_id)
+                if archived:
+                    run_id = archived[1]
+                else:
+                    # No run dir to archive into — bart probably died at
+                    # startup. Clear materials so the next attempt is clean.
+                    src_root = _user_materials(user_id)
+                    for p in src_root.iterdir():
+                        if p.is_file():
+                            try:
+                                p.unlink()
+                            except OSError:
+                                pass
                 if run_id is None:
                     latest = _latest_run_dir(user_id)
                     run_id = latest.name if latest else None
@@ -1865,6 +2006,177 @@ async def anthropic_disconnect(user=Depends(auth.current_user)):
     if d.is_dir():
         shutil.rmtree(d, ignore_errors=True)
     return {"ok": True}
+
+
+# ─── browser-llm bridge ─────────────────────────────────────────────────────
+#
+# Two endpoints make up the "Gemma in your browser" path:
+#
+#   WS  /api/llm/socket          — the browser tab connects here once WebLLM
+#                                  is initialized. It tells us the model name
+#                                  and context window, then listens for
+#                                  completion requests.
+#   POST /api/llm/proxy/{user_id}/{secret}
+#                                — the orchestrator subprocess POSTs each
+#                                  completion request here. We forward it
+#                                  through the user's socket and block until
+#                                  the browser replies (or times out).
+#
+# The {secret} segment is a per-run nonce the website sets in the orchestrator's
+# env (BART_LLM_PROXY_URL). It defends against a malicious local process on
+# the same host hijacking a logged-in user's tab. The orchestrator subprocess
+# can read it from env; an attacker on the same box cannot, because each
+# subprocess only has the env we hand it.
+_BROWSER_PROXY_SECRETS: dict[int, str] = {}  # user_id -> active proxy secret
+_BROWSER_PROXY_TIMEOUT_S = float(os.environ.get("BART_BROWSER_LLM_TIMEOUT_S", "240"))
+
+
+@app.get("/api/llm/status")
+async def browser_llm_status(user=Depends(auth.current_user)):
+    """Check whether this user's browser tab has WebLLM loaded and ready."""
+    meta = _browser_meta.get(user["id"])
+    return {
+        "connected": user["id"] in _browser_sockets,
+        "model": (meta or {}).get("model"),
+        "context_window": (meta or {}).get("context_window"),
+        "ready_at": (meta or {}).get("ready_at"),
+    }
+
+
+@app.websocket("/api/llm/socket")
+async def browser_llm_socket(ws: WebSocket):
+    # Hand-rolled cookie auth — FastAPI's Depends doesn't work on WebSockets
+    # the same way HTTP routes do, so we extract and validate manually.
+    await ws.accept()
+    try:
+        sid = ws.cookies.get(auth.SESSION_COOKIE)
+        user = auth._user_from_sid(sid) if sid else None
+    except Exception:
+        user = None
+    if user is None:
+        await ws.send_json({"type": "error", "error": "unauthenticated"})
+        await ws.close(code=4401)
+        return
+
+    user_id = user["id"]
+    # Only one tab per user — if there's an existing socket, drop it. Multiple
+    # tabs would race on completion responses; one canonical tab is simpler.
+    old = _browser_sockets.pop(user_id, None)
+    if old is not None:
+        try:
+            await old.close(code=4000)
+        except Exception:
+            pass
+    _browser_sockets[user_id] = ws
+    _browser_meta[user_id] = {}
+
+    try:
+        while True:
+            msg = await ws.receive_json()
+            kind = msg.get("type")
+            if kind == "ready":
+                _browser_meta[user_id] = {
+                    "model": msg.get("model") or "unknown",
+                    "context_window": int(msg.get("context_window") or 0),
+                    "ready_at": time.time(),
+                }
+            elif kind in ("completion_done", "completion_error"):
+                req_id = msg.get("request_id")
+                fut = _pending_completions.pop(req_id, None) if req_id else None
+                if fut is not None and not fut.done():
+                    fut.set_result(msg)
+            elif kind == "ping":
+                await ws.send_json({"type": "pong"})
+            # Unknown message kinds are ignored — the client may send things
+            # we don't recognise yet (forward-compatibility).
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    finally:
+        # Only remove if we're still the registered socket (defends against
+        # the "old" branch above racing with a fast reconnect).
+        if _browser_sockets.get(user_id) is ws:
+            _browser_sockets.pop(user_id, None)
+            _browser_meta.pop(user_id, None)
+        # Any pending completions for this user die with the socket — fail them.
+        # Walk a copy because the dict shrinks during iteration.
+        for req_id, fut in list(_pending_completions.items()):
+            if req_id.startswith(f"u{user_id}:") and not fut.done():
+                fut.set_result({
+                    "type": "completion_error",
+                    "request_id": req_id,
+                    "error": "tab_closed",
+                })
+
+
+class ProxyCompletionBody(BaseModel):
+    messages: list[dict]
+    max_tokens: int = 8000
+    temperature: float = 0.7
+    response_format: Optional[str] = None
+    label: str = ""
+
+
+@app.post("/api/llm/proxy/{user_id}/{secret}")
+async def browser_llm_proxy(user_id: int, secret: str, body: ProxyCompletionBody):
+    """Forward a completion request from the orchestrator subprocess to the
+    user's browser tab via WebSocket. Blocks until the browser replies or
+    BART_BROWSER_LLM_TIMEOUT_S elapses."""
+    expected = _BROWSER_PROXY_SECRETS.get(user_id)
+    if not expected or secret != expected:
+        raise HTTPException(403, "bad proxy secret")
+    ws = _browser_sockets.get(user_id)
+    if ws is None:
+        raise HTTPException(503, "the user's browser tab is no longer connected — they probably closed it.")
+
+    request_id = f"u{user_id}:{uuid.uuid4().hex}"
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    _pending_completions[request_id] = fut
+
+    try:
+        await ws.send_json({
+            "type": "complete",
+            "request_id": request_id,
+            "messages": body.messages,
+            "max_tokens": body.max_tokens,
+            "temperature": body.temperature,
+            "response_format": body.response_format,
+            "label": body.label,
+        })
+    except Exception as e:
+        _pending_completions.pop(request_id, None)
+        raise HTTPException(503, f"couldn't send to browser: {e}")
+
+    try:
+        result = await asyncio.wait_for(fut, timeout=_BROWSER_PROXY_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        _pending_completions.pop(request_id, None)
+        raise HTTPException(504, "browser didn't reply in time — model may be too slow or tab is hung.")
+
+    if result.get("type") == "completion_error":
+        err = result.get("error", "unknown")
+        detail = result.get("detail", "")
+        if err == "context_too_long":
+            raise HTTPException(413, json.dumps({
+                "error": "context_too_long",
+                "detail": detail,
+            }))
+        # Pack the JS-side exception text into the 502 detail so the
+        # orchestrator's log shows what actually broke in the browser.
+        raise HTTPException(
+            502,
+            f"browser inference failed [{err}]: {detail}" if detail
+            else f"browser inference failed: {err}",
+        )
+
+    return {
+        "text": result.get("text", ""),
+        "usage": result.get("usage", {}),
+    }
 
 
 # ─── friends ─────────────────────────────────────────────────────────────────

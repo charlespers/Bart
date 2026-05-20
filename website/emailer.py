@@ -1,25 +1,27 @@
 """Outbound email for the bart website.
 
-Today this carries one thing: creator-program application notifications to
-the bart team. Kept tiny and dependency-free (stdlib ``smtplib``).
+Today this carries: creator-program application notifications to the team,
+approval/payout/summary emails back to creators, and admin-delivered trial
+codes. Two delivery backends are supported; the first one configured wins:
 
-SMTP is configured entirely through environment variables:
+    1. Resend HTTP API — set ``RESEND_API_KEY``. Optional ``RESEND_FROM``
+       (defaults to ``"bart <onboarding@resend.dev>"`` so you can send
+       immediately without verifying a domain).
+    2. SMTP — set ``SMTP_USER`` + ``SMTP_PASS`` (and optionally
+       ``SMTP_HOST``/``SMTP_PORT``/``SMTP_FROM``).
 
-    SMTP_HOST   default "smtp.gmail.com"
-    SMTP_PORT   default 587 (STARTTLS)
-    SMTP_USER   the sending account (e.g. bartcompanyai@gmail.com)
-    SMTP_PASS   an app password for that account
-    SMTP_FROM   optional explicit From: (defaults to SMTP_USER)
-
-When SMTP is not configured, ``send_email`` logs the message to stderr and
-returns ``False``. A missing mail config must never break a user action —
-the caller still records the application in the database either way.
+When neither is configured ``send_email`` logs to stderr and returns
+``False``. A missing mail config must never break a user action — the
+caller still records the application/code in the database either way.
 """
 from __future__ import annotations
 
+import json
 import os
 import smtplib
 import sys
+import urllib.error
+import urllib.request
 from email.message import EmailMessage
 from email.utils import formataddr
 
@@ -27,33 +29,75 @@ from email.utils import formataddr
 # Where creator-program applications are sent for review.
 TEAM_EMAIL = "bartcompanyai@gmail.com"
 
+# Resend's shared sandbox sender — works out of the box for testing without
+# verifying a domain. For production, set RESEND_FROM to a sender on a
+# domain you've verified in the Resend dashboard.
+_DEFAULT_RESEND_FROM = "bart <onboarding@resend.dev>"
+
+
+def resend_configured() -> bool:
+    return bool(os.environ.get("RESEND_API_KEY"))
+
 
 def smtp_configured() -> bool:
     return bool(os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASS"))
 
 
-def send_email(to: str, subject: str, body: str, *, reply_to: str = "") -> bool:
-    """Send a plain-text email. Returns True on success, False otherwise.
+def email_configured() -> bool:
+    return resend_configured() or smtp_configured()
 
-    Never raises — a delivery failure is logged and swallowed so the caller's
-    primary action (e.g. saving an application) always completes.
-    """
+
+def _send_via_resend(to: str, subject: str, body: str, *, reply_to: str = "") -> bool:
+    api_key = os.environ.get("RESEND_API_KEY", "")
+    sender = os.environ.get("RESEND_FROM", "") or _DEFAULT_RESEND_FROM
+    payload = {
+        "from": sender,
+        "to": [to],
+        "subject": subject,
+        "text": body,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            if 200 <= resp.status < 300:
+                return True
+            print(
+                f"[emailer] resend HTTP {resp.status} sending to {to}",
+                file=sys.stderr, flush=True,
+            )
+            return False
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "replace")[:400]
+        except Exception:  # noqa: BLE001 — diagnostic best-effort
+            pass
+        print(
+            f"[emailer] resend send to {to} failed: HTTP {e.code} {detail}",
+            file=sys.stderr, flush=True,
+        )
+        return False
+    except Exception as e:  # noqa: BLE001 — delivery failure must not propagate
+        print(f"[emailer] resend send to {to} failed: {e}", file=sys.stderr, flush=True)
+        return False
+
+
+def _send_via_smtp(to: str, subject: str, body: str, *, reply_to: str = "") -> bool:
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SMTP_PORT", "587"))
     user = os.environ.get("SMTP_USER", "")
     password = os.environ.get("SMTP_PASS", "")
     sender = os.environ.get("SMTP_FROM", "") or user
-
-    if not (user and password):
-        # Not configured — log so the message isn't silently lost, and the
-        # operator can still see/act on it from the server logs.
-        print(
-            f"[emailer] SMTP not configured; would have emailed {to}\n"
-            f"  subject: {subject}\n"
-            f"  ---\n{body}\n  ---",
-            file=sys.stderr, flush=True,
-        )
-        return False
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -70,8 +114,30 @@ def send_email(to: str, subject: str, body: str, *, reply_to: str = "") -> bool:
             smtp.send_message(msg)
         return True
     except Exception as e:  # noqa: BLE001 — delivery failure must not propagate
-        print(f"[emailer] send to {to} failed: {e}", file=sys.stderr, flush=True)
+        print(f"[emailer] smtp send to {to} failed: {e}", file=sys.stderr, flush=True)
         return False
+
+
+def send_email(to: str, subject: str, body: str, *, reply_to: str = "") -> bool:
+    """Send a plain-text email. Returns True on success, False otherwise.
+
+    Never raises — a delivery failure is logged and swallowed so the caller's
+    primary action (e.g. saving an application) always completes. Prefers
+    Resend when configured, falls back to SMTP, then to a stderr-logged
+    no-op so the message is at least visible in server logs.
+    """
+    if resend_configured():
+        return _send_via_resend(to, subject, body, reply_to=reply_to)
+    if smtp_configured():
+        return _send_via_smtp(to, subject, body, reply_to=reply_to)
+
+    print(
+        f"[emailer] no email backend configured; would have emailed {to}\n"
+        f"  subject: {subject}\n"
+        f"  ---\n{body}\n  ---",
+        file=sys.stderr, flush=True,
+    )
+    return False
 
 
 def notify_creator_application(app: dict) -> bool:
@@ -131,6 +197,30 @@ def notify_creator_payout(creator_email: str, creator_name: str,
         "— the bart team\n"
     )
     return send_email(creator_email, subject, body)
+
+
+def send_trial_code(recipient_email: str, code: str, *,
+                    recipient_name: str = "", note: str = "") -> bool:
+    """Email a freshly-minted trial code to a recipient. `note` is admin-only
+    context (e.g. which creator pitch this code is for) and is NOT included
+    in the body. Returns True on delivery."""
+    if not recipient_email:
+        return False
+    hi = f"Hi {recipient_name}," if recipient_name else "Hi,"
+    subject = "your free bart packet — one-time trial code"
+    body = (
+        f"{hi}\n\n"
+        "Here's a one-time code to try bart on us — it's good for one full "
+        "premium (Claude-powered) study packet, no subscription needed.\n\n"
+        f"  Your code:  {code}\n\n"
+        "How to redeem:\n"
+        "  1. Sign up (or sign in) at https://studywithbart.com/creators\n"
+        "  2. Paste the code into the \"have a trial code?\" box and hit redeem.\n"
+        "  3. Open the app, drop your materials in, and let bart cook.\n\n"
+        "The code works exactly once, on any account — so don't share it.\n\n"
+        "— the bart team\n"
+    )
+    return send_email(recipient_email, subject, body)
 
 
 def notify_creator_monthly_summary(creator_email: str, creator_name: str,

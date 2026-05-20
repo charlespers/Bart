@@ -84,6 +84,7 @@ from .io.checkpoint import atomic_write_json, atomic_write_text, is_complete
 from .io.corpus import build_corpus, default_char_budget, extract_all
 from .backends import (
     AnthropicAPIBackend,
+    BrowserBackend,
     ClaudeCodeBackend,
     LLMContextTooLongError,
     LocalBackend,
@@ -167,6 +168,35 @@ class Orchestrator:
                     cache_dir=self.paths.cache_dir,
                     on_event=self._on_llm_event,
                 )
+            elif self.cfg.auth_mode == "browser":
+                # Browser path: the user's tab is running WebLLM (Gemma 2)
+                # over WebGPU. The orchestrator POSTs each completion to the
+                # website server, which forwards it through the user's socket.
+                # Single-slot upstream — the browser tab runs one inference
+                # at a time — so collapse fan-out to 1.
+                proxy_url = os.environ.get("BART_LLM_PROXY_URL", "")
+                if not proxy_url:
+                    raise RuntimeError(
+                        "auth_mode == 'browser' but BART_LLM_PROXY_URL is unset — "
+                        "the website launcher must set this."
+                    )
+                self.console.print(
+                    "\n[bold #c96442]▸ Browser-side Gemma[/bold #c96442] "
+                    "[dim](inference runs in the user's tab)[/dim]"
+                )
+                llm = BrowserBackend(
+                    proxy_url=proxy_url,
+                    telemetry=self.telemetry,
+                    cache_dir=self.paths.cache_dir,
+                    on_event=self._on_llm_event,
+                    model_label="gemma-browser",
+                )
+                if self.max_parallel > 1:
+                    self.console.print(
+                        f"  [dim]capping max_parallel from {self.max_parallel} "
+                        f"to 1 (browser runs one inference at a time)[/dim]"
+                    )
+                    self.max_parallel = 1
             elif self.cfg.auth_mode == "local":
                 # New local stack: detect hardware → install engine → download
                 # weights → start mlx-lm/llama-cpp-python server → return a

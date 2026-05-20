@@ -1223,3 +1223,177 @@ class LocalBackend:
             _write_disk_cache(self._cache_dir, key, text)
         return text
 
+
+# ─── Browser backend ────────────────────────────────────────────────────────
+#
+# Runs inference in the user's browser tab via WebLLM (WebGPU). The orchestrator
+# subprocess can't talk to the browser directly, so it POSTs prompts to the
+# website's FastAPI server, which forwards them to the user's WebSocket and
+# blocks until the browser sends back a completion.
+#
+# The orchestrator picks this backend when auth_mode == "browser". The proxy
+# URL comes from env var BART_LLM_PROXY_URL, set by the website's run launcher.
+class BrowserBackend:
+    """LLM backend that proxies completions to the user's browser via the
+    website's FastAPI server. Same `complete(...)` shape as the other
+    backends so the orchestrator is unaware of the transport."""
+
+    name = "browser"
+
+    def __init__(
+        self,
+        proxy_url: str,
+        telemetry: Telemetry,
+        cache_dir: Path | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        timeout_s: float = 240.0,
+        model_label: str = "browser",
+    ):
+        self._proxy_url = proxy_url.rstrip("/")
+        self._tel = telemetry
+        self._cache_dir = cache_dir
+        self._on_event = on_event or (lambda evt, payload: None)
+        self._timeout_s = timeout_s
+        self._model_label = model_label
+
+    @staticmethod
+    def _flatten(content) -> str:
+        if isinstance(content, str):
+            return content
+        out: list[str] = []
+        for b in content or ():
+            if isinstance(b, dict):
+                t = b.get("text")
+                if isinstance(t, str):
+                    out.append(t)
+            elif isinstance(b, str):
+                out.append(b)
+        return "\n".join(out)
+
+    def complete(
+        self,
+        *,
+        model: str,
+        system: str | list[dict[str, Any]],
+        user: str | list[dict[str, Any]],
+        max_tokens: int = 8000,
+        label: str = "",
+        use_disk_cache: bool = True,
+        temperature: float = 0.7,
+        response_format: str | None = None,
+        json_schema: dict[str, Any] | None = None,
+        effort: str | None = None,
+    ) -> str:
+        sys_text = self._flatten(system)
+        usr_text = self._flatten(user)
+
+        # Hard cap on combined system+user prompt size before it goes over
+        # the wire to WebLLM. Real corpora tokenize denser than ASCII (LaTeX,
+        # code, foreign chars often hit ~1.5 chars/token instead of 3.5), so
+        # we have to be conservative. 12K chars ≈ 8K tokens at the dense
+        # extreme — fits inside Gemma 2's 8K context window with a small
+        # margin for the chat template + ~2K tokens of output. Lossy for
+        # giant uploads but lets runs actually finish.
+        BROWSER_PROMPT_CHAR_CAP = 12_000
+        if len(sys_text) + len(usr_text) > BROWSER_PROMPT_CHAR_CAP:
+            allowed = max(1000, BROWSER_PROMPT_CHAR_CAP - len(sys_text))
+            if len(usr_text) > allowed:
+                marker = "\n\n[…corpus truncated to fit the local model's context…]"
+                usr_text = usr_text[: max(0, allowed - len(marker))] + marker
+
+        sys_blocks = [{"type": "text", "text": sys_text}]
+        usr_blocks = [{"type": "text", "text": usr_text}]
+        cache_model = self._model_label
+        key = _cache_key(cache_model, sys_blocks,
+                         [{"role": "user", "content": usr_blocks}],
+                         max_tokens)
+        if use_disk_cache:
+            cached = _read_disk_cache(self._cache_dir, key)
+            if cached is not None:
+                self._on_event("cache_hit", {"label": label, "key": key})
+                return cached
+
+        # Cap max_tokens to fit Gemma's 8K context (we've used most of it for
+        # the prompt). 2500 leaves enough headroom for typical agent outputs.
+        capped_max_tokens = min(max_tokens, 2500)
+
+        body = json.dumps({
+            "messages": [
+                {"role": "system", "content": sys_text},
+                {"role": "user",   "content": usr_text},
+            ],
+            "max_tokens": capped_max_tokens,
+            "temperature": temperature,
+            "response_format": response_format,
+            "label": label,
+        }).encode("utf-8")
+
+        import urllib.request as _ur
+        import urllib.error as _ue
+        req = _ur.Request(
+            self._proxy_url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        t0 = time.time()
+        try:
+            with _ur.urlopen(req, timeout=self._timeout_s) as resp:
+                raw = resp.read()
+        except _ue.HTTPError as e:
+            payload_text = ""
+            try:
+                payload_text = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if e.code == 413:
+                raise LLMContextTooLongError(
+                    f"browser model can't fit this prompt: {payload_text or e.reason}"
+                ) from e
+            raise LLMError(
+                f"browser backend HTTP {e.code} on '{label}': {payload_text or e.reason}"
+            ) from e
+        except _ue.URLError as e:
+            raise LLMError(
+                f"browser backend unreachable on '{label}': {e.reason} — "
+                "is the user's tab still open?"
+            ) from e
+
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            raise LLMError(
+                f"browser backend returned malformed JSON on '{label}': {e}"
+            ) from e
+
+        if not isinstance(payload, dict) or "text" not in payload:
+            err = (payload or {}).get("error") if isinstance(payload, dict) else None
+            if err == "context_too_long":
+                raise LLMContextTooLongError(
+                    f"browser model can't fit this prompt: {payload.get('detail', '')}"
+                )
+            raise LLMError(
+                f"browser backend returned unexpected payload on '{label}': {payload}"
+            )
+
+        text = _sanitize_local_output(payload["text"] or "", response_format=response_format)
+        usage = payload.get("usage") or {}
+        dt = time.time() - t0
+        rec = CallRecord(
+            label=label,
+            model=cache_model,
+            input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+            output_tokens=int(usage.get("completion_tokens", 0) or 0),
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+            duration_s=dt,
+        )
+        self._tel.record(rec)
+        self._on_event("call_done", {
+            "label": label, "duration_s": round(dt, 2),
+            "output_tokens": rec.output_tokens, "chars": len(text),
+        })
+        if use_disk_cache:
+            _write_disk_cache(self._cache_dir, key, text)
+        return text
+
