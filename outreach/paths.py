@@ -24,7 +24,6 @@ REPO_ROOT = PKG_DIR.parent
 
 QUEUE = PKG_DIR / "queue"
 MUSIC = PKG_DIR / "music"
-TEMPLATES = PKG_DIR / "templates"
 
 # Mirror bart's BART_CONFIG override so tests / parallel runs don't collide.
 CONFIG_PATH = (
@@ -65,6 +64,19 @@ class ItemPaths:
     @property
     def status_path(self) -> Path:
         return self.root / "status.json"
+
+    @property
+    def thumbnail_path(self) -> Path:
+        return self.root / "thumbnail.jpg"
+
+    @property
+    def hashtags_path(self) -> Path:
+        return self.root / "hashtags.txt"
+
+    @property
+    def upload_path(self) -> Path:
+        """The single-page checklist the reviewer follows to post the Reel."""
+        return self.root / "upload.md"
 
     @classmethod
     def for_date(cls, date: str, *, base: Path | None = None) -> "ItemPaths":

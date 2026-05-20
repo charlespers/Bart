@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
-import subprocess
 from dataclasses import dataclass
 from typing import List
 
@@ -25,39 +24,14 @@ class Check:
     detail: str
 
 
-def _node_major() -> int | None:
-    node = shutil.which("node")
-    if not node:
-        return None
-    try:
-        out = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=10)
-        return int(out.stdout.strip().lstrip("v").split(".")[0])
-    except (ValueError, subprocess.SubprocessError):
-        return None
-
-
 def _check_python_deps() -> Check:
-    missing = [m for m in ("requests", "bs4", "anthropic", "pydantic", "rich")
-               if importlib.util.find_spec(m) is None]
+    required = ("requests", "bs4", "anthropic", "pydantic", "rich", "PIL")
+    missing = [m for m in required if importlib.util.find_spec(m) is None]
     if missing:
         return Check("python deps", FAIL,
                      f"missing: {', '.join(missing)} — run `pip install -r outreach/requirements.txt`")
-    return Check("python deps", OK, "requests, bs4, anthropic, pydantic, rich present")
-
-
-def _check_node() -> Check:
-    major = _node_major()
-    if major is None:
-        return Check("node", FAIL, "Node.js not found — HyperFrames needs Node 22+")
-    if major < 22:
-        return Check("node", FAIL, f"Node {major} found — HyperFrames needs 22+")
-    return Check("node", OK, f"Node {major}")
-
-
-def _check_npx() -> Check:
-    if not shutil.which("npx"):
-        return Check("npx", FAIL, "npx not found — comes with Node.js")
-    return Check("npx", OK, "present (hyperframes runs via `npx hyperframes`)")
+    return Check("python deps", OK,
+                 "requests, bs4, anthropic, pydantic, rich, Pillow present")
 
 
 def _check_ffmpeg() -> Check:
@@ -77,10 +51,18 @@ def _check_music() -> Check:
 
 
 def _check_anthropic(cfg: OutreachConfig) -> Check:
-    if cfg.resolve_anthropic_key():
-        return Check("anthropic key", OK, "resolved (config / env / bart config)")
-    return Check("anthropic key", FAIL,
-                 "no key — set anthropic_api_key, $ANTHROPIC_API_KEY, or bart's config")
+    kind, _ = cfg.resolve_anthropic_auth()
+    if kind == "oauth":
+        return Check("anthropic auth", OK,
+                     "Claude Code OAuth token (subscription billing)")
+    if kind == "cli":
+        return Check("anthropic auth", OK,
+                     "`claude` CLI on PATH (subscription billing)")
+    if kind == "api_key":
+        return Check("anthropic auth", OK, "api key (config / env / bart config)")
+    return Check("anthropic auth", FAIL,
+                 "no auth — install the `claude` CLI, or set "
+                 "CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / anthropic_api_key")
 
 
 def _check_tts(cfg: OutreachConfig) -> Check:
@@ -116,8 +98,6 @@ def _check_token_live(cfg: OutreachConfig) -> Check:
 def run_doctor(cfg: OutreachConfig, *, check_token: bool = False) -> List[Check]:
     checks = [
         _check_python_deps(),
-        _check_node(),
-        _check_npx(),
         _check_ffmpeg(),
         _check_music(),
         _check_anthropic(cfg),

@@ -8,7 +8,9 @@ never reach for "AI-powered" / "revolutionary" / "game-changer".
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 from typing import List
 
 import anthropic
@@ -117,20 +119,7 @@ class ScriptError(RuntimeError):
     pass
 
 
-def generate_script(
-    facts: ProductFacts,
-    *,
-    api_key: str,
-    model: str,
-    angle: str | None = None,
-) -> ReelScript:
-    """Generate and validate one ReelScript. Raises ScriptError on failure."""
-    if not api_key:
-        raise ScriptError(
-            "No Anthropic API key. Set it in .outreach_config.json, the "
-            "ANTHROPIC_API_KEY env var, or bart's .bart_config.json."
-        )
-
+def _build_user_prompt(facts: ProductFacts, angle: str | None) -> str:
     user = facts.as_prompt_block() + "\n\n"
     user += (
         f"Write today's Reel. Angle to take: {angle}.\n"
@@ -138,8 +127,10 @@ def generate_script(
         else "Write today's Reel — pick one honest, specific angle.\n"
     )
     user += "Return only the JSON object."
+    return user
 
-    client = anthropic.Anthropic(api_key=api_key)
+
+def _call_via_sdk(client: anthropic.Anthropic, model: str, user: str) -> str:
     try:
         resp = client.messages.create(
             model=model,
@@ -149,8 +140,72 @@ def generate_script(
         )
     except anthropic.AnthropicError as e:
         raise ScriptError(f"Anthropic API call failed: {e}") from e
+    return "".join(b.text for b in resp.content if b.type == "text")
 
-    text = "".join(b.text for b in resp.content if b.type == "text")
+
+def _call_via_cli(cli_path: str, model: str, user: str) -> str:
+    """Shell out to `claude --print` so the user's subscription is billed.
+
+    `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` are stripped from the
+    subprocess env — leaving them set would force the CLI into API mode
+    (and a billing path that may be empty), defeating the point of this
+    fallback. The CLI's own keychain login provides the subscription auth.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    combined = f"{_SYSTEM}\n\n---\n\n{user}"
+    try:
+        proc = subprocess.run(
+            [cli_path, "--print", "--model", model,
+             "--output-format", "text"],
+            input=combined, capture_output=True, text=True,
+            env=env, timeout=300,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise ScriptError("`claude --print` timed out after 5 minutes.") from e
+    if proc.returncode != 0:
+        raise ScriptError(
+            f"`claude --print` failed (rc={proc.returncode}): "
+            f"{(proc.stderr or proc.stdout or '').strip()[:400]}"
+        )
+    return proc.stdout
+
+
+def generate_script(
+    facts: ProductFacts,
+    *,
+    auth: tuple[str, str],
+    model: str,
+    angle: str | None = None,
+) -> ReelScript:
+    """Generate and validate one ReelScript. Raises ScriptError on failure.
+
+    `auth` is the tuple returned by `OutreachConfig.resolve_anthropic_auth`:
+      ``("oauth",   token)``   — SDK with the subscription OAuth token
+      ``("cli",     path)``    — shell out to the `claude` CLI (subscription)
+      ``("api_key", key)``     — SDK with a direct API key (api credits)
+    Anything else raises before any network call.
+    """
+    kind, value = auth
+    user = _build_user_prompt(facts, angle)
+
+    if kind == "cli":
+        text = _call_via_cli(value, model, user)
+    elif kind == "oauth":
+        # Explicit auth_token sends `Authorization: Bearer …` and bypasses
+        # any ANTHROPIC_API_KEY env var the SDK would otherwise prefer.
+        client = anthropic.Anthropic(auth_token=value)
+        text = _call_via_sdk(client, model, user)
+    elif kind == "api_key" and value:
+        client = anthropic.Anthropic(api_key=value)
+        text = _call_via_sdk(client, model, user)
+    else:
+        raise ScriptError(
+            "No Anthropic auth. Install the `claude` CLI for subscription "
+            "billing, or set CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / "
+            "anthropic_api_key in .outreach_config.json."
+        )
+
     try:
         data = _extract_json(text)
         return ReelScript(**data)

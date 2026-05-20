@@ -4,6 +4,10 @@
 .outreach_config.json
 # generated Reels awaiting review/publish — user content, never push
 outreach/queue/
+# strategy.md is regenerated on every `generate` from the queue + insights;
+# treat it as build output. Edits below the <!-- notes --> marker survive
+# rewrites, so hand-written ideas are not lost.
+outreach/strategy.md
 # user-supplied royalty-free music beds (the dir is kept via its .gitignore)
 outreach/music/*
 !outreach/music/.gitignore

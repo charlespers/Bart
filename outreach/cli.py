@@ -65,8 +65,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
     # Fail fast on the checks `generate` actually needs.
     checks = run_doctor(cfg, check_token=False)
     blocking = [c for c in checks if c.status == FAIL
-                and c.name in ("python deps", "node", "npx", "ffmpeg",
-                               "anthropic key", "tts")]
+                and c.name in ("python deps", "ffmpeg",
+                               "anthropic auth", "tts")]
     if blocking:
         for c in blocking:
             console.print(f"[red]✗ {c.name}: {c.detail}[/red]")
@@ -188,6 +188,15 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_strategy(args: argparse.Namespace) -> int:
+    _banner()
+    cfg = load_or_init()
+    from .strategy import STRATEGY_PATH, update_strategy
+    update_strategy(cfg, log=console.print)
+    console.print(f"[green]✓ strategy.md refreshed[/green] — {STRATEGY_PATH}")
+    return 0
+
+
 def cmd_insights(args: argparse.Namespace) -> int:
     _banner()
     cfg = load_or_init()
@@ -254,6 +263,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     ins = sub.add_parser("insights", help="performance of published Reels")
     ins.set_defaults(func=cmd_insights)
+
+    strat = sub.add_parser("strategy",
+                           help="refresh outreach/strategy.md from the queue + insights")
+    strat.set_defaults(func=cmd_strategy)
     return p
 
 

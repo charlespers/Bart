@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +41,11 @@ class OutreachConfig(BaseModel):
     studywithbart_url: str = "https://studywithbart.com"
     anthropic_api_key: str = ""  # falls back to env / .bart_config.json
     anthropic_model: str = "claude-sonnet-4-6"
+
+    # If true, fall back to the configured API key before the `claude` CLI.
+    # Default is false — the CLI uses the user's Pro/Max subscription, which
+    # is what `./run-outreach generate` should prefer when it's available.
+    prefer_api_key: bool = False
 
     # ─── Audio ───
     tts_provider: str = "say"
@@ -75,6 +81,37 @@ class OutreachConfig(BaseModel):
             except (json.JSONDecodeError, OSError):
                 pass
         return ""
+
+    def resolve_anthropic_auth(self) -> tuple[str, str]:
+        """Resolve Anthropic auth, preferring subscription billing.
+
+        Returns one of:
+          - ("oauth",  <token>)   — Claude Code OAuth token in env
+          - ("cli",    <cli-path>)— shell out to the `claude` CLI (uses
+                                    its own subscription login; no token
+                                    plumbing in this package)
+          - ("api_key", <key>)    — direct Anthropic API key (api credits)
+          - ("none",   "")        — nothing configured
+
+        Order matters: subscription billing wins over API credits, and an
+        explicit OAuth token wins over the CLI (so CI / headless setups
+        keep working). If `prefer_api_key` is set on the config the order
+        flips so the API key takes priority — opt-in only.
+        """
+        if self.prefer_api_key:
+            key = self.resolve_anthropic_key()
+            if key:
+                return ("api_key", key)
+        oauth = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+        if oauth:
+            return ("oauth", oauth)
+        cli = shutil.which("claude")
+        if cli:
+            return ("cli", cli)
+        key = self.resolve_anthropic_key()
+        if key:
+            return ("api_key", key)
+        return ("none", "")
 
     def resolve_tts_key(self) -> str:
         if self.tts_api_key:
