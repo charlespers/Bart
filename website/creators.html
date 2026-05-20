@@ -335,6 +335,74 @@
     margin-top: 5px;
     font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute);
   }
+
+  /* ── creator dashboard: free-floating analytics ─────────────────────────
+     Once approved, the creator view is no longer a stack of cards inside a
+     panel — it's a free-floating layout. Values speak for themselves; we
+     just give them air. The same DOM/JS still drives it. */
+  #dash-panel.panel {
+    background: transparent; border: 0; padding: 0;
+    margin-top: 48px;
+  }
+  #dash-panel .dash-section {
+    margin: 0; padding: 28px 0;
+    border-top: 1px solid rgba(217,211,196,0.55);
+  }
+  #dash-panel .dash-section:first-of-type { border-top: 0; padding-top: 0; }
+  #dash-panel .dash-section:last-of-type { padding-bottom: 0; }
+
+  #dash-panel .dash-section-title {
+    margin: 0 0 18px; font-size: 11px; letter-spacing: 0.12em;
+    color: var(--ink-mute);
+  }
+
+  #dash-panel .dash-header {
+    margin-bottom: 36px; padding-bottom: 0; border: 0;
+  }
+  #dash-panel .dash-header-text h2 {
+    font-size: 28px; font-weight: 700; letter-spacing: -0.024em;
+  }
+
+  /* earnings & performance: numbers float, no borders */
+  #dash-panel .earn-cards,
+  #dash-panel .perf-grid {
+    gap: 38px 56px;
+  }
+  #dash-panel .earn-card,
+  #dash-panel .earn-card.primary,
+  #dash-panel .stat,
+  #dash-panel .tier-card,
+  #dash-panel .info-box {
+    background: transparent; border: 0; padding: 0;
+    border-radius: 0;
+  }
+  #dash-panel .earn-card .ec-val { font-size: 34px; }
+  #dash-panel .earn-card.primary .ec-val { color: var(--accent); }
+  #dash-panel .earn-card.primary .ec-label { color: var(--ink-mute); }
+  #dash-panel .stat .v { font-size: 32px; }
+
+  #dash-panel .tier-card {
+    flex-direction: row; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  #dash-panel .tier-rate { font-size: 30px; }
+  #dash-panel .tier-rate-label { margin-right: 8px; }
+  #dash-panel .tier-next { margin-top: 0; }
+
+  #dash-panel .info-box {
+    font-size: 14.5px; color: var(--ink-mute); line-height: 1.65;
+    max-width: 620px;
+  }
+
+  /* keep functional inputs/buttons visible — only strip pure presentation */
+  #dash-panel .ref-link input,
+  #dash-panel .payout-row input { background: transparent; }
+
+  /* funnel: numbers float, arrows still guide the eye */
+  #dash-panel .funnel-grid { gap: 16px; margin-bottom: 28px; }
+  #dash-panel .funnel-arrow { font-size: 13px; color: var(--ink-mute); }
+
+  /* payout history: drop the box-y feel, keep tabular alignment */
+  #dash-panel .payout-table-wrap { padding: 0; }
 </style>
 </head>
 <body>

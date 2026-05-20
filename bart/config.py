@@ -32,7 +32,7 @@ class Config(BaseModel):
     # on Apple Silicon or llama-cpp-python elsewhere. The legacy
     # "ollama-local" Gemma path was removed — old configs auto-migrate via
     # `load_config()` below.
-    auth_mode: str = "api"  # "api" | "claude-code" | "local"
+    auth_mode: str = "api"  # "api" | "claude-code" | "local" | "browser"
     api_key: str = ""        # required when auth_mode == "api"
     exam_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     subject: str = Field(min_length=1, max_length=200)
@@ -72,9 +72,9 @@ class Config(BaseModel):
     @field_validator("auth_mode")
     @classmethod
     def valid_auth_mode(cls, v: str) -> str:
-        if v not in ("api", "claude-code", "local"):
+        if v not in ("api", "claude-code", "local", "browser"):
             raise ValueError(
-                "auth_mode must be 'api' | 'claude-code' | 'local'"
+                "auth_mode must be 'api' | 'claude-code' | 'local' | 'browser'"
             )
         return v
 

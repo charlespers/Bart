@@ -1360,27 +1360,82 @@ function App() {
   // current logged-in user — so the topbar can show which account you're on.
   // /app is gated server-side, so by the time we get here we have a session.
   const [me, setMe] = useState(null);
-  // Premium (claude) run allowance for the month. Gemma runs are unlimited.
+  // Premium (claude) run allowance for the month.
   const [usage, setUsage] = useState(null);
+  // Whether the user's claude.ai account is connected. null = not yet checked,
+  // true/false once the GET /api/auth/anthropic round-trip lands. We block the
+  // "let bart cook" button on this so users don't hit a 401 mid-run.
+  const [claudeConnected, setClaudeConnected] = useState(null);
   const refreshUsage = useCallback(() => {
     fetch("/api/usage", { credentials: "same-origin" })
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setUsage(d))
       .catch(() => {});
   }, []);
+  const refreshClaudeConnected = useCallback(() => {
+    fetch("/api/auth/anthropic", { credentials: "same-origin" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setClaudeConnected(!!d.connected); })
+      .catch(() => {});
+  }, []);
+  // `has_run_access` is true when the user has an active subscription, a
+  // trial credit, or is grandfathered. We block the gemma-download button
+  // on it so non-subs don't burn the download bandwidth just to hit a paywall.
+  const [hasRunAccess, setHasRunAccess] = useState(true);
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "same-origin" })
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) { setMe(d.user); if (d.usage) setUsage(d.usage); } })
+      .then(d => {
+        if (d) {
+          setMe(d.user);
+          if (d.usage) setUsage(d.usage);
+          if (typeof d.has_run_access === "boolean") setHasRunAccess(d.has_run_access);
+        }
+      })
       .catch(() => {});
+    refreshClaudeConnected();
+  }, [refreshClaudeConnected]);
+  // Re-check connection state when the user lands back on the home view (e.g.
+  // after coming back from /app/settings where they just connected).
+  useEffect(() => {
+    if (view === "home") refreshClaudeConnected();
+  }, [view, refreshClaudeConnected]);
+
+  // Browser-side Gemma (WebLLM) state — kept in sync with window.bartGemma,
+  // which is defined by /gemma-browser.js (loaded as a module). bartGemma may
+  // arrive slightly after this component mounts; we poll briefly so we don't
+  // miss the subscription. The init effect that *triggers* downloads lives
+  // below, after `model` is declared.
+  const [gemmaState, setGemmaState] = useState({
+    status: "idle", progress: 0, progressLabel: "",
+    socketConnected: false, error: null, model: null,
+  });
+  useEffect(() => {
+    let unsub = null;
+    let cancelled = false;
+    function subscribe() {
+      if (cancelled) return;
+      const g = window.bartGemma;
+      if (g && typeof g.onChange === "function") {
+        unsub = g.onChange(setGemmaState);
+      } else {
+        setTimeout(subscribe, 200);
+      }
+    }
+    subscribe();
+    return () => { cancelled = true; if (unsub) unsub(); };
   }, []);
 
   // user inputs
   const [subject, setSubject] = useState("");
   const [days,    setDays]    = useState(7);
   const [preset,  setPreset]  = useState("default");   // default | fast | turbo
-  const [model,   setModel]   = useState("claude");    // claude | gemma
+  const [model,   setModel]   = useState("claude");    // claude | gemma-browser
   const [focus,   setFocus]   = useState("general — everything attached");
+
+  // Browser-Gemma download is NOT auto-triggered when the user picks the
+  // model — 1.4 GB shouldn't fly down the wire without explicit consent.
+  // The "download gemma" button below calls window.bartGemma.init() instead.
 
   // files — upload immediately on drop so the run can start without a preamble.
   // Each entry carries: { id, name, size, raw, uploaded, uploading, error? }.
@@ -1427,8 +1482,55 @@ function App() {
       return merged;
     });
   }
-  function removeFile(id) { setFiles(prev => prev.filter(f => f.id !== id)); }
+  function removeFile(id) {
+    // Capture the file so we know what to delete on the server. We drop the
+    // chip optimistically — if the server delete fails we leave the chip
+    // gone but the user can re-upload to overwrite. Only attempts the
+    // network call once the upload has actually landed; chips that are
+    // still mid-upload are just discarded locally (the upload promise
+    // resolves into an orphan, which is fine — the next run's archive
+    // step will sweep it up).
+    let target = null;
+    setFiles(prev => {
+      target = prev.find(f => f.id === id) || null;
+      return prev.filter(f => f.id !== id);
+    });
+    if (target && target.uploaded && target.name) {
+      const name = encodeURIComponent(target.name);
+      fetch(`/api/materials/${name}`, { method: "DELETE", credentials: "same-origin" })
+        .catch(() => {});  // best-effort; archive at run-end is the safety net
+    }
+  }
   const over = useGlobalDrop(addFiles);
+
+  // sync chips with whatever's actually on the server. Without this, leftovers
+  // from an aborted or stale session sit in materials/users/<uid>/ silently
+  // and get included in the next run — which is the "previous packet's file
+  // shows up in this packet" bug. By surfacing them as chips on mount the
+  // user sees what bart will use and can remove anything they don't want.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/materials", { credentials: "same-origin" });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (cancelled || !Array.isArray(j.files)) return;
+        setFiles(prev => {
+          const seen = new Set(prev.map(p => p.name + ":" + p.size));
+          const additions = j.files
+            .filter(f => !seen.has(f.name + ":" + f.size))
+            .map(f => ({
+              id: `srv-${f.name}-${f.size}`,
+              name: f.name, size: f.size, raw: null,
+              uploaded: true, uploading: false,
+            }));
+          return additions.length ? [...prev, ...additions] : prev;
+        });
+      } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // run state machine
   const [phase, setPhase] = useState("idle");  // idle | running | done
@@ -1575,9 +1677,29 @@ function App() {
     { value: "turbo",   label: "turbo",             desc: "haiku · parallel ×8" },
   ];
 
+  // Visible model options on the hosted site:
+  //   "claude"        — Claude Code, runs on the user's own claude.ai
+  //                     subscription (free for Bart per-token)
+  //   "gemma-browser" — Gemma 2 in the user's browser via WebLLM/WebGPU
+  //
+  // Hidden for now (uncomment + add a "claude-api" model branch in
+  // /api/run when ready): a paid Anthropic API path that bills Bart per
+  // token. That option only makes sense once we have a billing model that
+  // accounts for it (today the $10/mo subscription assumes claude-code).
+  //   { value: "claude-api", label: "claude (api)", desc: "anthropic api key · per-token cost" },
+  // In-browser llama is admin-gated for now. The smallest model that fits
+  // a typical laptop GPU (1B) can't reliably follow bart's structured
+  // briefings — it tends to critique the prompt instead of executing it.
+  // Surfacing it to regular users produces broken packets, so we keep it
+  // visible only on the admin email until either a) the orchestrator grows
+  // a simplified browser-model prompt path or b) we ship a different model.
+  const ADMIN_EMAIL = "loctran0323@gmail.com";
+  const isAdmin = (me?.email || "").toLowerCase() === ADMIN_EMAIL;
   const modelOpts = [
-    { value: "claude", label: "claude",  desc: "your claude.ai subscription" },
-    { value: "gemma",  label: "gemma 4", desc: "local open weights · free, offline" },
+    { value: "claude",        label: "claude (account)", desc: "your claude.ai subscription · free" },
+    ...(isAdmin ? [
+      { value: "gemma-browser", label: "llama 3.2",      desc: "runs on your laptop · ~0.7 GB · lower quality than claude" },
+    ] : []),
   ];
 
   function appendMsg(text, { system = true } = {}) {
@@ -1629,13 +1751,21 @@ function App() {
         return;
       }
       if (rr.status === 429) {
-        // Monthly premium-run allowance exhausted. Steer them to the free
-        // unlimited Gemma engine rather than a dead end.
+        // Monthly premium-run allowance exhausted. Surface the message and
+        // let the usage strip below the run-row show the reset date.
         const err = await rr.json().catch(() => ({}));
-        appendMsg(err.detail || "premium runs used up for this month — switch to gemma 4 for unlimited free runs.");
-        setModel("gemma");
+        appendMsg(err.detail || "you've used all your premium runs this month — your allowance resets on the 1st.");
         refreshUsage();
         setPhase("idle");
+        return;
+      }
+      if (rr.status === 401) {
+        // Claude account not connected — send them to settings.
+        const err = await rr.json().catch(() => ({}));
+        appendMsg(err.detail || "your claude account isn't connected — opening settings…");
+        setClaudeConnected(false);
+        setPhase("idle");
+        setTimeout(() => setView("settings"), 700);
         return;
       }
       if (!rr.ok) {
@@ -1759,8 +1889,8 @@ function App() {
   }
 
   const totalCost = useMemo(() => {
-    // Gemma 4 runs on local open weights — no per-token cost at all.
-    if (model === "gemma")    return "$0";
+    // Gemma paths (server-local or browser) run on open weights — no per-token cost.
+    if (model === "gemma" || model === "gemma-browser") return "$0";
     if (preset === "default") return "$4.80";
     if (preset === "fast")    return "$1.10";
     return "$0";
@@ -1894,32 +2024,131 @@ function App() {
             placeholder="anything weak / important"
           />
           .
-          {usage && !usage.unlimited && (
+          {model === "claude" && usage && !usage.unlimited && (
             <div className="run-usage">
-              {model === "gemma"
-                ? <>gemma 4 runs are <b>unlimited</b> — free on local open weights.</>
-                : <>
-                    <b>{usage.remaining}</b> of {usage.limit} premium runs left this month
-                    {usage.remaining === 0 && <> · <span className="run-usage-cta">switch to gemma 4 for unlimited</span></>}
-                  </>}
+              <b>{usage.remaining}</b> of {usage.limit} premium runs left this month
+              {usage.remaining === 0 && <> · resets on the 1st</>}
+            </div>
+          )}
+          {model === "claude" && claudeConnected === false && (
+            <div className="run-usage" style={{
+              marginTop: 10, padding: "10px 12px",
+              background: "var(--accent-tint)", color: "var(--accent-lo)",
+              borderRadius: 8, fontWeight: 500,
+            }}>
+              your claude account isn't connected — bart needs it to run.{" "}
+              <span
+                className="run-usage-cta"
+                onClick={() => setView("settings")}
+                style={{ cursor: "pointer", textDecoration: "underline" }}
+              >
+                connect claude account
+              </span>
+            </div>
+          )}
+          {model === "gemma-browser" && (
+            <div className="run-usage" style={{
+              marginTop: 10, padding: "10px 12px",
+              background: "var(--accent-tint)", color: "var(--accent-lo)",
+              borderRadius: 8, fontWeight: 500,
+            }}>
+              {gemmaState.status === "no-webgpu" && (
+                <>this browser doesn't support webgpu — try chrome or edge on a laptop.</>
+              )}
+              {gemmaState.status === "error" && (
+                <>llama failed to load: {gemmaState.error}</>
+              )}
+              {gemmaState.status === "idle" && (
+                <>downloads once (~0.7 GB), then runs on your laptop — free, no claude account. quality is lower than claude.</>
+              )}
+              {gemmaState.status === "loading" && (
+                <>
+                  downloading llama 3.2 · <b>{Math.round((gemmaState.progress || 0) * 100)}%</b>
+                  {gemmaState.progressLabel && <> · <span style={{ opacity: 0.75 }}>{gemmaState.progressLabel}</span></>}
+                  <div style={{
+                    marginTop: 6, height: 6, background: "rgba(0,0,0,0.08)",
+                    borderRadius: 999, overflow: "hidden",
+                  }}>
+                    <div style={{
+                      width: `${Math.max(2, Math.round((gemmaState.progress || 0) * 100))}%`,
+                      height: "100%", background: "var(--accent)",
+                      transition: "width 0.25s ease",
+                    }} />
+                  </div>
+                </>
+              )}
+              {gemmaState.status === "ready" && (
+                <>llama is loaded and ready — inference runs on your laptop, free.</>
+              )}
+              {gemmaState.status === "running" && (
+                <>llama is working on the current step…</>
+              )}
             </div>
           )}
         </div>
 
         <div className="run-cta">
-          {phase !== "running" && (
-            <button
-              className="run-btn"
-              onClick={runPipeline}
-              disabled={phase === "running"}
-            >
-              {phase === "done" ? "run again" : "let bart cook"}
-              <svg className="arrow" viewBox="0 0 24 24" fill="none">
-                <path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor"
-                      strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
-          )}
+          {phase !== "running" && (() => {
+            // Decide the button label + click behaviour based on the model
+            // and its readiness state. Three buckets:
+            //   1. claude w/o connected account → route to settings
+            //   2. gemma-browser not ready      → label reflects state, disabled
+            //   3. otherwise                    → normal "let bart cook"
+            const isBrowser = model === "gemma-browser";
+            const needsClaudeConnect = model === "claude" && claudeConnected === false;
+            const browserBlocking = isBrowser &&
+              gemmaState.status !== "ready" &&
+              gemmaState.status !== "running";
+
+            let label, click, disabled = false;
+            if (needsClaudeConnect) {
+              label = "connect claude to run";
+              click = () => setView("settings");
+            } else if (browserBlocking) {
+              // idle  → explicit "download gemma" button. clicking it kicks
+              //         off init() which moves to "loading"
+              // loading → show % progress, button disabled
+              // error  → "retry download"
+              // no-webgpu → terminal, disabled
+              if (gemmaState.status === "no-webgpu") {
+                label = "webgpu not supported";
+                click = () => {};
+                disabled = true;
+              } else if (gemmaState.status === "error") {
+                label = "retry download";
+                click = () => window.bartGemma && window.bartGemma.init();
+              } else if (gemmaState.status === "loading") {
+                label = `downloading llama · ${Math.round((gemmaState.progress || 0) * 100)}%`;
+                click = () => {};
+                disabled = true;
+              } else if (!hasRunAccess) {
+                // Non-subscribers must subscribe before downloading — a
+                // wasted download just to hit a paywall is brutal UX.
+                label = "subscribe to use llama";
+                click = () => { window.location.href = "/pricing"; };
+              } else {
+                // idle (or first paint before bartGemma reports)
+                label = "download llama (0.7 GB)";
+                click = () => window.bartGemma && window.bartGemma.init();
+              }
+            } else {
+              label = phase === "done" ? "run again" : "let bart cook";
+              click = runPipeline;
+            }
+            return (
+              <button
+                className="run-btn"
+                onClick={click}
+                disabled={disabled || phase === "running"}
+              >
+                {label}
+                <svg className="arrow" viewBox="0 0 24 24" fill="none">
+                  <path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor"
+                        strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            );
+          })()}
           {phase === "running" && (
             <>
               <button className="run-btn" disabled>

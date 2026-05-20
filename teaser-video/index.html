@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 1920px; height: 1080px; overflow: hidden;
+        background: #0d0d10;
+        font-family: "Inter", system-ui, sans-serif;
+        color: #f4f1ea;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      #root { position: relative; width: 1920px; height: 1080px; }
+
+      .bg-dark, .bg-warm {
+        position: absolute; inset: 0;
+      }
+      .bg-dark {
+        background:
+          radial-gradient(1200px 800px at 20% 20%, rgba(255,255,255,0.04), transparent 60%),
+          radial-gradient(1100px 900px at 80% 90%, rgba(201,100,66,0.10), transparent 60%),
+          #0d0d10;
+      }
+      .bg-warm {
+        background:
+          radial-gradient(1100px 700px at 18% 8%,   rgba(255,255,255,0.55), transparent 60%),
+          radial-gradient(1000px 800px at 82% 92%,  rgba(201,100,66,0.10), transparent 60%),
+          #f4f1ea;
+      }
+
+      .frame {
+        position: absolute;
+        left: 0; top: 0;
+        width: 1920px; height: 1080px;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        padding: 0 120px;
+      }
+
+      .eyebrow {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 22px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: #c96442;
+        margin-bottom: 36px;
+        display: inline-flex; align-items: center; gap: 14px;
+      }
+      .pulse {
+        display: inline-block;
+        width: 10px; height: 10px; border-radius: 50%;
+        background: #c96442;
+        box-shadow: 0 0 0 0 rgba(201,100,66,0.5);
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%   { box-shadow: 0 0 0 0 rgba(201,100,66,0.55); }
+        70%  { box-shadow: 0 0 0 22px rgba(201,100,66,0); }
+        100% { box-shadow: 0 0 0 0 rgba(201,100,66,0); }
+      }
+
+      .place {
+        font-family: "Inter", sans-serif;
+        font-weight: 800;
+        font-size: 168px;
+        line-height: 0.98;
+        letter-spacing: -0.035em;
+        text-align: center;
+        color: #f4f1ea;
+      }
+      .place em {
+        font-style: normal;
+        color: #c96442;
+      }
+      .place .dim {
+        color: rgba(244,241,234,0.4);
+      }
+
+      .no-signal {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 28px;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: rgba(244,241,234,0.55);
+        margin-top: 48px;
+      }
+      .no-signal .bars {
+        display: inline-flex; align-items: flex-end;
+        gap: 5px; margin-right: 18px; vertical-align: -3px;
+      }
+      .no-signal .bar {
+        width: 6px; background: rgba(244,241,234,0.25);
+      }
+      .no-signal .bar.b1 { height: 8px; }
+      .no-signal .bar.b2 { height: 14px; }
+      .no-signal .bar.b3 { height: 20px; }
+      .no-signal .bar.b4 { height: 26px; }
+      .no-signal .strike {
+        position: relative; padding: 0 6px;
+      }
+      .no-signal .strike::after {
+        content: ""; position: absolute;
+        left: -4px; right: -4px; top: 50%;
+        height: 2px; background: #c96442;
+        transform: rotate(-12deg);
+      }
+
+      /* warm frame typography */
+      .warm-line {
+        font-family: "Source Serif 4", serif;
+        font-weight: 500;
+        font-size: 132px;
+        line-height: 1.04;
+        letter-spacing: -0.02em;
+        text-align: center;
+        color: #1a1a1c;
+        max-width: 1500px;
+      }
+      .warm-line em {
+        font-style: italic;
+        color: #c96442;
+      }
+
+      /* packet stack */
+      .packet-stage {
+        position: relative;
+        width: 720px; height: 420px;
+        margin-top: 32px;
+      }
+      .pg {
+        position: absolute;
+        left: 50%; top: 50%;
+        width: 320px; height: 400px;
+        background: #faf7f0;
+        border: 1px solid rgba(26,26,28,0.12);
+        border-radius: 6px;
+        box-shadow: 0 30px 60px -20px rgba(26,26,28,0.25),
+                    0 10px 25px -10px rgba(26,26,28,0.18);
+        transform-origin: center center;
+      }
+      .pg::before, .pg::after {
+        content: "";
+        position: absolute;
+        left: 36px; right: 36px;
+        height: 2px;
+        background: rgba(26,26,28,0.12);
+      }
+      .pg::before { top: 80px; }
+      .pg::after  { top: 110px; right: 90px; }
+      .pg .row {
+        position: absolute;
+        left: 36px; right: 36px;
+        height: 2px;
+        background: rgba(26,26,28,0.08);
+      }
+      .pg .r1 { top: 150px; }
+      .pg .r2 { top: 178px; right: 70px; }
+      .pg .r3 { top: 206px; }
+      .pg .r4 { top: 234px; right: 110px; }
+      .pg .r5 { top: 262px; }
+      .pg .r6 { top: 290px; right: 60px; }
+      .pg .tag {
+        position: absolute;
+        left: 36px; top: 36px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: #c96442;
+      }
+
+      /* logo card */
+      .mark {
+        font-family: "Source Serif 4", serif;
+        font-weight: 600;
+        font-size: 260px;
+        line-height: 1;
+        letter-spacing: -0.04em;
+        color: #1a1a1c;
+      }
+      .mark .dot { color: #c96442; }
+      .tag-line {
+        margin-top: 28px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 26px;
+        letter-spacing: 0.28em;
+        text-transform: uppercase;
+        color: rgba(26,26,28,0.55);
+      }
+
+      /* connectivity bar that travels across the top */
+      .top-strip {
+        position: absolute;
+        top: 64px; left: 50%;
+        transform: translateX(-50%);
+        display: inline-flex; align-items: center; gap: 18px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 22px;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: rgba(244,241,234,0.55);
+      }
+      .top-strip .dotline {
+        display: inline-block; width: 100px; height: 1px;
+        background: rgba(244,241,234,0.25);
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="16"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- BG: dark for beats 1–3, warm for beats 4–5 -->
+      <div id="bg-dark" class="bg-dark clip" data-start="0" data-duration="10.2" data-track-index="0"></div>
+      <div id="bg-warm" class="bg-warm clip" data-start="9.8" data-duration="6.2" data-track-index="1" style="opacity:0"></div>
+
+      <!-- top status strip during dark beats -->
+      <div id="top-strip" class="top-strip clip" data-start="0.3" data-duration="9.5" data-track-index="2" style="opacity:0">
+        <span>● rec</span>
+        <span class="dotline"></span>
+        <span>signal</span>
+        <span class="dotline"></span>
+        <span style="color:#c96442">— none</span>
+      </div>
+
+      <!-- BEAT 1: Airplane mode (0–3s) -->
+      <div id="beat1" class="frame clip" data-start="0.2" data-duration="3" data-track-index="3" style="opacity:0">
+        <div class="eyebrow"><span class="pulse"></span>scene one</div>
+        <div class="place">airplane <em>mode.</em></div>
+        <div class="no-signal">
+          <span class="bars">
+            <span class="bar b1"></span>
+            <span class="bar b2"></span>
+            <span class="bar b3"></span>
+            <span class="bar b4"></span>
+          </span>
+          <span class="strike">no signal</span>
+        </div>
+      </div>
+
+      <!-- BEAT 2: thirty thousand feet (3–6s) -->
+      <div id="beat2" class="frame clip" data-start="3.0" data-duration="3" data-track-index="4" style="opacity:0">
+        <div class="eyebrow"><span class="pulse"></span>and yet</div>
+        <div class="place">thirty thousand <em>feet up.</em></div>
+        <div class="no-signal">
+          <span class="strike">offline</span>
+        </div>
+      </div>
+
+      <!-- BEAT 3: subway / cabin / wherever (6–9.8s) -->
+      <div id="beat3" class="frame clip" data-start="6.0" data-duration="3.8" data-track-index="5" style="opacity:0">
+        <div class="eyebrow"><span class="pulse"></span>or</div>
+        <div id="beat3-stack" class="place" style="font-size: 128px; line-height: 1.08;">
+          <div id="b3-l1">a <em>subway</em> tunnel.</div>
+          <div id="b3-l2" style="opacity:0">a <em>cabin</em> in the woods.</div>
+          <div id="b3-l3" style="opacity:0">a <em>library</em> with no wifi.</div>
+        </div>
+      </div>
+
+      <!-- BEAT 4: still making packets (9.8–13s) — warm bg -->
+      <div id="beat4" class="frame clip" data-start="9.8" data-duration="3.2" data-track-index="6" style="opacity:0">
+        <div class="warm-line"><em>still</em> making packets.</div>
+        <div class="packet-stage">
+          <div id="pg1" class="pg" style="opacity:0;">
+            <div class="tag">packet · 01</div>
+            <div class="row r1"></div><div class="row r2"></div>
+            <div class="row r3"></div><div class="row r4"></div>
+            <div class="row r5"></div><div class="row r6"></div>
+          </div>
+          <div id="pg2" class="pg" style="opacity:0;">
+            <div class="tag">packet · 02</div>
+            <div class="row r1"></div><div class="row r2"></div>
+            <div class="row r3"></div><div class="row r4"></div>
+            <div class="row r5"></div><div class="row r6"></div>
+          </div>
+          <div id="pg3" class="pg" style="opacity:0;">
+            <div class="tag">packet · 03</div>
+            <div class="row r1"></div><div class="row r2"></div>
+            <div class="row r3"></div><div class="row r4"></div>
+            <div class="row r5"></div><div class="row r6"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BEAT 5: bart goes with you (13–16s) -->
+      <div id="beat5" class="frame clip" data-start="13.0" data-duration="3.0" data-track-index="7" style="opacity:0">
+        <div class="mark">bart<span class="dot">.</span></div>
+        <div id="beat5-tag" class="tag-line" style="opacity:0">studies with you. <span style="color:#c96442">anywhere.</span></div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      // BG cross-fade between dark and warm at ~9.8s
+      tl.to("#bg-dark", { opacity: 0, duration: 0.6 }, 9.8);
+      tl.to("#bg-warm", { opacity: 1, duration: 0.6 }, 9.8);
+
+      // Top connectivity strip — fades on with beat1, off before warm
+      tl.to("#top-strip", { opacity: 1, duration: 0.6 }, 0.3);
+      tl.to("#top-strip", { opacity: 0, duration: 0.4 }, 9.4);
+      tl.set("#top-strip", { opacity: 0 }, 9.8);
+
+      // BEAT 1
+      tl.fromTo("#beat1",
+        { opacity: 0, y: 30 },
+        { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" },
+        0.2);
+      tl.to("#beat1", { opacity: 0, y: -20, duration: 0.5, ease: "power2.in" }, 2.7);
+
+      // BEAT 2
+      tl.fromTo("#beat2",
+        { opacity: 0, y: 30 },
+        { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" },
+        3.0);
+      tl.to("#beat2", { opacity: 0, y: -20, duration: 0.5, ease: "power2.in" }, 5.7);
+
+      // BEAT 3 — title in, then swap subtitle lines
+      tl.fromTo("#beat3",
+        { opacity: 0, y: 30 },
+        { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" },
+        6.0);
+      // line 1 visible 6.6–7.4
+      tl.to("#b3-l1", { opacity: 0, y: -16, duration: 0.35, ease: "power2.in" }, 7.4);
+      tl.fromTo("#b3-l2",
+        { opacity: 0, y: 16 },
+        { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" },
+        7.45);
+      tl.to("#b3-l2", { opacity: 0, y: -16, duration: 0.35, ease: "power2.in" }, 8.3);
+      tl.fromTo("#b3-l3",
+        { opacity: 0, y: 16 },
+        { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" },
+        8.35);
+      // collapse line1 back into stack so it doesn't reserve empty space (just hide whole beat at end)
+      tl.to("#beat3", { opacity: 0, duration: 0.4, ease: "power2.in" }, 9.4);
+      tl.set("#beat3", { opacity: 0 }, 9.8);
+
+      // BEAT 4 — packets stack in
+      tl.fromTo("#beat4",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.6, ease: "power3.out" },
+        9.9);
+      // packets fly in from below with a rotation, stacking
+      tl.fromTo("#pg1",
+        { opacity: 0, x: -260, y: 220, rotation: -18 },
+        { opacity: 1, x: -240, y: 60, rotation: -7, duration: 0.7, ease: "power3.out" },
+        10.2);
+      tl.fromTo("#pg2",
+        { opacity: 0, x: 0, y: 220, rotation: 6 },
+        { opacity: 1, x: -160, y: 10, rotation: 2, duration: 0.7, ease: "power3.out" },
+        10.45);
+      tl.fromTo("#pg3",
+        { opacity: 0, x: 260, y: 220, rotation: 18 },
+        { opacity: 1, x: -80, y: 80, rotation: 8, duration: 0.7, ease: "power3.out" },
+        10.7);
+      tl.to("#beat4", { opacity: 0, duration: 0.5, ease: "power2.in" }, 12.6);
+
+      // BEAT 5 — logo + tagline
+      tl.fromTo("#beat5",
+        { opacity: 0, scale: 0.96 },
+        { opacity: 1, scale: 1, duration: 0.8, ease: "power3.out" },
+        13.0);
+      tl.fromTo("#beat5-tag",
+        { opacity: 0, y: 14 },
+        { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" },
+        13.9);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

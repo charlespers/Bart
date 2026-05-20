@@ -16,7 +16,7 @@
   }
   .card h2 { margin: 0 0 4px; font-size: 17px; }
   .card .hint { color: var(--ink-mute); font-size: 13px; margin: 0 0 16px; }
-  .mint-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .mint-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   .mint-row input {
     font-family: var(--font-sans); font-size: 14px; color: var(--ink);
     background: var(--cream); border: 1.5px solid var(--cream-edge);
@@ -25,6 +25,20 @@
   .mint-row input:focus { border-color: var(--accent); }
   #m-note  { flex: 1; min-width: 200px; }
   #m-count { width: 80px; }
+  #s-email { flex: 1.4; min-width: 220px; }
+  #s-name  { flex: 1; min-width: 140px; }
+  #s-note  { flex: 1; min-width: 160px; }
+  .seg {
+    display: inline-flex; gap: 2px; background: var(--cream); padding: 3px;
+    border-radius: 999px; border: 1px solid var(--cream-edge); margin-bottom: 14px;
+  }
+  .seg button {
+    font-family: var(--font-sans); font-weight: 600; font-size: 12.5px;
+    border: 0; background: transparent; color: var(--ink-mute);
+    padding: 7px 16px; border-radius: 999px; cursor: pointer;
+  }
+  .seg button.on { background: var(--accent); color: var(--cream-hi); }
+  .panel-body.hide { display: none; }
   .btn {
     font-family: var(--font-sans); font-weight: 600; font-size: 13px;
     border: 0; border-radius: 999px; padding: 10px 20px; cursor: pointer;
@@ -75,15 +89,33 @@
   <div class="card">
     <h2>mint codes</h2>
     <p class="hint">give creators a code so they can try bart for free. note is for your reference only.</p>
-    <div class="mint-row">
-      <input id="m-note" type="text" maxlength="200" placeholder="note — e.g. @studytips on YouTube" />
-      <input id="m-count" type="number" min="1" max="50" value="1" />
-      <button class="btn" id="mint-btn">mint</button>
+
+    <div class="seg" id="mode-seg">
+      <button type="button" class="on" data-mode="send">email a code</button>
+      <button type="button" data-mode="bulk">just mint (copy &amp; paste)</button>
     </div>
-    <div class="note" id="mint-note"></div>
-    <div class="minted" id="minted">
-      <div class="lbl">new codes — copy these now</div>
-      <div id="minted-list"></div>
+
+    <div class="panel-body" id="body-send">
+      <div class="mint-row">
+        <input id="s-email" type="email" maxlength="200" placeholder="recipient email — e.g. alex@youtube.com" />
+        <input id="s-name"  type="text"  maxlength="120" placeholder="name (optional)" />
+        <input id="s-note"  type="text"  maxlength="200" placeholder="note for you (optional)" />
+        <button class="btn" id="send-btn">mint &amp; send</button>
+      </div>
+      <div class="note" id="send-note"></div>
+    </div>
+
+    <div class="panel-body hide" id="body-bulk">
+      <div class="mint-row">
+        <input id="m-note" type="text" maxlength="200" placeholder="note — e.g. @studytips on YouTube" />
+        <input id="m-count" type="number" min="1" max="50" value="1" />
+        <button class="btn" id="mint-btn">mint</button>
+      </div>
+      <div class="note" id="mint-note"></div>
+      <div class="minted" id="minted">
+        <div class="lbl">new codes — copy these now</div>
+        <div id="minted-list"></div>
+      </div>
     </div>
   </div>
 
@@ -143,6 +175,66 @@
       '<table><thead><tr><th>code</th><th>note</th><th>status</th>'
       + '<th>redeemed by</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
+
+  // mode toggle (email-a-code vs bulk-mint)
+  var seg      = document.getElementById('mode-seg');
+  var bodySend = document.getElementById('body-send');
+  var bodyBulk = document.getElementById('body-bulk');
+  seg.addEventListener('click', function (ev) {
+    var btn = ev.target.closest('button[data-mode]');
+    if (!btn) return;
+    Array.prototype.forEach.call(seg.querySelectorAll('button'), function (b) {
+      b.classList.toggle('on', b === btn);
+    });
+    var mode = btn.getAttribute('data-mode');
+    bodySend.classList.toggle('hide', mode !== 'send');
+    bodyBulk.classList.toggle('hide', mode !== 'bulk');
+  });
+
+  // mint + email a single code to a recipient
+  var sendBtn  = document.getElementById('send-btn');
+  var sendNote = document.getElementById('send-note');
+  sendBtn.addEventListener('click', function () {
+    sendNote.textContent = ''; sendNote.className = 'note';
+    var email = document.getElementById('s-email').value.trim();
+    var name  = document.getElementById('s-name').value.trim();
+    var note  = document.getElementById('s-note').value.trim();
+    if (!email) {
+      sendNote.className = 'note err';
+      sendNote.textContent = 'enter a recipient email.';
+      return;
+    }
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'sending…';
+    fetch('/api/admin/trial-codes/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ email: email, name: name, note: note })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'mint & send';
+      if (res.ok) {
+        sendNote.className = 'note ok';
+        sendNote.textContent =
+          'sent code ' + (res.j.code || '') + ' to ' + (res.j.sent_to || email) + '.';
+        document.getElementById('s-email').value = '';
+        document.getElementById('s-name').value  = '';
+        document.getElementById('s-note').value  = '';
+        load();
+      } else {
+        sendNote.className = 'note err';
+        sendNote.textContent = (res.j && res.j.detail) || 'send failed.';
+      }
+    }).catch(function () {
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'mint & send';
+      sendNote.className = 'note err';
+      sendNote.textContent = 'network error.';
+    });
+  });
 
   mintBtn.addEventListener('click', function () {
     mintNote.textContent = ''; mintNote.className = 'note';

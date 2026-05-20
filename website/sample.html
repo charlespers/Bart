@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>bart. — a sample packet</title>
-<meta name="description" content="See a real bart study packet — day 3 of a 7-day organic chemistry plan, exactly as bart writes it from your own course materials." />
+<meta name="description" content="See a real bart study packet — a sample organic chemistry plan with practice exam and review sheet, sized to the days you have until your exam." />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap" rel="stylesheet" />
@@ -112,18 +112,29 @@
     display: flex; align-items: baseline; gap: 9px;
     padding: 8px 8px; font-size: 13.5px; color: var(--ink-soft);
     border-radius: 7px; text-decoration: none;
+    cursor: pointer; transition: background 0.12s, color 0.12s;
   }
+  .side .day:hover:not(.active) { background: rgba(0,0,0,0.04); color: var(--ink); }
   .side .day .n { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); }
-  .side .day.done { color: var(--ink-mute); }
-  .side .day.done .n::before { content: "✓ "; color: var(--ok); }
   .side .day.active { color: var(--accent-lo); background: var(--accent-tint); font-weight: 600; }
   .side .day.active .n { color: var(--accent); }
   .side .exam {
     margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--cream-edge);
   }
+  .side .hint {
+    margin-top: 14px; font-family: var(--font-mono); font-size: 10px;
+    color: var(--ink-faint); letter-spacing: 0.04em; line-height: 1.5;
+    padding: 0 8px;
+  }
 
   /* ── lesson ── */
-  .lesson { padding: 36px 44px 40px; position: relative; }
+  .lesson { padding: 36px 44px 40px; position: relative; min-height: 600px; }
+  .lesson-panel { animation: fadeIn 0.18s ease-out; }
+  .lesson-panel[hidden] { display: none; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: none; }
+  }
   .lesson .crumb {
     font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint);
     letter-spacing: 0.08em; text-transform: uppercase;
@@ -141,6 +152,10 @@
     font-family: var(--font-serif); font-size: 16px; line-height: 1.66;
     color: var(--ink-soft); margin: 0 0 15px; text-wrap: pretty;
   }
+  .lesson ol, .lesson ul {
+    font-family: var(--font-serif); font-size: 16px; line-height: 1.66;
+    color: var(--ink-soft); margin: 0 0 18px 22px;
+  }
   .lesson h3 {
     font-family: var(--font-sans); font-weight: 700; font-size: 16px;
     letter-spacing: 0.02em; text-transform: uppercase; color: var(--ink);
@@ -155,6 +170,10 @@
     font-family: var(--font-mono); font-size: 10.5px; color: var(--accent);
     background: var(--accent-tint); padding: 1px 6px; border-radius: 5px;
     vertical-align: 1px; white-space: nowrap;
+  }
+  .step-mono {
+    font-family: var(--font-mono); font-size: 13px; color: var(--ink-mute);
+    margin: 8px 0 16px;
   }
 
   /* formula */
@@ -172,7 +191,7 @@
     box-shadow: inset 0 0 0 1px var(--cream-edge);
     padding: 26px 20px 14px; margin: 18px 0;
   }
-  .schematic svg { display: block; width: 100%; height: auto; max-width: 520px; margin: 0 auto; }
+  .schematic svg { display: block; width: 100%; height: auto; max-width: 560px; margin: 0 auto; }
   .schematic .cap {
     text-align: center; font-family: var(--font-mono); font-size: 11px;
     color: var(--ink-mute); margin-top: 10px;
@@ -192,7 +211,7 @@
     text-transform: uppercase; color: var(--ink-faint);
   }
   .compare tbody th {
-    font-weight: 600; color: var(--ink-mute); width: 130px;
+    font-weight: 600; color: var(--ink-mute); width: 150px;
     font-family: var(--font-mono); font-size: 11px;
   }
   .compare .sn2 { color: var(--accent-lo); }
@@ -241,6 +260,12 @@
   }
   .qc .answer .verdict {
     font-family: var(--font-sans); font-weight: 700; color: var(--accent-lo);
+  }
+
+  /* end-of-day footer line */
+  .eod {
+    margin-top: 22px; font-family: var(--font-mono); font-size: 12.5px;
+    color: var(--ink-faint);
   }
 
   /* in-the-packet grid */
@@ -344,13 +369,13 @@
   <span class="eyebrow">✦ a real sample packet</span>
   <h1>this is what bart <em>actually hands you.</em></h1>
   <p>
-    Below is one day from a 7-day organic chemistry packet — written exactly the
-    way bart writes yours, from your own slides, notes, and past exams. Click
-    around. The day you'd open first is whichever one you choose.
+    Below is a sample organic chemistry packet — written from your slides,
+    notes, and past exams, sized to the days you have until your exam. Click
+    any day, the practice exam, or the 60-minute review on the left.
   </p>
 </header>
 
-<section class="packet-wrap">
+<section class="packet-wrap" id="packet">
   <div class="packet">
     <div class="chrome">
       <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
@@ -361,194 +386,1012 @@
       <aside class="side">
         <div class="head-row">
           <img src="/assets/bart-loaf.svg" alt="bart" />
-          <b>7-day plan</b>
+          <b>your plan</b>
         </div>
         <div class="lab">your packet</div>
-        <a class="day done" href="#"><span class="n">01</span><span>foundations &amp; notation</span></a>
-        <a class="day done" href="#"><span class="n">02</span><span>resonance &amp; arrow-pushing</span></a>
-        <a class="day active" href="#top"><span class="n">03</span><span>SN1 / SN2 mechanisms</span></a>
-        <a class="day" href="#"><span class="n">04</span><span>stereochemistry</span></a>
-        <a class="day" href="#"><span class="n">05</span><span>directing effects</span></a>
-        <a class="day" href="#"><span class="n">06</span><span>multi-step synthesis</span></a>
-        <a class="day" href="#"><span class="n">07</span><span>full review</span></a>
+        <a class="day" data-panel="1" href="#1"><span class="n">01</span><span>foundations &amp; notation</span></a>
+        <a class="day" data-panel="2" href="#2"><span class="n">02</span><span>resonance &amp; arrow-pushing</span></a>
+        <a class="day active" data-panel="3" href="#3"><span class="n">03</span><span>SN1 / SN2 mechanisms</span></a>
+        <a class="day" data-panel="4" href="#4"><span class="n">04</span><span>stereochemistry</span></a>
+        <a class="day" data-panel="5" href="#5"><span class="n">05</span><span>directing effects</span></a>
+        <a class="day" data-panel="6" href="#6"><span class="n">06</span><span>multi-step synthesis</span></a>
+        <a class="day" data-panel="7" href="#7"><span class="n">07</span><span>full review</span></a>
         <div class="exam">
-          <a class="day" href="#"><span class="n">★</span><span>practice exam + key</span></a>
-          <a class="day" href="#"><span class="n">⏱</span><span>60-min review guide</span></a>
+          <a class="day" data-panel="exam" href="#exam"><span class="n">★</span><span>practice exam + key</span></a>
+          <a class="day" data-panel="review" href="#review"><span class="n">⏱</span><span>60-min review guide</span></a>
         </div>
+        <div class="hint">click any item to load that section. each is a real sample of what bart writes.</div>
       </aside>
 
       <main class="lesson" id="top">
-        <div class="crumb">day 03 · nucleophilic substitution · ≈ 90 minutes</div>
-        <h2>SN1 vs. SN2, decided on sight.</h2>
-        <div class="obj">goal — look at any substrate and call the mechanism without guessing.</div>
 
-        <p>
-          Yesterday you learned to push arrows. Today you use them. Nucleophilic
-          substitution is two reactions wearing one name, and almost every exam
-          question is really asking <strong>which one is running</strong>. Get
-          that call right and the product, the rate, and the stereochemistry all
-          fall out for free.
-        </p>
-        <p>
-          Start with the kinetics, because the rate law is the cleanest tell.
-          SN2 is one concerted step — the nucleophile and the substrate meet in
-          the rate-determining step, so both appear in the rate law:
-        </p>
+        <!-- DAY 1 ── foundations & notation -->
+        <article class="lesson-panel" data-panel="1" hidden>
+          <div class="crumb">day 01 · the language of organic · ≈ 60 minutes</div>
+          <h2>Read a molecule the way a chemist does.</h2>
+          <div class="obj">goal — look at any skeletal structure and read off its formula, charges, and hybridization without slowing down.</div>
 
-        <div class="formula">
-          rate<sub>SN2</sub> = <span class="acc">k</span> [substrate] [nucleophile]
-        </div>
+          <p>
+            Before mechanisms, before reactions, before anything: you have to
+            read. Every chapter from here on assumes you can glance at a
+            line-angle drawing and instantly see the atoms that aren't drawn.
+            That fluency is the entire point of today.
+          </p>
+          <p>
+            Chemists draw three ways. <strong>Molecular</strong> (C₂H₆O) tells
+            you what's in the box. <strong>Condensed</strong> (CH₃CH₂OH) tells
+            you what's bonded to what, in order. <strong>Skeletal</strong> —
+            the squiggly line drawing — drops every carbon and every hydrogen
+            attached to a carbon, and that's the one your exam will show you
+            <span class="cite">lecture 01, slide 09</span>.
+          </p>
 
-        <p>
-          SN1 goes through a carbocation. The slow step is the substrate losing
-          its leaving group <em>by itself</em>; the nucleophile arrives
-          afterward, off the clock. So only the substrate shows up:
-        </p>
+          <h3><span class="tick"></span>three rules, that's all</h3>
+          <p>Skeletal drawings compress three facts into a line:</p>
+          <ol>
+            <li><strong>Every vertex and every endpoint is a carbon.</strong></li>
+            <li><strong>Every carbon has enough hydrogens to make four bonds.</strong> You don't draw them — you count them.</li>
+            <li><strong>Heteroatoms (anything not C or H) are written in.</strong> Their hydrogens <em>are</em> drawn, because they matter.</li>
+          </ol>
 
-        <div class="formula">
-          rate<sub>SN1</sub> = <span class="acc">k</span> [substrate]
-        </div>
-
-        <p>
-          That single difference — second order vs. first order — is why your
-          slides call SN2 <em>bimolecular</em> and SN1 <em>unimolecular</em>
-          <span class="cite">lecture 06, slide 14</span>. Everything else today
-          is a consequence of it.
-        </p>
-
-        <h3><span class="tick"></span>the backside attack</h3>
-        <p>
-          In SN2 the nucleophile attacks the carbon <strong>directly opposite</strong>
-          the leaving group. The three other groups flip through — like an
-          umbrella in the wind — and the product has <strong>inverted</strong>
-          configuration. This is why it's stereospecific, and why a crowded
-          carbon kills it: there's no room at the back door.
-        </p>
-
-        <div class="schematic">
-          <svg viewBox="0 0 520 150" role="img" aria-label="SN2 backside attack with inversion of configuration">
-            <!-- nucleophile approaching -->
-            <text x="20" y="80" font-family="JetBrains Mono, monospace" font-size="20" fill="#9a4628">Nu⁻</text>
-            <line x1="58" y1="75" x2="172" y2="75" stroke="#c96442" stroke-width="2" stroke-dasharray="5 5"/>
-            <polygon points="172,75 162,70 162,80" fill="#c96442"/>
-            <!-- central carbon -->
-            <circle cx="200" cy="75" r="20" fill="#fbf9f4" stroke="#221f1b" stroke-width="2"/>
-            <text x="200" y="81" text-anchor="middle" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="#221f1b">C</text>
-            <!-- three substituents (umbrella, pre-flip) -->
-            <line x1="200" y1="75" x2="200" y2="28" stroke="#6d655a" stroke-width="2"/>
-            <line x1="200" y1="75" x2="166" y2="118" stroke="#6d655a" stroke-width="2"/>
-            <line x1="200" y1="75" x2="234" y2="118" stroke="#6d655a" stroke-width="2"/>
-            <circle cx="200" cy="24" r="6" fill="#d9d3c4"/>
-            <circle cx="162" cy="122" r="6" fill="#d9d3c4"/>
-            <circle cx="238" cy="122" r="6" fill="#d9d3c4"/>
-            <!-- leaving group departing -->
-            <line x1="228" y1="75" x2="342" y2="75" stroke="#221f1b" stroke-width="2" stroke-dasharray="5 5"/>
-            <polygon points="342,75 332,70 332,80" fill="#221f1b"/>
-            <text x="356" y="80" font-family="JetBrains Mono, monospace" font-size="18" fill="#6d655a">:LG⁻</text>
-            <!-- transition-state bracket -->
-            <text x="200" y="146" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#a59c8c">‡ transition state</text>
-            <!-- result note -->
-            <text x="448" y="42" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9a4628">inversion</text>
-            <path d="M 430 52 q 18 14 36 0" fill="none" stroke="#c96442" stroke-width="1.6"/>
-            <polygon points="466,52 458,49 460,57" fill="#c96442"/>
-          </svg>
-          <div class="cap">SN2 — Nu⁻ enters opposite the leaving group; the substrate inverts.</div>
-        </div>
-
-        <h3><span class="tick"></span>the four tells</h3>
-        <p>
-          You almost never compute a rate on an exam. You read four features off
-          the structure and let them vote.
-        </p>
-
-        <table class="compare">
-          <thead>
-            <tr><th>factor</th><th class="sn2">favors SN2</th><th>favors SN1</th></tr>
-          </thead>
-          <tbody>
-            <tr><th>substrate</th>
-              <td class="sn2"><b>methyl / 1°</b> — open back side</td>
-              <td><b>3°</b> — stable carbocation</td></tr>
-            <tr><th>nucleophile</th>
-              <td class="sn2"><b>strong</b> (OH⁻, CN⁻, RO⁻)</td>
-              <td><b>weak</b> (H₂O, ROH)</td></tr>
-            <tr><th>solvent</th>
-              <td class="sn2"><b>polar aprotic</b> (DMSO, acetone)</td>
-              <td><b>polar protic</b> (water, alcohols)</td></tr>
-            <tr><th>leaving group</th>
-              <td colspan="2"><b>good in both</b> — I⁻ &gt; Br⁻ &gt; Cl⁻ &gt; F⁻</td></tr>
-          </tbody>
-        </table>
-        <p>
-          The substrate vote is the loudest. <strong>2°</strong> substrates are
-          the genuine toss-ups — that's when the nucleophile and solvent break
-          the tie <span class="cite">your notes · pg. 7</span>.
-        </p>
-
-        <div class="mnem">
-          <span class="key">SN2 = 2 things</span>
-          <div>
-            <p>Two molecules in the slow step. Two-faced result.</p>
-            <p>Bimolecular rate law, backside attack, <em>inverted</em> product —
-              all "two." SN1 stands alone: one molecule, one carbocation, a
-              racemic <em>mix</em>.</p>
+          <div class="formula">
+            bonds at a carbon + drawn H's + implicit H's = <span class="acc">4</span>
           </div>
-        </div>
 
-        <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
-        <p>
-          Don't scroll past these. Commit to an answer out loud first — that's
-          the part that sticks.
-        </p>
+          <p>
+            That formula is the only thing you need. Look at a vertex, count
+            the lines coming off it, subtract from four. The rest are hydrogens.
+            Forever.
+          </p>
 
-        <details class="qc">
-          <summary>
-            <span class="q-n">Q1</span>
-            <span>Which is most likely to react by SN1: 2-bromobutane,
-              <em>tert</em>-butyl bromide, or bromomethane?</span>
-            <span class="reveal-tag">answer</span>
-          </summary>
-          <div class="answer">
-            <span class="verdict"><em>tert</em>-Butyl bromide.</span> It's a 3°
-            substrate, so losing Br⁻ gives a stabilized 3° carbocation — the SN1
-            slow step. Bromomethane is the SN2 extreme (wide-open back side);
-            2-bromobutane is the 2° toss-up that depends on conditions.
+          <h3><span class="tick"></span>formal charge — the bookkeeping</h3>
+          <p>
+            Every atom "owns" half of each bond it's in, plus its lone-pair
+            electrons. Compare that to how many it <em>should</em> have (its
+            group number), and the difference is the formal charge:
+          </p>
+          <div class="formula">
+            FC = <span class="acc">valence electrons</span> − (lone-pair e⁻ + ½ bonding e⁻)
           </div>
-        </details>
+          <p>
+            Practically: an oxygen with three bonds and one lone pair has
+            FC = +1 (think hydronium). A nitrogen with four bonds and no lone
+            pair has FC = +1 (think ammonium). These are the patterns that
+            show up in every mechanism this term <span class="cite">lecture 02, slide 03</span>.
+          </p>
 
-        <details class="qc">
-          <summary>
-            <span class="q-n">Q2</span>
-            <span>You run a 2° substrate with NaCN in DMSO. Which mechanism
-              wins, and what happens to the stereocenter?</span>
-            <span class="reveal-tag">answer</span>
-          </summary>
-          <div class="answer">
-            <span class="verdict">SN2.</span> CN⁻ is a strong nucleophile and
-            DMSO is polar aprotic — both push SN2, overruling the ambiguous 2°
-            substrate. The stereocenter <strong>inverts</strong> via backside
-            attack.
+          <div class="mnem">
+            <span class="key">vertex = C</span>
+            <div>
+              <p>Every corner is carbon. Every endpoint is carbon.</p>
+              <p>The only atoms that get a letter are the ones that aren't C —
+                and the only H's that get drawn are the ones bonded to those
+                non-C atoms.</p>
+            </div>
           </div>
-        </details>
 
-        <details class="qc">
-          <summary>
-            <span class="q-n">Q3</span>
-            <span>Why does an SN1 reaction on a single enantiomer give a
-              racemic mixture?</span>
-            <span class="reveal-tag">answer</span>
-          </summary>
-          <div class="answer">
-            <span class="verdict">The carbocation is flat.</span> The sp²
-            intermediate is planar, so the nucleophile attacks either face with
-            roughly equal probability — you get both enantiomers, ≈50/50.
+          <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q1</span>
+              <span>A hexagon with alternating double bonds (benzene) is drawn
+                with no letters at all. How many carbons and how many hydrogens
+                are in the molecule?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">6 carbons, 6 hydrogens (C₆H₆).</span> Six
+              vertices = six C's. Each carbon has two bonds to neighbors (one
+              single, one double), so each needs one implicit H to reach four
+              bonds total.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q2</span>
+              <span>What's the formal charge on the oxygen in CH₃OH? On the
+                oxygen in CH₃O⁻?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">0 and −1.</span> In CH₃OH oxygen has 2 lone
+              pairs (4 electrons) and 2 bonds (½ × 4 = 2), totaling 6 — matches
+              oxygen's valence, so FC = 0. In CH₃O⁻ oxygen has 3 lone pairs (6)
+              and 1 bond (½ × 2 = 1), totaling 7. 6 − 7 = −1.
+            </div>
+          </details>
+
+          <p class="eod">end of day 01 — tomorrow: arrows, the verbs of organic chemistry.</p>
+        </article>
+
+        <!-- DAY 2 ── resonance & arrow-pushing -->
+        <article class="lesson-panel" data-panel="2" hidden>
+          <div class="crumb">day 02 · resonance &amp; curly arrows · ≈ 75 minutes</div>
+          <h2>Arrows are how you write electron movement.</h2>
+          <div class="obj">goal — push a legal arrow on demand and pick the best resonance contributor on sight.</div>
+
+          <p>
+            Every reaction in this course is, underneath, electrons moving. The
+            <strong>curly arrow</strong> is the alphabet for that. Get
+            arrow-pushing right today and the next six days are just
+            vocabulary.
+          </p>
+
+          <h3><span class="tick"></span>the only arrow rule</h3>
+          <p>
+            A curly arrow <strong>starts at a source of electrons</strong> (a
+            lone pair, a π bond, a σ bond) and <strong>ends where those
+            electrons go</strong> (an atom, the middle of a new bond, into a
+            positive center). The head is a full arrow for a pair of electrons,
+            half-headed (fishhook) for a single electron.
+          </p>
+
+          <div class="schematic">
+            <svg viewBox="0 0 520 130" role="img" aria-label="arrow from oxygen lone pair to a proton, making a new bond">
+              <text x="40" y="74" font-family="JetBrains Mono, monospace" font-size="20" fill="#221f1b">H–Ö̈:</text>
+              <path d="M 110 60 Q 170 18 240 56" fill="none" stroke="#c96442" stroke-width="2.2"/>
+              <polygon points="240,56 231,52 232,62" fill="#c96442"/>
+              <text x="260" y="74" font-family="JetBrains Mono, monospace" font-size="20" fill="#221f1b">H⁺</text>
+              <text x="325" y="68" font-family="JetBrains Mono, monospace" font-size="18" fill="#6d655a">→</text>
+              <text x="365" y="74" font-family="JetBrains Mono, monospace" font-size="20" fill="#221f1b">H–Ö̈⁺–H</text>
+              <text x="260" y="120" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#a59c8c">a lone pair becomes a bond — water becomes hydronium</text>
+            </svg>
           </div>
-        </details>
 
-        <p style="margin-top:22px; font-family:var(--font-mono); font-size:12.5px; color:var(--ink-faint);">
-          end of day 03 — tomorrow: stereochemistry, where today's inversion
-          becomes a tool you reach for.
-        </p>
+          <h3><span class="tick"></span>five things an arrow can't do</h3>
+          <p>Most "wrong" arrows on exam pages break one of these:</p>
+          <table class="compare">
+            <thead>
+              <tr><th>do</th><th class="sn2">yes</th><th>no</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>start point</th>
+                <td class="sn2"><b>electrons</b> — lone pair, π bond, σ bond</td>
+                <td><b>an atom, or a +</b></td></tr>
+              <tr><th>end point</th>
+                <td class="sn2"><b>between two atoms or onto an atom</b></td>
+                <td><b>off into space</b></td></tr>
+              <tr><th>conserve</th>
+                <td class="sn2"><b>charge and atoms, before = after</b></td>
+                <td><b>making or losing atoms</b></td></tr>
+              <tr><th>octet</th>
+                <td class="sn2"><b>row-2 atoms stay ≤ 8 electrons</b></td>
+                <td><b>five bonds on carbon</b></td></tr>
+              <tr><th>resonance σ bonds</th>
+                <td colspan="2"><b>don't break σ bonds for resonance — only π and lone pairs move</b></td></tr>
+            </tbody>
+          </table>
+
+          <h3><span class="tick"></span>resonance — different drawings, same molecule</h3>
+          <p>
+            Resonance structures aren't different molecules in equilibrium —
+            they're different <em>pictures</em> of one molecule whose electrons
+            are delocalized. The real molecule is the weighted average. The
+            <strong>best contributor</strong> is the one that:
+          </p>
+          <ol>
+            <li>Has the <strong>most full octets</strong>.</li>
+            <li>Has the <strong>fewest formal charges</strong>.</li>
+            <li>Puts negative charge on the <strong>most electronegative</strong> atom (and positive on the least).</li>
+          </ol>
+
+          <div class="mnem">
+            <span class="key">arrows = electrons</span>
+            <div>
+              <p>From electrons. To electrophile.</p>
+              <p>Read every arrow as a sentence: "this lone pair becomes that
+                bond," "this π bond becomes that lone pair." If you can't speak
+                it, you can't draw it.</p>
+            </div>
+          </div>
+
+          <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q1</span>
+              <span>For the acetate ion (CH₃CO₂⁻), the negative charge is shown
+                on one oxygen. What does the other resonance structure look
+                like, and which contributes more?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">Both contribute equally.</span> Push the
+              C=O π bond onto the doubly-bonded oxygen and push the
+              single-bonded oxygen's lone pair into a new C=O π bond. You get
+              the same structure with the charge on the other oxygen. They're
+              equivalent — the real ion has both C–O bonds identical, with
+              charge spread across both oxygens.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q2</span>
+              <span>Between two resonance forms of a cation — one with the + on
+                carbon, one with the + on oxygen — which contributes more?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">The one with + on oxygen.</span> Oxygen is
+              more electronegative and holds the positive charge poorly — but
+              the structure where it carries + has a <em>full octet</em> on
+              every atom (it gained a bond). The carbocation form has only 6
+              electrons on the carbon. Octet beats electronegativity here.
+            </div>
+          </details>
+
+          <p class="eod">end of day 02 — tomorrow: arrows in their first real fight (SN1 vs SN2).</p>
+        </article>
+
+        <!-- DAY 3 ── SN1 / SN2 (the original showcase) -->
+        <article class="lesson-panel" data-panel="3">
+          <div class="crumb">day 03 · nucleophilic substitution · ≈ 90 minutes</div>
+          <h2>SN1 vs. SN2, decided on sight.</h2>
+          <div class="obj">goal — look at any substrate and call the mechanism without guessing.</div>
+
+          <p>
+            Yesterday you learned to push arrows. Today you use them. Nucleophilic
+            substitution is two reactions wearing one name, and almost every exam
+            question is really asking <strong>which one is running</strong>. Get
+            that call right and the product, the rate, and the stereochemistry all
+            fall out for free.
+          </p>
+          <p>
+            Start with the kinetics, because the rate law is the cleanest tell.
+            SN2 is one concerted step — the nucleophile and the substrate meet in
+            the rate-determining step, so both appear in the rate law:
+          </p>
+
+          <div class="formula">
+            rate<sub>SN2</sub> = <span class="acc">k</span> [substrate] [nucleophile]
+          </div>
+
+          <p>
+            SN1 goes through a carbocation. The slow step is the substrate losing
+            its leaving group <em>by itself</em>; the nucleophile arrives
+            afterward, off the clock. So only the substrate shows up:
+          </p>
+
+          <div class="formula">
+            rate<sub>SN1</sub> = <span class="acc">k</span> [substrate]
+          </div>
+
+          <p>
+            That single difference — second order vs. first order — is why your
+            slides call SN2 <em>bimolecular</em> and SN1 <em>unimolecular</em>
+            <span class="cite">lecture 06, slide 14</span>. Everything else today
+            is a consequence of it.
+          </p>
+
+          <h3><span class="tick"></span>the backside attack</h3>
+          <p>
+            In SN2 the nucleophile attacks the carbon <strong>directly opposite</strong>
+            the leaving group. The three other groups flip through — like an
+            umbrella in the wind — and the product has <strong>inverted</strong>
+            configuration. This is why it's stereospecific, and why a crowded
+            carbon kills it: there's no room at the back door.
+          </p>
+
+          <div class="schematic">
+            <svg viewBox="0 0 520 150" role="img" aria-label="SN2 backside attack with inversion of configuration">
+              <text x="20" y="80" font-family="JetBrains Mono, monospace" font-size="20" fill="#9a4628">Nu⁻</text>
+              <line x1="58" y1="75" x2="172" y2="75" stroke="#c96442" stroke-width="2" stroke-dasharray="5 5"/>
+              <polygon points="172,75 162,70 162,80" fill="#c96442"/>
+              <circle cx="200" cy="75" r="20" fill="#fbf9f4" stroke="#221f1b" stroke-width="2"/>
+              <text x="200" y="81" text-anchor="middle" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="#221f1b">C</text>
+              <line x1="200" y1="75" x2="200" y2="28" stroke="#6d655a" stroke-width="2"/>
+              <line x1="200" y1="75" x2="166" y2="118" stroke="#6d655a" stroke-width="2"/>
+              <line x1="200" y1="75" x2="234" y2="118" stroke="#6d655a" stroke-width="2"/>
+              <circle cx="200" cy="24" r="6" fill="#d9d3c4"/>
+              <circle cx="162" cy="122" r="6" fill="#d9d3c4"/>
+              <circle cx="238" cy="122" r="6" fill="#d9d3c4"/>
+              <line x1="228" y1="75" x2="342" y2="75" stroke="#221f1b" stroke-width="2" stroke-dasharray="5 5"/>
+              <polygon points="342,75 332,70 332,80" fill="#221f1b"/>
+              <text x="356" y="80" font-family="JetBrains Mono, monospace" font-size="18" fill="#6d655a">:LG⁻</text>
+              <text x="200" y="146" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#a59c8c">‡ transition state</text>
+              <text x="448" y="42" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9a4628">inversion</text>
+              <path d="M 430 52 q 18 14 36 0" fill="none" stroke="#c96442" stroke-width="1.6"/>
+              <polygon points="466,52 458,49 460,57" fill="#c96442"/>
+            </svg>
+            <div class="cap">SN2 — Nu⁻ enters opposite the leaving group; the substrate inverts.</div>
+          </div>
+
+          <h3><span class="tick"></span>the four tells</h3>
+          <p>
+            You almost never compute a rate on an exam. You read four features
+            off the structure and let them vote.
+          </p>
+
+          <table class="compare">
+            <thead>
+              <tr><th>factor</th><th class="sn2">favors SN2</th><th>favors SN1</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>substrate</th>
+                <td class="sn2"><b>methyl / 1°</b> — open back side</td>
+                <td><b>3°</b> — stable carbocation</td></tr>
+              <tr><th>nucleophile</th>
+                <td class="sn2"><b>strong</b> (OH⁻, CN⁻, RO⁻)</td>
+                <td><b>weak</b> (H₂O, ROH)</td></tr>
+              <tr><th>solvent</th>
+                <td class="sn2"><b>polar aprotic</b> (DMSO, acetone)</td>
+                <td><b>polar protic</b> (water, alcohols)</td></tr>
+              <tr><th>leaving group</th>
+                <td colspan="2"><b>good in both</b> — I⁻ &gt; Br⁻ &gt; Cl⁻ &gt; F⁻</td></tr>
+            </tbody>
+          </table>
+          <p>
+            The substrate vote is the loudest. <strong>2°</strong> substrates are
+            the genuine toss-ups — that's when the nucleophile and solvent break
+            the tie <span class="cite">your notes · pg. 7</span>.
+          </p>
+
+          <div class="mnem">
+            <span class="key">SN2 = 2 things</span>
+            <div>
+              <p>Two molecules in the slow step. Two-faced result.</p>
+              <p>Bimolecular rate law, backside attack, <em>inverted</em> product —
+                all "two." SN1 stands alone: one molecule, one carbocation, a
+                racemic <em>mix</em>.</p>
+            </div>
+          </div>
+
+          <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q1</span>
+              <span>Which is most likely to react by SN1: 2-bromobutane,
+                <em>tert</em>-butyl bromide, or bromomethane?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict"><em>tert</em>-Butyl bromide.</span> It's a 3°
+              substrate, so losing Br⁻ gives a stabilized 3° carbocation — the SN1
+              slow step. Bromomethane is the SN2 extreme (wide-open back side);
+              2-bromobutane is the 2° toss-up that depends on conditions.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q2</span>
+              <span>You run a 2° substrate with NaCN in DMSO. Which mechanism
+                wins, and what happens to the stereocenter?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">SN2.</span> CN⁻ is a strong nucleophile and
+              DMSO is polar aprotic — both push SN2, overruling the ambiguous 2°
+              substrate. The stereocenter <strong>inverts</strong> via backside
+              attack.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q3</span>
+              <span>Why does an SN1 reaction on a single enantiomer give a
+                racemic mixture?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">The carbocation is flat.</span> The sp²
+              intermediate is planar, so the nucleophile attacks either face with
+              roughly equal probability — you get both enantiomers, ≈50/50.
+            </div>
+          </details>
+
+          <p class="eod">end of day 03 — tomorrow: stereochemistry, where today's inversion becomes a tool you reach for.</p>
+        </article>
+
+        <!-- DAY 4 ── stereochemistry -->
+        <article class="lesson-panel" data-panel="4" hidden>
+          <div class="crumb">day 04 · stereochemistry · ≈ 85 minutes</div>
+          <h2>R, S, and the molecules that look identical in a mirror.</h2>
+          <div class="obj">goal — assign R/S on any stereocenter in under 30 seconds and tell enantiomers from diastereomers on sight.</div>
+
+          <p>
+            Yesterday's SN2 inverted a stereocenter. To <em>use</em> that, you
+            need to read one. A <strong>stereocenter</strong> is any carbon
+            bonded to four different groups — and switching any two of them
+            gives a molecule that is <em>not</em> superimposable on the
+            original. That mirror-image pair is called
+            <strong>enantiomers</strong>.
+          </p>
+
+          <h3><span class="tick"></span>CIP priorities, the only rule</h3>
+          <p>To label a stereocenter R or S:</p>
+          <ol>
+            <li>Rank the four groups by atomic number (higher = higher priority). Ties go to the next atom out.</li>
+            <li>Put the lowest priority (group 4) pointing <em>away</em> from you.</li>
+            <li>Trace 1 → 2 → 3 around the remaining three.</li>
+            <li>Clockwise = <strong>R</strong>, counterclockwise = <strong>S</strong>.</li>
+          </ol>
+          <p>
+            If group 4 is already pointing toward you, do the trace anyway and
+            flip your answer. Faster than redrawing <span class="cite">lecture 11, slide 22</span>.
+          </p>
+
+          <div class="formula">
+            R = <span class="acc">rectus</span> (right) · S = <span class="acc">sinister</span> (left)
+          </div>
+
+          <h3><span class="tick"></span>enantiomers vs. diastereomers vs. meso</h3>
+          <table class="compare">
+            <thead>
+              <tr><th>type</th><th class="sn2">relationship</th><th>physical properties</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>enantiomers</th>
+                <td class="sn2"><b>mirror images</b>, non-superimposable</td>
+                <td><b>identical</b> — except rotation of polarized light (and biology)</td></tr>
+              <tr><th>diastereomers</th>
+                <td class="sn2"><b>stereoisomers</b> that are not mirror images</td>
+                <td><b>different</b> mp, bp, solubility, NMR — different compounds</td></tr>
+              <tr><th>meso</th>
+                <td class="sn2">two+ stereocenters but an <b>internal mirror plane</b></td>
+                <td><b>achiral overall</b> — superimposable on its own mirror image</td></tr>
+            </tbody>
+          </table>
+
+          <p>
+            A molecule with n stereocenters has at most <strong>2ⁿ</strong>
+            stereoisomers — fewer if there's a meso form pulling two of them
+            together.
+          </p>
+
+          <div class="mnem">
+            <span class="key">CIP = chase the heavy atom</span>
+            <div>
+              <p>Higher atomic number wins. Tied? Walk one bond further out.</p>
+              <p>A double bond counts the atom <em>twice</em>: a C=O carbon
+                "sees" (O, O, C) for priority purposes. That's the trick most
+                students miss.</p>
+            </div>
+          </div>
+
+          <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q1</span>
+              <span>You take (R)-2-bromobutane and swap two groups on the
+                stereocenter. Is the product still (R), or is it (S)?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">(S).</span> Any single swap of two groups on
+              a stereocenter inverts its configuration. Two swaps returns you to
+              the original.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q2</span>
+              <span>2,3-dibromobutane has two stereocenters. How many distinct
+                stereoisomers does it have?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">Three.</span> Theoretical max is 2² = 4:
+              (R,R), (S,S), (R,S), (S,R). But (R,S) and (S,R) are the same
+              molecule — they have an internal mirror plane (meso). So you get
+              the (R,R)/(S,S) pair of enantiomers, plus one meso compound.
+            </div>
+          </details>
+
+          <p class="eod">end of day 04 — tomorrow: directing effects, where one substituent decides where the next reaction lands.</p>
+        </article>
+
+        <!-- DAY 5 ── directing effects (EAS) -->
+        <article class="lesson-panel" data-panel="5" hidden>
+          <div class="crumb">day 05 · electrophilic aromatic substitution · ≈ 80 minutes</div>
+          <h2>One group on the ring decides where the next one goes.</h2>
+          <div class="obj">goal — predict the major product of any EAS on a mono-substituted benzene.</div>
+
+          <p>
+            A benzene ring with one substituent reacting under EAS (nitration,
+            halogenation, Friedel–Crafts) has three open positions:
+            <strong>ortho</strong> (next to), <strong>meta</strong> (two away),
+            and <strong>para</strong> (across from). You don't get a
+            statistical mix — the existing group routes the incoming
+            electrophile to specific spots and either speeds up or slows down
+            the whole reaction.
+          </p>
+
+          <h3><span class="tick"></span>two categories, three behaviors</h3>
+          <table class="compare">
+            <thead>
+              <tr><th>group on ring</th><th class="sn2">where</th><th>how fast</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>lone-pair donor<br>(–NH₂, –OH, –OR)</th>
+                <td class="sn2"><b>ortho / para</b></td>
+                <td><b>strongly activating</b> — faster than benzene</td></tr>
+              <tr><th>alkyl<br>(–CH₃, –R)</th>
+                <td class="sn2"><b>ortho / para</b></td>
+                <td><b>weakly activating</b></td></tr>
+              <tr><th>halogens<br>(–F, –Cl, –Br, –I)</th>
+                <td class="sn2"><b>ortho / para</b></td>
+                <td><b>deactivating</b> — slower than benzene</td></tr>
+              <tr><th>EWGs<br>(–NO₂, –C(=O)R, –SO₃H, –CN)</th>
+                <td class="sn2"><b>meta</b></td>
+                <td><b>strongly deactivating</b></td></tr>
+            </tbody>
+          </table>
+
+          <h3><span class="tick"></span>why o/p vs. m</h3>
+          <p>
+            Every EAS goes through a positively-charged intermediate called the
+            <strong>sigma complex</strong> (or arenium ion). When you draw its
+            resonance forms, the + sits on the ring carbons that are
+            <em>ortho</em> and <em>para</em> to where the electrophile attacked.
+          </p>
+          <p>
+            If the existing group is a <strong>donor</strong>, it can stabilize
+            the + when the + lands on a carbon it's bonded to (or next to it) —
+            which only happens when the electrophile lands ortho or para.
+            <strong>EWGs do the opposite</strong>: they make the + worse, so
+            the electrophile avoids ortho/para and ends up meta by default
+            <span class="cite">lecture 18, slide 11</span>.
+          </p>
+
+          <div class="formula">
+            donor → o,p (loves o,p sigma complex) · EWG → m (avoids o,p sigma complex)
+          </div>
+
+          <div class="mnem">
+            <span class="key">lone pair = o/p</span>
+            <div>
+              <p>Does the substituent have a lone pair to donate into the ring?</p>
+              <p>If yes — o/p directing (and usually activating; halogens are
+                the exception, deactivating by induction but still directing by
+                resonance). If no — meta.</p>
+            </div>
+          </div>
+
+          <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q1</span>
+              <span>You nitrate toluene (PhCH₃). What's the major product, and
+                where does the NO₂ go?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">Para-nitrotoluene (with some ortho).</span>
+              –CH₃ is weakly activating and o/p directing. The para isomer
+              dominates as a single product because ortho is split across two
+              equivalent positions and also suffers steric clash with the
+              methyl.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q2</span>
+              <span>You try to brominate nitrobenzene. Where does the Br end
+                up — and is the reaction fast or slow?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">Meta to the nitro, and very slow.</span>
+              –NO₂ is a strong EWG: it destabilizes the sigma complex at ortho
+              and para, so the electrophile lands meta. It also pulls so much
+              electron density out of the ring that the rate is roughly 10⁻⁷
+              that of benzene — you usually need harsher conditions to get any
+              reaction at all.
+            </div>
+          </details>
+
+          <p class="eod">end of day 05 — tomorrow: multi-step synthesis, where today's tools become moves in a longer game.</p>
+        </article>
+
+        <!-- DAY 6 ── multi-step synthesis -->
+        <article class="lesson-panel" data-panel="6" hidden>
+          <div class="crumb">day 06 · multi-step synthesis · ≈ 90 minutes</div>
+          <h2>Plan synthesis by walking backward.</h2>
+          <div class="obj">goal — given a target, propose a 2–4 step synthesis using only the reactions you know.</div>
+
+          <p>
+            A synthesis question doesn't ask you to be clever — it asks you to
+            be organized. The trick is to refuse to think forward. Start from
+            the <strong>target</strong>, ask what could have made the last
+            bond, then ask what made <em>that</em> molecule. You're doing
+            <strong>retrosynthesis</strong>, and the symbol for it is the open
+            arrow <strong>⇒</strong>.
+          </p>
+
+          <h3><span class="tick"></span>the two operations</h3>
+          <p>Retrosynthesis only does two things:</p>
+          <ol>
+            <li><strong>Disconnect</strong> a bond in the target. The bond you
+              break should be one you actually know how to <em>form</em>. The
+              two pieces become your "synthons" — imaginary fragments — which
+              you then map to real reagents.</li>
+            <li><strong>FGI</strong> (functional group interconversion). Change
+              one group into another using a reaction you know. Use this when
+              you can't disconnect directly but can convert the target into
+              something disconnectable.</li>
+          </ol>
+
+          <div class="formula">
+            target <span class="acc">⇒</span> precursor <span class="acc">⇒</span> precursor <span class="acc">⇒</span> starting material
+          </div>
+
+          <h3><span class="tick"></span>worked example</h3>
+          <p>
+            <strong>Target:</strong> 2-phenylpropan-2-ol from benzene and any
+            other organic starting materials.
+          </p>
+          <p>
+            Step back once. A tertiary alcohol with two methyls and one phenyl
+            can come from <strong>a ketone + a Grignard</strong>: acetophenone
+            (PhCOCH₃) + CH₃MgBr gives exactly this product after workup. So:
+          </p>
+          <p class="step-mono">PhC(OH)(CH₃)₂ ⇒ PhC(=O)CH₃ + CH₃MgBr</p>
+          <p>
+            Now step back again. Acetophenone comes from benzene by
+            <strong>Friedel–Crafts acylation</strong> with CH₃COCl / AlCl₃.
+            That closes the loop:
+          </p>
+          <p class="step-mono">PhC(=O)CH₃ ⇒ PhH + CH₃COCl / AlCl₃</p>
+          <p>Forward synthesis (the answer you write down):</p>
+          <ol>
+            <li>Benzene + CH₃COCl, AlCl₃ → acetophenone.</li>
+            <li>Acetophenone + CH₃MgBr, then H₃O⁺ workup → 2-phenylpropan-2-ol.</li>
+          </ol>
+
+          <div class="mnem">
+            <span class="key">work backward</span>
+            <div>
+              <p>Stare at the target. Find the youngest bond.</p>
+              <p>The "youngest" bond is the one you know a reaction for —
+                usually C–C bonds formed by Grignards, aldol, or EAS.
+                Disconnect there. Repeat.</p>
+            </div>
+          </div>
+
+          <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q1</span>
+              <span>How do you make cyclohexyl methyl ether (C₆H₁₁–O–CH₃) from
+                cyclohexanol and any other simple reagents?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">Williamson ether synthesis.</span>
+              Deprotonate cyclohexanol with NaH to give the alkoxide, then add
+              CH₃I — an SN2 on methyl (the open back side) gives the ether.
+              Don't reverse the partners: making the methyl alkoxide and adding
+              it to cyclohexyl iodide would try SN2 on a 2° center and
+              elimination wins.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q2</span>
+              <span>Target: 1-phenyl-1-propanol. Starting materials: benzaldehyde
+                and anything organic. One step or two?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">One step.</span> Benzaldehyde (PhCHO) +
+              ethylmagnesium bromide (CH₃CH₂MgBr), then H₃O⁺ workup, gives the
+              secondary alcohol PhCH(OH)CH₂CH₃ directly. A Grignard adding to
+              an aldehyde always makes a secondary alcohol after workup.
+            </div>
+          </details>
+
+          <p class="eod">end of day 06 — tomorrow: a decision tree for any exam question.</p>
+        </article>
+
+        <!-- DAY 7 ── full review -->
+        <article class="lesson-panel" data-panel="7" hidden>
+          <div class="crumb">day 07 · full review · ≈ 90 minutes</div>
+          <h2>One decision tree that handles any exam question.</h2>
+          <div class="obj">goal — read any orgo II question and know the first move within five seconds.</div>
+
+          <p>
+            Six days in and you have all the pieces. Today is about
+            <em>routing</em>: knowing, on sight, which day's tools a problem
+            belongs to. The tree below is the one you'll run mentally during
+            the exam.
+          </p>
+
+          <h3><span class="tick"></span>the master decision tree</h3>
+          <div class="schematic">
+            <svg viewBox="0 0 560 290" role="img" aria-label="decision tree for organic chemistry II problems">
+              <text x="280" y="22" text-anchor="middle" font-family="Inter, sans-serif" font-size="13" font-weight="700" fill="#221f1b">what kind of question is this?</text>
+              <line x1="280" y1="32" x2="120" y2="62" stroke="#6d655a" stroke-width="1.5"/>
+              <line x1="280" y1="32" x2="280" y2="62" stroke="#6d655a" stroke-width="1.5"/>
+              <line x1="280" y1="32" x2="440" y2="62" stroke="#6d655a" stroke-width="1.5"/>
+              <text x="120" y="78" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9a4628">"predict product"</text>
+              <text x="280" y="78" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9a4628">"draw mechanism"</text>
+              <text x="440" y="78" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9a4628">"propose synthesis"</text>
+              <line x1="120" y1="90" x2="120" y2="118" stroke="#6d655a" stroke-width="1.5"/>
+              <line x1="280" y1="90" x2="280" y2="118" stroke="#6d655a" stroke-width="1.5"/>
+              <line x1="440" y1="90" x2="440" y2="118" stroke="#6d655a" stroke-width="1.5"/>
+              <text x="120" y="132" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="#221f1b">match the reagent</text>
+              <text x="120" y="148" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="#221f1b">to a known transform</text>
+              <text x="280" y="132" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="#221f1b">identify nu, e, lg —</text>
+              <text x="280" y="148" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="#221f1b">push arrows step by step</text>
+              <text x="440" y="132" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="#221f1b">retrosynthesis: target ⇒</text>
+              <text x="440" y="148" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="#221f1b">precursor, then write forward</text>
+              <text x="280" y="206" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#a59c8c">if stuck on any branch, ask:</text>
+              <text x="280" y="228" text-anchor="middle" font-family="Inter, sans-serif" font-size="12" font-weight="600" fill="#c96442">→ what is the most electron-rich atom?</text>
+              <text x="280" y="248" text-anchor="middle" font-family="Inter, sans-serif" font-size="12" font-weight="600" fill="#c96442">→ what is the most electron-poor atom?</text>
+              <text x="280" y="270" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#a59c8c">an arrow goes from the first to the second.</text>
+            </svg>
+            <div class="cap">every question is one of three types; every step is one arrow.</div>
+          </div>
+
+          <h3><span class="tick"></span>top five traps</h3>
+          <table class="compare">
+            <thead>
+              <tr><th>trap</th><th class="sn2">the fix</th><th>seen in</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>treating SN1 / E1 separately</th>
+                <td class="sn2">they share the carbocation — they always compete</td>
+                <td>day 03</td></tr>
+              <tr><th>forgetting to flip when LP4 is toward you</th>
+                <td class="sn2">trace anyway, then flip R↔S</td>
+                <td>day 04</td></tr>
+              <tr><th>calling halogens activating</th>
+                <td class="sn2">halogens are <b>o/p directors but deactivators</b></td>
+                <td>day 05</td></tr>
+              <tr><th>Grignard on the wrong partner</th>
+                <td class="sn2">Grignards add to aldehydes / ketones; never to acidic H's (alcohols, acids)</td>
+                <td>day 06</td></tr>
+              <tr><th>missing a meso compound</th>
+                <td class="sn2">2ⁿ stereoisomers <em>at most</em> — check for an internal mirror</td>
+                <td>day 04</td></tr>
+            </tbody>
+          </table>
+
+          <h3><span class="tick"></span>quick checks — answer, then reveal</h3>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q1</span>
+              <span>You're given a 3° alkyl bromide in ethanol and asked for
+                the product. No nucleophile is added. What runs?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">SN1 and E1 in competition.</span> A 3°
+              substrate in a weak nucleophile / polar protic solvent (ethanol)
+              ionizes to a carbocation. From there ethanol can attack (SN1,
+              giving an ether) or a β-hydrogen can leave (E1, giving an
+              alkene). Higher temperature pushes toward E1.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q2</span>
+              <span>Synthesize 4-bromonitrobenzene from benzene. Two steps —
+                but which order?</span>
+              <span class="reveal-tag">answer</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">Brominate first, then nitrate.</span> –Br
+              is o/p directing, so nitration on bromobenzene goes mostly para.
+              If you nitrated first, the –NO₂ would direct bromine to
+              <em>meta</em>, giving the wrong isomer. Order matters — always
+              ask what the existing group directs <em>before</em> adding the
+              next.
+            </div>
+          </details>
+
+          <p class="eod">end of day 07 — next: the practice exam, then the one-hour review sheet.</p>
+        </article>
+
+        <!-- PRACTICE EXAM -->
+        <article class="lesson-panel" data-panel="exam" hidden>
+          <div class="crumb">★ practice exam · 6 questions · ≈ 60 minutes timed</div>
+          <h2>Practice exam — built to your course's level.</h2>
+          <div class="obj">goal — work each question untimed first, then redo timed. The answer key explains the <em>why</em>, because that's what transfers.</div>
+
+          <p>
+            Each question samples a different day. Together they're the spread
+            your real exam will draw from. Cover the answer, commit to a
+            response out loud, then reveal.
+          </p>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q1</span>
+              <span>Draw the major resonance contributor of the acetate ion
+                (CH₃CO₂⁻). Say briefly why it's better than the alternatives.</span>
+              <span class="reveal-tag">show key</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">Both C–O⁻ structures contribute equally.</span>
+              Acetate has two equivalent resonance forms with the negative on
+              either oxygen — both have full octets on every atom and place
+              the charge on the most electronegative atom. The real ion has
+              identical C–O bond lengths (between single and double) and half a
+              negative charge on each oxygen.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q2</span>
+              <span>(R)-2-iodobutane is treated with NaOH in DMSO. Predict the
+                product and the stereochemistry.</span>
+              <span class="reveal-tag">show key</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">(S)-butan-2-ol.</span> NaOH is a strong
+              nucleophile; DMSO is polar aprotic. On a 2° substrate this combo
+              runs SN2 cleanly. Backside attack inverts the stereocenter, so
+              (R)-iodide → (S)-alcohol. (Priorities of I and OH happen to rank
+              the same way relative to the other two groups, so the descriptor
+              flips with the geometry.)
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q3</span>
+              <span>You brominate anisole (PhOCH₃) with Br₂ / FeBr₃. What's
+                the major product, and is the reaction faster or slower than
+                bromination of benzene?</span>
+              <span class="reveal-tag">show key</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">para-Bromoanisole (with some ortho), much
+                faster than benzene.</span> –OCH₃ is a strong activator (lone
+              pair on oxygen donates into the ring) and o/p director. Para
+              dominates over ortho because of less steric clash with the
+              methoxy. The activation is strong enough that mild conditions
+              will already over-brominate — you'd dial things back if you only
+              want mono.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q4</span>
+              <span>Assign R or S to the stereocenter in (S)-alanine,
+                NH₂–CH(CH₃)–COOH.</span>
+              <span class="reveal-tag">show key</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">(S) — verify with CIP.</span> Priorities:
+              –NH₂ (N) &gt; –COOH (C bonded to O,O,O via double-bond
+              duplication) &gt; –CH₃ &gt; –H. Place H pointing back; the
+              remaining 1 → 2 → 3 trace goes counterclockwise = S. If H pointed
+              toward you, the trace would appear clockwise — flip it.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q5</span>
+              <span>Propose a synthesis of 1-phenyl-1-butanol
+                (PhCH(OH)CH₂CH₂CH₃) from benzene and any other organic
+                reagents.</span>
+              <span class="reveal-tag">show key</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">Two steps via Friedel–Crafts + Grignard.</span>
+              Retrosynthesis: a 2° alcohol with phenyl on the same carbon comes
+              from PhCHO + a Grignard. PhCHO comes from benzene by the
+              Gattermann–Koch reaction (CO, HCl, AlCl₃). So write forward:
+              (1) Benzene + CO, HCl, AlCl₃ → benzaldehyde.
+              (2) Benzaldehyde + CH₃CH₂CH₂MgBr, then H₃O⁺ workup → 1-phenyl-1-butanol.
+            </div>
+          </details>
+
+          <details class="qc">
+            <summary>
+              <span class="q-n">Q6</span>
+              <span>Without computing rates, rank 1-bromobutane,
+                2-bromobutane, and 2-bromo-2-methylbutane by the rate of SN2
+                with NaOH in acetone.</span>
+              <span class="reveal-tag">show key</span>
+            </summary>
+            <div class="answer">
+              <span class="verdict">1-bromobutane &gt; 2-bromobutane &gt;&gt;
+                2-bromo-2-methylbutane.</span> SN2 wants an open back side: 1°
+              beats 2° easily, and 3° is essentially zero — there's no room
+              for backside attack. Under these conditions the 3° substrate
+              largely sits; under different conditions (polar protic, weaker
+              nu) it would run SN1/E1 instead.
+            </div>
+          </details>
+
+          <p class="eod">end of practice exam — read the 60-minute review sheet the day of.</p>
+        </article>
+
+        <!-- 60-MIN REVIEW -->
+        <article class="lesson-panel" data-panel="review" hidden>
+          <div class="crumb">⏱ 60-minute review · the one hour before the exam</div>
+          <h2>The one-hour-before sheet.</h2>
+          <div class="obj">goal — read this once, slowly, and walk in calm. No new ideas — only the ones you already know, condensed.</div>
+
+          <p>
+            This sheet exists because the last hour before an exam is for
+            confidence, not learning. Each day collapses to two or three lines.
+            If a line surprises you, that's the topic to skim — but don't open
+            the full lesson now. Trust the work you've already done.
+          </p>
+
+          <h3><span class="tick"></span>the seven, in one breath each</h3>
+
+          <p>
+            <strong>Day 01 — notation.</strong> Every vertex is C. Each C needs
+            enough H's to make 4 bonds. Heteroatoms are written in; their H's
+            are drawn. Formal charge = valence − (lone-pair e⁻ + ½ bonding e⁻).
+          </p>
+          <p>
+            <strong>Day 02 — arrows &amp; resonance.</strong> Arrows start at
+            electrons, end at the electrophile. Best resonance contributor:
+            full octets first, fewest charges second, negative on the most
+            electronegative atom third.
+          </p>
+          <p>
+            <strong>Day 03 — SN1 / SN2.</strong> SN2: 1° substrate, strong nu,
+            polar aprotic, inversion. SN1: 3° substrate, weak nu, polar protic,
+            racemization. 2° is the toss-up — nu and solvent decide.
+          </p>
+          <p>
+            <strong>Day 04 — stereochemistry.</strong> Rank by atomic number,
+            put LP4 away, trace 1→2→3. Clockwise = R. Max 2ⁿ stereoisomers;
+            meso compounds eat a pair. Single swap = inversion.
+          </p>
+          <p>
+            <strong>Day 05 — EAS.</strong> Lone-pair donors → o/p, activate.
+            Alkyl → o/p, weakly activate. Halogens → o/p, <em>deactivate</em>.
+            EWGs (NO₂, C=O, CN, SO₃H) → meta, deactivate.
+          </p>
+          <p>
+            <strong>Day 06 — synthesis.</strong> Work backward with ⇒.
+            Disconnect at a bond you know how to <em>form</em>. FGI when you
+            have to. Grignard on aldehyde = 2° alcohol; on ketone = 3° alcohol;
+            on ester = 3° alcohol (adds twice).
+          </p>
+          <p>
+            <strong>Day 07 — routing.</strong> Three question types: predict,
+            push, propose. When stuck, find the most electron-rich and most
+            electron-poor atoms — an arrow goes from one to the other.
+          </p>
+
+          <h3><span class="tick"></span>the five mistakes you almost made last time</h3>
+          <ol>
+            <li>SN2 on a 3° substrate. Doesn't run. Re-route.</li>
+            <li>Calling halogens activators. They direct o/p but deactivate the ring.</li>
+            <li>Forgetting the H-toward-you flip when assigning R/S.</li>
+            <li>Friedel–Crafts on a ring deactivated by –NO₂. Won't react. Use a different sequence.</li>
+            <li>Drawing a five-bond carbon while pushing arrows. Stop. Carbon is four bonds, always.</li>
+          </ol>
+
+          <div class="mnem">
+            <span class="key">walk in calm</span>
+            <div>
+              <p>You already know this material.</p>
+              <p>The exam is asking you to <em>label</em> things you already
+                know. Read each question twice. Underline the substrate.
+                Identify what's running. Then write.</p>
+            </div>
+          </div>
+
+          <p class="eod">that's the packet. go do well.</p>
+        </article>
+
       </main>
 
     </div>
@@ -556,22 +1399,22 @@
 </section>
 
 <section class="rest">
-  <span class="eyebrow">✦ and that's one day of seven</span>
+  <span class="eyebrow">✦ and that's one packet of many</span>
   <h2>every packet ships with all of this.</h2>
   <p class="lede">
-    The lesson above is a single day. Your full packet is the whole plan —
-    built end to end from the materials you upload.
+    The plan above is one example. Yours is built end to end from the materials
+    you upload, in the order your syllabus moves.
   </p>
   <div class="grid">
     <div class="card">
-      <div class="ic">7</div>
-      <h3>A 7-day master plan</h3>
-      <p>Your syllabus, sequenced into days that build on each other — not a pile of flashcards.</p>
+      <div class="ic">◷</div>
+      <h3>A plan sized to your exam</h3>
+      <p>Your syllabus, sequenced into one day for every day you have until exam day — not a pile of flashcards.</p>
     </div>
     <div class="card">
       <div class="ic">✎</div>
       <h3>Daily lessons</h3>
-      <p>Dense, readable, and citing your actual notes — like the day you just read.</p>
+      <p>Dense, readable, and citing your actual notes — like the days you just read.</p>
     </div>
     <div class="card">
       <div class="ic">◇</div>
@@ -601,9 +1444,8 @@
     <div class="k">✦ ready when you are</div>
     <h2>now do it with your course.</h2>
     <p>
-      Drop in your slides and past exams. Bart writes a packet like this one,
-      built from your material, in about ten minutes. <span class="price">$10/mo</span>,
-      cancel anytime.
+      Drop in your slides and past exams. Bart writes a packet like this in
+      ten minutes — <span class="price">$10/mo</span>, cancel anytime.
     </p>
     <a class="cta" href="/login?mode=signup">
       build my packet
@@ -623,6 +1465,57 @@
   </div>
   <div style="color: var(--ink-faint);">© 2026 bart. all your notes belong to you.</div>
 </footer>
+
+<script>
+  (function () {
+    var LABELS = {
+      '1': 'day 01 of 07',
+      '2': 'day 02 of 07',
+      '3': 'day 03 of 07',
+      '4': 'day 04 of 07',
+      '5': 'day 05 of 07',
+      '6': 'day 06 of 07',
+      '7': 'day 07 of 07',
+      'exam': 'practice exam + key',
+      'review': '60-min review guide'
+    };
+
+    var sidebar = document.querySelector('.side');
+    var lesson  = document.querySelector('.lesson');
+    var url     = document.querySelector('.chrome .url');
+    var packet  = document.getElementById('packet');
+
+    function show(panel, scroll) {
+      if (!LABELS[panel]) return;
+      var panels = lesson.querySelectorAll('.lesson-panel');
+      for (var i = 0; i < panels.length; i++) {
+        panels[i].hidden = panels[i].dataset.panel !== panel;
+      }
+      var items = sidebar.querySelectorAll('[data-panel]');
+      for (var j = 0; j < items.length; j++) {
+        if (items[j].dataset.panel === panel) items[j].classList.add('active');
+        else items[j].classList.remove('active');
+      }
+      url.textContent = 'bart · organic chemistry II · ' + LABELS[panel];
+      if (scroll && packet) {
+        var top = packet.getBoundingClientRect().top + window.pageYOffset - 16;
+        window.scrollTo({ top: top, behavior: 'smooth' });
+      }
+    }
+
+    sidebar.addEventListener('click', function (e) {
+      var item = e.target.closest('[data-panel]');
+      if (!item) return;
+      e.preventDefault();
+      var panel = item.dataset.panel;
+      show(panel, true);
+      if (history.replaceState) history.replaceState(null, '', '#' + panel);
+    });
+
+    var initial = (location.hash || '').replace('#', '');
+    if (initial && LABELS[initial]) show(initial, false);
+  })();
+</script>
 
 </body>
 </html>
