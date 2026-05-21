@@ -156,10 +156,10 @@ def _disable_cli(monkeypatch):
 
 def test_config_resolve_anthropic_auth_prefers_oauth_env(monkeypatch):
     # Claude Code OAuth (subscription billing) wins over every api-key source.
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-abc")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token-test-fixture")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env")
     cfg = OutreachConfig(anthropic_api_key="sk-explicit")
-    assert cfg.resolve_anthropic_auth() == ("oauth", "sk-ant-oat01-abc")
+    assert cfg.resolve_anthropic_auth() == ("oauth", "oauth-token-test-fixture")
 
 
 def test_config_resolve_anthropic_auth_prefers_cli_when_no_oauth(monkeypatch):
@@ -185,7 +185,7 @@ def test_config_resolve_anthropic_auth_falls_back_to_api_key(monkeypatch):
 
 def test_config_resolve_anthropic_auth_prefer_api_key_flag(monkeypatch):
     # prefer_api_key=True flips the order so the API key beats CLI/oauth.
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-abc")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token-test-fixture")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env")
     cfg = OutreachConfig(prefer_api_key=True)
     assert cfg.resolve_anthropic_auth() == ("api_key", "sk-from-env")
