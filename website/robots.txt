@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /app/
+Disallow: /api/
+Disallow: /admin-codes
+Disallow: /admin-creators
+Disallow: /output/
+Disallow: /share/
+
+Sitemap: https://studywithbart.com/sitemap.xml
